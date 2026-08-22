@@ -89,7 +89,9 @@ jobs:
       - name: Inspect wheel contents and install exact wheel
         run: |
           python -m zipfile -l dist/*.whl | grep -F greengap/__init__.py
+          python -m pip install "PyYAML>=6.0"
           python -m pip install --force-reinstall --no-deps dist/*.whl
+          python -m pip check
           greengap --version
 
   audit:
