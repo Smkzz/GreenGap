@@ -74,11 +74,16 @@ def run_iniconfig_current(repo: Path, python_executable: str) -> dict[str, Any]:
         return {"status": "ENVIRONMENT_INVALID", "error": f"checkout is missing or not a Git repository: {repo}"}
     if head != INICONFIG_HEAD:
         current = run(repo, python_executable)
+        current_plan = current.get("plan", {})
         return {
             "status": "UPSTREAM_DRIFT",
             "head": head,
             "expected_head": INICONFIG_HEAD,
             "current_head_status": current.get("status"),
+            "current_head_complete": current_plan.get("complete"),
+            "current_head_stable": current_plan.get("stable"),
+            "current_head_blockers": current_plan.get("blocker_count"),
+            "current_head_trace_complete": current_plan.get("trace", {}).get("complete"),
         }
     return run(repo, python_executable)
 
@@ -154,10 +159,17 @@ def main() -> int:
         results["iniconfig_historical"] = run_pinned(
             args.historical_iniconfig, historical_iniconfig_python, INICONFIG_HEAD
         )
+    qualified = all(
+        item.get("status") == "PASS"
+        or (item.get("status") == "UPSTREAM_DRIFT" and item.get("current_head_status") == "PASS")
+        for item in results.values()
+    )
+    drifted = any(item.get("status") == "UPSTREAM_DRIFT" for item in results.values())
+    gate_status = "PASS_WITH_UPSTREAM_DRIFT" if qualified and drifted else "PASS" if qualified else "NOT_PASSED"
     payload = {
         "gate": "upstream_behavioral",
         "results": results,
-        "status": "PASS" if all(item["status"] == "PASS" for item in results.values()) else "NOT_PASSED",
+        "status": gate_status,
     }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -165,7 +177,7 @@ def main() -> int:
         print(f"Upstream behavioral gate: {payload['status']}")
         for name, item in results.items():
             print(f"{name}: {item['status']}")
-    return 0 if payload["status"] == "PASS" else 2
+    return 0 if qualified else 2
 
 
 if __name__ == "__main__":

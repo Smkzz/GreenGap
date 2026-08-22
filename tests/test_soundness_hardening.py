@@ -379,6 +379,29 @@ jobs:
     assert any(issue.code == "EXTERNAL_ACTION_UNKNOWN" for issue in result.issues)
 
 
+def test_release_only_known_action_does_not_poison_test_plan(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/release.yml": """name: Release
+on: [push, pull_request]
+jobs:
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: softprops/action-gh-release@v2
+""",
+        },
+    )
+    result = trace_github_actions(tmp_path)
+    assert result.complete
+    assert not result.relevant_incomplete
+    assert any(
+        issue.code == "CONDITION_UNKNOWN" and not issue.relevant for issue in result.issues
+    )
+
+
 def test_outside_working_directory_is_unknown(tmp_path) -> None:
     write_files(
         tmp_path,
