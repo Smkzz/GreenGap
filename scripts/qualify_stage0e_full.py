@@ -113,6 +113,8 @@ def run_plan(repo: Path, python_executable: str) -> tuple[int, dict[str, Any]]:
     env = os.environ.copy()
     source_path = str(project_root / "src")
     env["PYTHONPATH"] = source_path + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     result = subprocess.run(
         [python_executable, "-m", "greengap", "plan", str(repo), "--json"],
         text=True,
@@ -184,13 +186,45 @@ def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]
     }
 
 
+def interpreter_for(name: str, python_dir: Path) -> str | None:
+    """Find the interpreter for one isolated checkout environment."""
+
+    candidates = (
+        python_dir / name / "Scripts" / "python.exe",
+        python_dir / name / "bin" / "python",
+        python_dir / name / "python.exe",
+        python_dir / name / "python",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path, help="directory containing the five named checkouts")
     parser.add_argument("--python", default=sys.executable, help="interpreter with each checkout's test dependencies")
+    parser.add_argument(
+        "--python-dir",
+        type=Path,
+        help="directory containing one isolated environment per checkout (name/Scripts/python.exe or name/bin/python)",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-    results = [qualify_one(name, args.root / name, args.python) for name in PINNED]
+    results = []
+    for name in PINNED:
+        interpreter = interpreter_for(name, args.python_dir) if args.python_dir else args.python
+        if interpreter is None:
+            results.append(
+                {
+                    "repository": name,
+                    "status": "ENVIRONMENT_INVALID",
+                    "reason": f"isolated interpreter is missing under {args.python_dir}",
+                }
+            )
+            continue
+        results.append(qualify_one(name, args.root / name, interpreter))
     payload = {
         "gate": "stage0e_full_checkout",
         "attempted": len(results),

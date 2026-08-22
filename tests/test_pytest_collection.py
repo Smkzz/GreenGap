@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-import subprocess
+from types import SimpleNamespace
 
 import pytest
 
-from greengap.pytest_adapter import collect_pytest
+from greengap.pytest_adapter import (
+    _BoundedProcessResult,
+    _explicit_project_plugin_args,
+    collect_pytest,
+)
 
 from .conftest import write_files
 
@@ -50,11 +54,12 @@ def test_collection_import_failure_is_not_called_unregistered(tmp_path) -> None:
 
 
 def test_collection_timeout_preserves_partial_output(monkeypatch, tmp_path) -> None:
-    def timeout(*args, **kwargs):
-        command = kwargs.get("args", args[0] if args else [])
-        raise subprocess.TimeoutExpired(command, 1, output=b"tests/test_a.py::test_a\n")
-
-    monkeypatch.setattr("greengap.pytest_adapter.subprocess.run", timeout)
+    monkeypatch.setattr(
+        "greengap.pytest_adapter._run_pytest_bounded",
+        lambda *args, **kwargs: _BoundedProcessResult(
+            None, "tests/test_a.py::test_a\n", "", timed_out=True
+        ),
+    )
     result = collect_pytest(tmp_path, timeout=1)
     assert not result.complete
     assert result.timed_out
@@ -65,15 +70,37 @@ def test_collection_start_failure_is_explicit(monkeypatch, tmp_path) -> None:
     def failure(*args, **kwargs):
         raise OSError("python unavailable")
 
-    monkeypatch.setattr("greengap.pytest_adapter.subprocess.run", failure)
+    monkeypatch.setattr("greengap.pytest_adapter._run_pytest_bounded", failure)
     result = collect_pytest(tmp_path)
     assert not result.complete
     assert "could not start" in (result.error or "")
 
 
+def test_declared_marker_plugins_are_loaded_explicitly(monkeypatch, tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\ndependencies = ["pytest-trio"]\n',
+            "tests/test_a.py": "import pytest\n@pytest.mark.trio\ndef test_a():\n    pass\n",
+        },
+    )
+    entry_point = SimpleNamespace(
+        name="trio",
+        value="pytest_trio.plugin",
+        dist=SimpleNamespace(name="pytest-trio"),
+    )
+    monkeypatch.setattr(
+        "greengap.pytest_adapter.importlib.metadata.entry_points",
+        lambda **kwargs: (entry_point,),
+    )
+    assert _explicit_project_plugin_args(tmp_path) == ("-p", "pytest_trio.plugin")
+
+
 @pytest.mark.parametrize("exit_code", [1, 2, 3, 4])
 def test_nonzero_collection_codes_are_not_complete(exit_code: int, monkeypatch, tmp_path) -> None:
-    completed = subprocess.CompletedProcess(["pytest"], exit_code, "", "error")
-    monkeypatch.setattr("greengap.pytest_adapter.subprocess.run", lambda *args, **kwargs: completed)
+    monkeypatch.setattr(
+        "greengap.pytest_adapter._run_pytest_bounded",
+        lambda *args, **kwargs: _BoundedProcessResult(exit_code, "", "error"),
+    )
     result = collect_pytest(tmp_path)
     assert not result.complete

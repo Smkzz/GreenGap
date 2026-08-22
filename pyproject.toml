@@ -4,20 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "greengap"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Find what your green CI never ran."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "GreenGap contributors" }]
+keywords = ["ci", "github-actions", "pytest", "testing"]
+urls = { Homepage = "https://github.com/Smkzz/GreenGap", Repository = "https://github.com/Smkzz/GreenGap", Issues = "https://github.com/Smkzz/GreenGap/issues", Changelog = "https://github.com/Smkzz/GreenGap/blob/main/CHANGELOG.md" }
 dependencies = ["PyYAML>=6.0"]
 classifiers = [
   "Development Status :: 3 - Alpha",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Testing",
+  "Typing :: Typed",
 ]
 
 [project.scripts]
@@ -34,6 +40,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "greengap.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -2,7 +2,28 @@
 
 from __future__ import annotations
 
-from .model import Candidate, CollectionResult, Finding, FindingState, TraceResult
+import posixpath
+
+from .model import Candidate, CollectionResult, Finding, FindingState, PytestInvocation, TraceResult
+
+
+def _scope_key(value: str) -> str | None:
+    normalized = posixpath.normpath(value.replace("\\", "/"))
+    if normalized == ".":
+        return ""
+    if normalized == ".." or normalized.startswith("../"):
+        return None
+    return normalized
+
+
+def _path_prefixes(path: str) -> tuple[str, ...]:
+    normalized = _scope_key(path)
+    if normalized is None or not normalized:
+        return ("",)
+    parts = normalized.split("/")
+    return tuple(
+        "/".join(parts[:index]) for index in range(len(parts), 0, -1)
+    ) + ("",)
 
 
 def _candidate_map(
@@ -28,6 +49,27 @@ def reconcile_plan(
 
     findings: list[Finding] = []
     all_candidates = _candidate_map(candidates, collection)
+    collected_paths = set(collection.paths)
+    coverage_index: dict[str, list[PytestInvocation]] = {}
+    for invocation in trace.invocations:
+        if not invocation.complete:
+            continue
+        if invocation.kind == "broad":
+            coverage_index.setdefault("", []).append(invocation)
+            continue
+        if invocation.kind != "paths":
+            continue
+        for scope in invocation.paths:
+            key = _scope_key(scope)
+            if key is not None:
+                coverage_index.setdefault(key, []).append(invocation)
+    covering_by_path: dict[str, tuple[PytestInvocation, ...]] = {}
+    for path in collected_paths:
+        matches: dict[PytestInvocation, None] = {}
+        for prefix in _path_prefixes(path):
+            for invocation in coverage_index.get(prefix, ()):
+                matches.setdefault(invocation, None)
+        covering_by_path[path] = tuple(matches)
     for path in sorted(all_candidates):
         candidate = all_candidates[path]
         if candidate.confidence == "low":
@@ -63,7 +105,7 @@ def reconcile_plan(
                 )
             )
             continue
-        if path not in set(collection.paths):
+        if path not in collected_paths:
             findings.append(
                 Finding(
                     path,
@@ -75,7 +117,20 @@ def reconcile_plan(
             )
             continue
 
-        covering = tuple(invocation for invocation in trace.invocations if invocation.covers(path))
+        if trace.relevant_incomplete:
+            findings.append(
+                Finding(
+                    path,
+                    FindingState.UNKNOWN,
+                    False,
+                    candidate.confidence,
+                    "the relevant CI command graph or selector semantics are incomplete",
+                    tuple(issue.code for issue in trace.issues if issue.relevant),
+                )
+            )
+            continue
+
+        covering = covering_by_path.get(path, ())
         if covering:
             evidence = tuple(" -> ".join(invocation.provenance) for invocation in covering)
             findings.append(
@@ -86,17 +141,6 @@ def reconcile_plan(
                     candidate.confidence,
                     "collected file is covered by a proven pytest CI scope",
                     evidence,
-                )
-            )
-        elif trace.relevant_incomplete:
-            findings.append(
-                Finding(
-                    path,
-                    FindingState.UNKNOWN,
-                    False,
-                    candidate.confidence,
-                    "the relevant CI command graph or selector semantics are incomplete",
-                    tuple(issue.code for issue in trace.issues if issue.relevant),
                 )
             )
         else:

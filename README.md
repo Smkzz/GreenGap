@@ -70,11 +70,16 @@ check workflow syntax. GreenGap establishes an independent denominator from
 repository candidates and real pytest collection, then traces the selection
 commands that CI plans to run. It does not guarantee that every test executes.
 
-The resolver follows common deterministic GitHub Actions paths including
-direct pytest, Python and coverage wrappers, local shell scripts, Make targets,
-npm/pnpm/yarn scripts, local composite actions, local reusable workflows, uv
-wrappers, tox configurations, and static matrix rows. Unsupported selectors or
-dynamic command boundaries become `UNKNOWN`.
+The resolver follows a deliberately small, deterministic subset of GitHub
+Actions paths including direct pytest, Python and coverage wrappers, explicitly
+invoked local shell scripts, Make targets, npm/pnpm/yarn scripts, local
+composite actions, local reusable workflows, uv wrappers, tox configurations,
+and static matrix rows. Unsupported selectors, conditions, shell control flow,
+unknown executables, external test actions, or dynamic command boundaries
+become `UNKNOWN`; an unrecognized command is never silently treated as “no
+tests.” The static shell subset is limited to Bash/sh command lines; PowerShell,
+cmd, non-allowlisted pipelines, branching, alternatives, and directory
+transitions are `UNKNOWN`.
 
 Current supported scope is GitHub Actions plus pytest in Plan mode. Go,
 Vitest/Jest, Cargo/nextest, Gradle/JUnit, CTest, TAP/prove, and runtime
@@ -90,8 +95,11 @@ executes repository Python code and is **not a security sandbox**. Run GreenGap
 inside an appropriate sandbox when analyzing an untrusted repository.
 
 Workspace evidence is bound to a SHA-256 fingerprint over relevant tracked and
-non-ignored files, including their paths and bytes. The fingerprint is checked
-before and after analysis; a changed workspace invalidates the result.
+non-ignored files, including their paths and bytes. Symlinks are represented by
+their link text rather than followed, repository paths are containment-checked,
+and file/count/total-byte budgets turn oversized or unsafe input into incomplete
+evidence. The fingerprint is checked before and after analysis; a changed
+workspace invalidates the result.
 
 ## Development
 

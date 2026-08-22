@@ -8,7 +8,13 @@ import subprocess
 from pathlib import Path
 
 from .model import WorkspaceSnapshot
-from .util import is_transient_path
+from .util import (
+    MAX_WORKSPACE_FILE_BYTES,
+    MAX_WORKSPACE_FILES,
+    MAX_WORKSPACE_TOTAL_BYTES,
+    is_transient_path,
+    read_limited_bytes,
+)
 
 
 def _git_paths(root: Path, timeout: float) -> tuple[tuple[str, ...], str] | None:
@@ -59,11 +65,22 @@ def workspace_snapshot(root: Path, timeout: float = 10.0) -> WorkspaceSnapshot:
 
     digest = hashlib.sha256()
     errors: list[str] = []
-    for relative in paths:
+    if len(paths) > MAX_WORKSPACE_FILES:
+        errors.append(
+            f"workspace contains {len(paths)} files; limit is {MAX_WORKSPACE_FILES}"
+        )
+    total_bytes = 0
+    for relative in paths[:MAX_WORKSPACE_FILES]:
         path = root / Path(relative)
         try:
-            data = path.read_bytes()
-        except OSError as exc:
+            data = read_limited_bytes(path, MAX_WORKSPACE_FILE_BYTES)
+            total_bytes += len(data)
+            if total_bytes > MAX_WORKSPACE_TOTAL_BYTES:
+                errors.append(
+                    f"workspace bytes exceed limit of {MAX_WORKSPACE_TOTAL_BYTES}"
+                )
+                break
+        except ValueError as exc:
             errors.append(f"{relative}: {exc}")
             data = b"<UNREADABLE>"
         encoded_path = relative.replace("\\", "/").encode("utf-8", errors="surrogateescape")
