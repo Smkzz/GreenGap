@@ -108,6 +108,18 @@ def test_relevant_incomplete_trace_downgrades_collected_file() -> None:
     assert not findings[0].blocking
 
 
+def test_relevant_incomplete_trace_downgrades_even_a_covering_scope() -> None:
+    trace = TraceResult(
+        invocations=(PytestInvocation("broad", provenance=("ci.yml",)),),
+        issues=(TraceIssue("DYNAMIC", "unknown selector"),),
+    )
+    findings = reconcile_plan(
+        (Candidate("tests/test_a.py", "high"),), collection("tests/test_a.py"), trace
+    )
+    assert findings[0].state == FindingState.UNKNOWN
+    assert not findings[0].blocking
+
+
 def test_unrelated_incomplete_trace_does_not_erase_broad_plan() -> None:
     trace = TraceResult(
         invocations=(PytestInvocation("broad", provenance=("good.yml",)),),

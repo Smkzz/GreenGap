@@ -1,0 +1,52 @@
+name: Release artifacts
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  artifacts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.13"
+      - name: Build and verify distributions
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+          sha256sum dist/* > SHA256SUMS
+      - name: Generate SBOM
+        uses: anchore/sbom-action@e11c554f704a0b820cbf8c51673f6945e0731532
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: "dist/*"
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: greengap-release-artifacts
+          path: |
+            dist/*
+            SHA256SUMS
+            sbom.spdx.json
+          if-no-files-found: error
+      - name: Attach release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* SHA256SUMS sbom.spdx.json --clobber

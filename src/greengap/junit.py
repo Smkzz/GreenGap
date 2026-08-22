@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import FindingState
+from .util import MAX_JUNIT_BYTES, MAX_JUNIT_CASES, read_limited_bytes
 
 
 @dataclass(frozen=True)
@@ -42,9 +43,14 @@ def _float_or_none(value: str | None) -> float | None:
 def parse_junit(path: Path) -> tuple[JUnitCase, ...]:
     """Parse common JUnit dialects without asserting cross-runner identity."""
 
-    tree = ET.parse(path)
+    try:
+        tree = ET.ElementTree(ET.fromstring(read_limited_bytes(path, MAX_JUNIT_BYTES)))
+    except ET.ParseError as exc:
+        raise ValueError(f"could not parse JUnit XML: {exc}") from exc
     cases: list[JUnitCase] = []
     for testcase in tree.iter("testcase"):
+        if len(cases) >= MAX_JUNIT_CASES:
+            raise ValueError(f"JUnit testcase count exceeds size limit of {MAX_JUNIT_CASES}")
         skipped = testcase.find("skipped")
         failure = testcase.find("failure")
         error = testcase.find("error")

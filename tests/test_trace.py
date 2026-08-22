@@ -81,8 +81,12 @@ def test_unsupported_selectors_are_unknown_not_broad(selector: str, tmp_path) ->
 def test_value_consuming_pytest_options_do_not_become_paths(option: str, tmp_path) -> None:
     write_files(tmp_path, {".github/workflows/ci.yml": workflow(f"pytest {option}")})
     result = trace_github_actions(tmp_path)
-    assert result.invocations[0].kind == "broad"
-    assert not result.invocations[0].paths
+    if option.split()[0] in {"-o", "-c"}:
+        assert not result.invocations
+        assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+    else:
+        assert result.invocations[0].kind == "broad"
+        assert not result.invocations[0].paths
 
 
 def test_make_target_and_make_c_are_resolved(tmp_path) -> None:
@@ -109,7 +113,7 @@ def test_make_variable_assignment_is_expanded(tmp_path) -> None:
     assert result.invocations[0].paths == ("tests/unit",)
 
 
-def test_shell_script_and_safe_prefix_are_resolved(tmp_path) -> None:
+def test_shell_script_with_static_prefix_branch_is_resolved(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -118,8 +122,9 @@ def test_shell_script_and_safe_prefix_are_resolved(tmp_path) -> None:
         },
     )
     result = trace_github_actions(tmp_path)
-    assert not result.issues
+    assert result.invocations
     assert result.invocations[0].paths == ("tests/_sync",)
+    assert not result.issues
 
 
 @pytest.mark.parametrize(

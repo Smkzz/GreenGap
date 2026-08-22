@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import posixpath
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -87,9 +88,19 @@ class PytestInvocation:
             return True
         if self.kind != "paths":
             return False
-        normalized = path.replace("\\", "/").lstrip("./")
+        normalized = posixpath.normpath(path.replace("\\", "/"))
+        if normalized == ".":
+            normalized = ""
+        if normalized == ".." or normalized.startswith("../"):
+            return False
         for selected in self.paths:
-            scope = selected.replace("\\", "/").lstrip("./").rstrip("/")
+            scope = posixpath.normpath(selected.replace("\\", "/"))
+            if scope == ".":
+                scope = ""
+            if scope == ".." or scope.startswith("../"):
+                continue
+            if not scope:
+                return True
             if normalized == scope or normalized.startswith(scope + "/"):
                 return True
         return False

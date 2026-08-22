@@ -157,6 +157,13 @@ def _verify(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is not None:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, OSError):
+        pass
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "verify":
