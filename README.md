@@ -1,0 +1,109 @@
+# GreenGap
+
+Find what your green CI never ran.
+
+Green CI does not prove that every test in a repository ran. A test can be
+present in source, absent from pytest collection, or collected but omitted by
+the actual CI command. GreenGap keeps those surfaces separate and compares
+them without turning missing evidence into a confident accusation.
+
+## What it checks
+
+The first release is a local, read-only Plan-mode analyzer for GitHub Actions
+and pytest:
+
+```text
+repository source candidates  ->  pytest collection  ->  CI pytest plan
+```
+
+For example, a repository may contain:
+
+```text
+tests/unit/test_fast.py
+tests/integration/test_database.py
+```
+
+while CI runs:
+
+```yaml
+run: pytest tests/unit
+```
+
+The normal CI status can still be green. GreenGap reports
+`test_database.py` as `NOT_PLANNED` when collection and the selection model
+are complete enough to prove that result.
+
+```powershell
+python -m pip install .
+greengap scan .
+greengap plan .
+greengap plan . --json
+```
+
+`greengap plan` exits with:
+
+* `0` when analysis is complete and there are no blocking findings;
+* `1` when one or more proven `NOT_PLANNED` files are found;
+* `2` when evidence is incomplete, the workspace changed, or the collection
+  environment is invalid.
+
+`UNKNOWN` never blocks. `UNREGISTERED` is initially non-blocking because it
+means a high-confidence source candidate was absent from completed pytest
+collection; it is not proof that the test cannot run.
+
+The model also contains `PLANNED`, `NOT_SEEN`, `SKIPPED`, `EXECUTED_PASS`, and
+`EXECUTED_FAIL` for future witness adapters. `greengap verify` can parse common
+JUnit evidence as groundwork, but it always says:
+
+```text
+identity reconciliation: NOT_CERTIFIED
+```
+
+JUnit names are not a universal identity standard, so v0.1 does not claim
+that a runtime testcase is the same object as a pytest collection node.
+
+## Why this is different
+
+Code coverage and JUnit dashboards describe code or tests that executed. Flaky
+test analytics describe observed failures and timing. Generic CI linters can
+check workflow syntax. GreenGap establishes an independent denominator from
+repository candidates and real pytest collection, then traces the selection
+commands that CI plans to run. It does not guarantee that every test executes.
+
+The resolver follows common deterministic GitHub Actions paths including
+direct pytest, Python and coverage wrappers, local shell scripts, Make targets,
+npm/pnpm/yarn scripts, local composite actions, local reusable workflows, uv
+wrappers, tox configurations, and static matrix rows. Unsupported selectors or
+dynamic command boundaries become `UNKNOWN`.
+
+Current supported scope is GitHub Actions plus pytest in Plan mode. Go,
+Vitest/Jest, Cargo/nextest, Gradle/JUnit, CTest, TAP/prove, and runtime
+capability witnesses are roadmap items, not supported v0.1 adapters.
+
+## Trust and safety model
+
+GreenGap does not execute workflow commands, shell scripts, Make recipes, npm
+scripts, or tox commands while tracing them. It only reads and statically
+resolves those files. It does execute the repository's real pytest collection
+command (`python -m pytest --collect-only -q`). Pytest collection imports and
+executes repository Python code and is **not a security sandbox**. Run GreenGap
+inside an appropriate sandbox when analyzing an untrusted repository.
+
+Workspace evidence is bound to a SHA-256 fingerprint over relevant tracked and
+non-ignored files, including their paths and bytes. The fingerprint is checked
+before and after analysis; a changed workspace invalidates the result.
+
+## Development
+
+```powershell
+python -m pip install -e ".[dev]"
+python -m pytest
+python -m ruff check src tests
+python -m mypy
+python -m compileall -q src tests
+python -m build
+```
+
+The scripts under `scripts/` provide portable qualification entry points for
+the pinned full-checkout and smaller upstream behavioral gates. They do not
+clone repositories, push mutations, publish packages, or create releases.

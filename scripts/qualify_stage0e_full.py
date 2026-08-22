@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Run the pinned five-checkout Plan-mode qualification without network writes.
+
+The script expects already materialized, dependency-ready checkouts under
+--root. It never clones, pushes, publishes, or changes an upstream repository.
+Mutation definitions live here because they are qualification fixtures, not
+product logic.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+PINNED = {
+    "outcome": ("python-trio/outcome", "03ed6218b08001877745bb1a9e180c8c5cf7c903"),
+    "requests": ("psf/requests", "8f8b212de8c2129d7954c6cd373762880375620a"),
+    "itsdangerous": ("pallets/itsdangerous", "672971d66a2ef9f85151e53283113f33d642dabd"),
+    "httpcore": ("encode/httpcore", "10a658221deb38a4c5b16db55ab554b0bf731707"),
+    "markupsafe": ("pallets/markupsafe", "b2e4d9c7687be25695fffbe93a37622302b24fb1"),
+}
+
+
+@dataclass(frozen=True)
+class Mutation:
+    path: str
+    old: bytes
+    new: bytes
+    expected: str
+    count: int = 1
+
+
+MUTATIONS = {
+    "outcome": Mutation("ci.sh", b"tests --cov", b"tests/test_async.py --cov", "test_sync.py"),
+    "requests": Mutation(
+        "Makefile",
+        b"python -m pytest tests --junitxml=report.xml",
+        b"python -m pytest tests/test_adapters.py --junitxml=report.xml",
+        "NOT_PLANNED",
+    ),
+    "itsdangerous": Mutation(
+        ".github/workflows/tests.yaml",
+        b"tox run -e ${{ matrix.tox || format('py{0}', matrix.python) }}",
+        b"tox run -e ${{ matrix.tox || format('py{0}', matrix.python) }} -- tests/test_itsdangerous/test_encoding.py",
+        "NOT_PLANNED",
+    ),
+    "httpcore": Mutation(
+        "scripts/test",
+        b"${PREFIX}coverage run -m pytest",
+        b"${PREFIX}coverage run -m pytest tests/_sync",
+        "NOT_PLANNED",
+    ),
+    "markupsafe": Mutation(
+        "pyproject.toml",
+        b"{replace = \"posargs\", default = [], extend = true}",
+        b"{replace = \"posargs\", default = [\"tests/test_escape.py\"], extend = true}",
+        "NOT_PLANNED",
+        count=2,
+    ),
+}
+
+
+def git(root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args], cwd=root, text=True, capture_output=True, check=False, timeout=30
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or f"git {' '.join(args)} failed")
+    return result.stdout.strip()
+
+
+def git_optional(root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args], cwd=root, text=True, capture_output=True, check=False, timeout=30
+    )
+    if result.returncode not in {0, 1}:
+        raise RuntimeError(result.stderr.strip() or f"git {' '.join(args)} failed")
+    return result.stdout.strip()
+
+
+def digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def validate_checkout(root: Path, expected: str) -> tuple[bool, str]:
+    try:
+        if git(root, "rev-parse", "HEAD") != expected:
+            return False, "HEAD does not match pinned revision"
+        if git(root, "status", "--porcelain"):
+            return False, "worktree is dirty"
+        sparse = git_optional(root, "config", "--get", "core.sparseCheckout")
+        if sparse.lower() in {"true", "1", "yes"}:
+            return False, "sparse checkout is enabled"
+        tracked = git(root, "ls-files", "-z")
+        missing = [item for item in tracked.split("\0") if item and not (root / item).exists()]
+        if missing:
+            return False, f"tracked paths are missing: {missing[:3]}"
+    except (OSError, RuntimeError) as exc:
+        return False, str(exc)
+    return True, ""
+
+
+def run_plan(repo: Path, python_executable: str) -> tuple[int, dict[str, Any]]:
+    project_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    source_path = str(project_root / "src")
+    env["PYTHONPATH"] = source_path + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    result = subprocess.run(
+        [python_executable, "-m", "greengap", "plan", str(repo), "--json"],
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=300,
+        check=False,
+    )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        payload = {"error": result.stderr or result.stdout}
+    return result.returncode, payload
+
+
+def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]:
+    expected = PINNED[name][1]
+    valid, reason = validate_checkout(root, expected)
+    if not valid:
+        return {"repository": name, "status": "ENVIRONMENT_INVALID", "reason": reason}
+    before_head = git(root, "rev-parse", "HEAD")
+    baseline_code, baseline = run_plan(root, python_executable)
+    if baseline_code != 0 or not baseline.get("complete") or baseline.get("blocker_count", 0):
+        status = (
+            "ENVIRONMENT_INVALID"
+            if not baseline.get("collection", {}).get("environment_valid", True)
+            else "FALSE_POSITIVE"
+        )
+        return {"repository": name, "status": status, "baseline": baseline}
+    mutation = MUTATIONS[name]
+    target = root / mutation.path
+    if not target.exists():
+        return {
+            "repository": name,
+            "status": "ENVIRONMENT_INVALID",
+            "reason": f"mutation file missing: {mutation.path}",
+        }
+    original = target.read_bytes()
+    original_hash = digest(target)
+    mutation_status = "NOT_RUN"
+    mutation_payload: dict[str, Any] = {}
+    try:
+        if mutation.old not in original:
+            return {
+                "repository": name,
+                "status": "UPSTREAM_DRIFT",
+                "reason": "expected mutation bytes not found",
+            }
+        target.write_bytes(original.replace(mutation.old, mutation.new, mutation.count))
+        code, mutation_payload = run_plan(root, python_executable)
+        mutation_status = (
+            "PASS" if code == 1 and mutation_payload.get("blocker_count", 0) > 0 else "FALSE_NEGATIVE"
+        )
+    finally:
+        target.write_bytes(original)
+    restored = (
+        digest(target) == original_hash
+        and git(root, "rev-parse", "HEAD") == before_head
+        and not git(root, "status", "--porcelain")
+    )
+    if not restored:
+        return {"repository": name, "status": "RESTORATION_FAILED", "mutation": mutation_status}
+    return {
+        "repository": name,
+        "status": "PASS" if mutation_status == "PASS" else mutation_status,
+        "baseline": baseline,
+        "mutation": mutation_payload,
+        "restored": restored,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("root", type=Path, help="directory containing the five named checkouts")
+    parser.add_argument("--python", default=sys.executable, help="interpreter with each checkout's test dependencies")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+    results = [qualify_one(name, args.root / name, args.python) for name in PINNED]
+    payload = {
+        "gate": "stage0e_full_checkout",
+        "attempted": len(results),
+        "environment_valid": sum(
+            item.get("status") not in {"ENVIRONMENT_INVALID", "UPSTREAM_DRIFT"} for item in results
+        ),
+        "passed": sum(item.get("status") == "PASS" for item in results),
+        "results": results,
+        "status": "PASS"
+        if len(results) == 5 and all(item.get("status") == "PASS" for item in results)
+        else "NOT_PASSED",
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"Stage 0E full checkout: {payload['status']}")
+        for item in results:
+            print(f"{item['repository']}: {item['status']}")
+    return 0 if payload["status"] == "PASS" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
