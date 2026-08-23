@@ -51,6 +51,7 @@ _KNOWN_SETUP_ACTIONS = {
     "deadsnakes/action",
     "docker/setup-qemu-action",
     "pypa/gh-action-pypi-publish",
+    "softprops/action-gh-release",
     "hynek/build-and-inspect-python-package",
     "zizmorcore/zizmor-action",
 }
