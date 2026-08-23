@@ -2,10 +2,14 @@
 
 ## Unreleased
 
-Remediation candidate hardens workflow-context, matrix, condition, shell,
-pytest-configuration, unknown-command, repository-boundary, and input-budget
-handling. It also expands adversarial regression coverage and release-assurance
-workflows. This candidate is not the existing public `v0.1.0` release.
+No unreleased changes.
+
+## 0.1.2 - 2026-08-23
+
+Certification release for the hardened Plan-mode evidence boundary. Includes
+workflow-context, matrix, condition, shell, pytest-configuration,
+unknown-command, repository-boundary, and input-budget hardening, expanded
+adversarial regression coverage, and release-assurance workflows.
 
 ## 0.1.0 - 2026-08-22
 
