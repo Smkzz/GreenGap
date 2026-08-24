@@ -851,7 +851,9 @@ def test_pytest_collection_cleans_descendants_after_parent_exit(tmp_path) -> Non
 
 
 def test_release_workflow_is_build_once_and_non_overwriting() -> None:
-    workflow_text = (Path(__file__).parents[1] / ".github/workflows/release.yml").read_text(
+    repository_root = Path(__file__).parents[1]
+    workflow_text = (repository_root / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    package_requirements = (repository_root / ".github/requirements-package.txt").read_text(
         encoding="utf-8"
     )
 
@@ -868,9 +870,9 @@ def test_release_workflow_is_build_once_and_non_overwriting() -> None:
     assert "gh release view" in workflow_text
     assert "refusing to replace or resume it" in workflow_text
     assert "gh release upload" in workflow_text
-    assert "pip==26.2.1" in workflow_text
-    assert "build==1.5.0" in workflow_text
-    assert "twine==7.0.0" in workflow_text
+    assert "python -m pip install --require-hashes -r .github/requirements-package.txt" in workflow_text
+    assert "build==1.5.0" in package_requirements
+    assert "twine==7.0.0" in package_requirements
 
 
 def test_sdist_manifest_includes_certification_support_files() -> None:
