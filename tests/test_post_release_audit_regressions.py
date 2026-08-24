@@ -596,6 +596,21 @@ unit integration:
     assert any(invocation.covers("tests/unit/test_one.py") for invocation in result.invocations)
 
 
+def test_static_make_setup_does_not_poison_a_later_test_command(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow("make", "pytest tests"),
+            "Makefile": "init:\n\tpython -m pip install -r requirements.txt\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert result.invocations
+    assert not any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+
+
 def test_arbitrary_python_c_is_not_assumed_to_be_harmless(tmp_path) -> None:
     write_files(
         tmp_path,

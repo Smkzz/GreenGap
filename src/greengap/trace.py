@@ -924,6 +924,11 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
         return UNKNOWN_SIDE_EFFECT
     first = _basename(core[0]).lower()
     arguments = tuple(token.lower() for token in core[1:])
+    if first == "uv":
+        # ``uv run`` may materialize an isolated environment, but its effect is
+        # modeled and transient for the repository selection graph.  Other uv
+        # commands can rewrite lock/configuration bytes and remain unknown.
+        return MODELED_STATE_TRANSITION if len(core) > 1 and core[1] == "run" else UNKNOWN_SIDE_EFFECT
     if first in {"pip", "pip3"}:
         if any(
             token in {"install", "uninstall", "wheel", "download"}
@@ -968,6 +973,93 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
     return UNKNOWN_SIDE_EFFECT
 
 
+def _make_workspace_effect(
+    tokens: tuple[str, ...], root: Path, cwd: Path, seen: frozenset[tuple[Path, str]] = frozenset()
+) -> WorkspaceState:
+    """Resolve simple Make prerequisites/recipes for workspace effects."""
+
+    make_cwd = cwd
+    targets: list[str] = []
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-C" and index + 1 < len(tokens):
+            try:
+                make_cwd = safe_resolve(root, tokens[index + 1], make_cwd)
+            except PathSafetyError:
+                return UNKNOWN_SIDE_EFFECT
+            index += 2
+            continue
+        if token.startswith("-C") and len(token) > 2:
+            try:
+                make_cwd = safe_resolve(root, token[2:], make_cwd)
+            except PathSafetyError:
+                return UNKNOWN_SIDE_EFFECT
+            index += 1
+            continue
+        if token.startswith("-") or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
+            index += 1
+            continue
+        targets.append(token)
+        index += 1
+    makefile = next(
+        (candidate for candidate in (make_cwd / "Makefile", make_cwd / "makefile", make_cwd / "GNUmakefile") if candidate.is_file()),
+        None,
+    )
+    if makefile is None:
+        return UNKNOWN_SIDE_EFFECT
+    try:
+        lines = read_limited_text(makefile, MAX_CONFIG_BYTES).splitlines()
+    except (OSError, ValueError, UnicodeError):
+        return UNKNOWN_SIDE_EFFECT
+    rules: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+    current: list[str] = []
+    for line in lines:
+        if line.startswith((" ", "\t")) and current:
+            for name in current:
+                prerequisites, recipes = rules[name]
+                rules[name] = (prerequisites, recipes + (line.strip(),))
+            continue
+        match = re.match(r"^([A-Za-z0-9_.%/-]+(?:\s+[A-Za-z0-9_.%/-]+)*)\s*:\s*(.*)$", line)
+        if match:
+            names = tuple(match.group(1).split())
+            prerequisites = tuple(match.group(2).split())
+            for name in names:
+                rules[name] = (prerequisites, ())
+            current = list(names)
+            continue
+        current = []
+    selected = targets or ([next(iter(rules))] if rules else [])
+    if not selected:
+        return UNKNOWN_SIDE_EFFECT
+    state: WorkspaceState = PROVEN_READ_ONLY
+    visited = set(seen)
+    def visit(target: str) -> WorkspaceState:
+        key = (make_cwd, target)
+        if key in visited:
+            return UNKNOWN_SIDE_EFFECT
+        rule = rules.get(target)
+        if rule is None:
+            return PROVEN_READ_ONLY
+        visited.add(key)
+        prerequisites, recipes = rule
+        result: WorkspaceState = PROVEN_READ_ONLY
+        for prerequisite in prerequisites:
+            result = _merge_workspace_state(result, visit(prerequisite))
+        for recipe in recipes:
+            recipe = recipe.lstrip("@").strip()
+            if not recipe or "$" in recipe:
+                result = _merge_workspace_state(result, UNKNOWN_SIDE_EFFECT)
+            else:
+                result = _merge_workspace_state(
+                    result, _workspace_effect_for_command(recipe, root, make_cwd)
+                )
+        return result
+    for target in selected:
+        state = _merge_workspace_state(state, visit(target))
+    return state
+
+
 def _workspace_effect_for_command(
     command: str,
     root: Path | None = None,
@@ -987,7 +1079,9 @@ def _workspace_effect_for_command(
         if root is not None and cwd is not None and core:
             raw_path = core[0]
             script_hint = raw_path.startswith(("./", "../")) or "/" in raw_path or "\\" in raw_path
-            if script_hint and (raw_path.lower().endswith(".sh") or "scripts/" in raw_path.replace("\\", "/")):
+            if _basename(core[0]).lower() in {"make", "gmake"}:
+                effect = _make_workspace_effect(core, root, cwd)
+            elif script_hint and (raw_path.lower().endswith(".sh") or "scripts/" in raw_path.replace("\\", "/")):
                 try:
                     script_path = safe_resolve(root, raw_path, cwd)
                 except PathSafetyError:
