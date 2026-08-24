@@ -43,11 +43,13 @@ def run_plan(
     timeout: float = 60.0,
     changed_files: tuple[str, ...] | None = None,
     event: str | None = None,
+    ref: str | None = None,
+    base_ref: str | None = None,
 ) -> PlanReport:
     root = root.resolve()
     snapshot = workspace_snapshot(root, timeout=min(timeout, 10.0))
     candidates, collection = scan_pytest(root, timeout)
-    trace = trace_github_actions(root, changed_files, event)
+    trace = trace_github_actions(root, changed_files, event, ref, base_ref)
     final = workspace_snapshot(root, timeout=min(timeout, 10.0))
     stable = snapshot.fingerprint == final.fingerprint and snapshot.complete and final.complete
     errors = list(snapshot.errors) + list(final.errors)
@@ -142,6 +144,16 @@ def _build_parser() -> argparse.ArgumentParser:
                 dest="event",
                 help="bind changed-file path filters to one GitHub event (for example pull_request)",
             )
+            command.add_argument(
+                "--ref",
+                dest="ref",
+                help="bind push branch/tag filters to a ref name or refs/* value",
+            )
+            command.add_argument(
+                "--base-ref",
+                dest="base_ref",
+                help="bind pull-request branch filters to the base branch",
+            )
     verify = subparsers.add_parser(
         "verify", help="parse JUnit evidence without claiming identity completeness"
     )
@@ -224,6 +236,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.timeout,
         tuple(args.changed_files) if args.changed_files else None,
         args.event,
+        args.ref,
+        args.base_ref,
     )
     if args.as_json:
         print(json_dump(plan_report.to_dict()), end="")

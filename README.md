@@ -39,12 +39,18 @@ greengap scan .
 greengap plan .
 greengap plan . --json
 greengap plan . --changed-file src/greengap/trace.py
+greengap plan . --event pull_request --base-ref main --changed-file src/greengap/trace.py
 ```
 
 When a workflow uses `paths` or `paths-ignore`, supply the actual changed-file
 set with one or more `--changed-file` options. Without that binding GreenGap
 records the workflow scope as `UNKNOWN`; it never infers a change set and never
 turns incomplete evidence into `NOT_PLANNED`.
+
+When a workflow uses event, branch, tag, or path filters, bind the actual event
+context as well. Use `--event push --ref main` for a push, or
+`--event pull_request --base-ref main` for a pull request. GreenGap records
+`UNKNOWN` when a filtered workflow cannot be evaluated without that context.
 
 `greengap plan` exits with:
 

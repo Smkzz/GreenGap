@@ -26,6 +26,15 @@ PINNED = {
     "httpcore": ("encode/httpcore", "10a658221deb38a4c5b16db55ab554b0bf731707"),
     "markupsafe": ("pallets/markupsafe", "b2e4d9c7687be25695fffbe93a37622302b24fb1"),
 }
+# Bind pull-request branch filters to the primary base branch of each pinned
+# checkout.  Without this context a filtered workflow is intentionally UNKNOWN.
+BASE_REFS = {
+    "outcome": "main",
+    "requests": "main",
+    "itsdangerous": "main",
+    "httpcore": "master",
+    "markupsafe": "main",
+}
 
 
 @dataclass(frozen=True)
@@ -149,7 +158,7 @@ def validate_checkout(root: Path, expected: str) -> tuple[bool, str]:
 
 
 def run_plan(
-    repo: Path, python_executable: str, changed_files: tuple[str, ...]
+    repo: Path, python_executable: str, changed_files: tuple[str, ...], base_ref: str
 ) -> tuple[int, dict[str, Any]]:
     project_root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
@@ -158,7 +167,7 @@ def run_plan(
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
     command = [python_executable, "-m", "greengap", "plan", str(repo), "--json"]
-    command.extend(("--event", "pull_request"))
+    command.extend(("--event", "pull_request", "--base-ref", base_ref))
     for changed_file in changed_files:
         command.extend(("--changed-file", changed_file))
     result = subprocess.run(
@@ -184,7 +193,8 @@ def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]
     before_head = git(root, "rev-parse", "HEAD")
     mutation = MUTATIONS[name]
     changed_files = (mutation.path,)
-    baseline_code, baseline = run_plan(root, python_executable, changed_files)
+    base_ref = BASE_REFS[name]
+    baseline_code, baseline = run_plan(root, python_executable, changed_files, base_ref)
     if baseline_code != 0 or not baseline.get("complete") or baseline.get("blocker_count", 0):
         status = (
             "ENVIRONMENT_INVALID"
@@ -211,7 +221,7 @@ def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]
                 "reason": "expected mutation bytes not found",
             }
         target.write_bytes(original.replace(mutation.old, mutation.new, mutation.count))
-        code, mutation_payload = run_plan(root, python_executable, changed_files)
+        code, mutation_payload = run_plan(root, python_executable, changed_files, base_ref)
         mutation_status = (
             "PASS" if code == 1 and mutation_payload.get("blocker_count", 0) > 0 else "FALSE_NEGATIVE"
         )

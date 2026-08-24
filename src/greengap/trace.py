@@ -12,7 +12,7 @@ import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import yaml
 
@@ -87,6 +87,7 @@ _SAFE_SETUP_COMMANDS = {
     "set",
     "sha256sum",
     "sort",
+    "test",
     "touch",
     "true",
     "uname",
@@ -105,6 +106,23 @@ _SAFE_PYTHON_MODULES = {
     "twine",
     "zipfile",
 }
+
+WorkspaceState = Literal[
+    "PROVEN_READ_ONLY",
+    "MODELED_STATE_TRANSITION",
+    "UNKNOWN_SIDE_EFFECT",
+]
+PROVEN_READ_ONLY: WorkspaceState = "PROVEN_READ_ONLY"
+MODELED_STATE_TRANSITION: WorkspaceState = "MODELED_STATE_TRANSITION"
+UNKNOWN_SIDE_EFFECT: WorkspaceState = "UNKNOWN_SIDE_EFFECT"
+
+
+def _merge_workspace_state(left: WorkspaceState, right: WorkspaceState) -> WorkspaceState:
+    if UNKNOWN_SIDE_EFFECT in (left, right):
+        return UNKNOWN_SIDE_EFFECT
+    if MODELED_STATE_TRANSITION in (left, right):
+        return MODELED_STATE_TRANSITION
+    return PROVEN_READ_ONLY
 @dataclass(frozen=True)
 class _Context:
     cwd: Path
@@ -113,7 +131,7 @@ class _Context:
     inputs: dict[str, Any]
     provenance: tuple[str, ...]
     event_context: str | None = None
-    workspace_changed: bool = False
+    workspace_state: WorkspaceState = PROVEN_READ_ONLY
 
 
 def _scalar(value: Any) -> str | None:
@@ -877,6 +895,123 @@ def _script_contains_file_mutation(command: str) -> bool:
     return False
 
 
+def _command_core_tokens(tokens: tuple[str, ...]) -> tuple[str, ...]:
+    """Remove shell environment/prefix wrappers before classifying an effect."""
+
+    remaining = list(tokens)
+    while remaining and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", remaining[0]):
+        remaining.pop(0)
+    if remaining and _basename(remaining[0]) == "env":
+        remaining.pop(0)
+        while remaining and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", remaining[0]):
+            remaining.pop(0)
+    while remaining and _basename(remaining[0]) in {"command", "exec", "time"}:
+        remaining.pop(0)
+    if remaining and _basename(remaining[0]) == "cross-env":
+        remaining.pop(0)
+        while remaining and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", remaining[0]):
+            remaining.pop(0)
+    return tuple(remaining)
+
+
+def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> WorkspaceState:
+    core = _command_core_tokens(tokens)
+    if not core:
+        return PROVEN_READ_ONLY
+    if _contains_runner_hint(shlex.join(core)):
+        return MODELED_STATE_TRANSITION
+    if _segment_mutates_files(segment, tokens):
+        return UNKNOWN_SIDE_EFFECT
+    first = _basename(core[0]).lower()
+    arguments = tuple(token.lower() for token in core[1:])
+    if first in {"pip", "pip3"}:
+        if any(
+            token in {"install", "uninstall", "wheel", "download"}
+            for token in arguments
+        ) and any(
+            token in {".", "./", "-e", "--editable"} or token.startswith(("./", ".\\"))
+            for token in arguments
+        ):
+            return UNKNOWN_SIDE_EFFECT
+        return MODELED_STATE_TRANSITION
+    if first.startswith("python") or first == "py":
+        module_index = next(
+            (index for index, token in enumerate(core[:-1]) if token == "-m"), None
+        )
+        if module_index is not None:
+            module = _basename(core[module_index + 1]).lower()
+            module_args = tuple(token.lower() for token in core[module_index + 2 :])
+            if module in {"build", "compileall", "venv"}:
+                return UNKNOWN_SIDE_EFFECT
+            if module in {"pip", "pip_audit"}:
+                if module == "pip" and any(
+                    token in {"install", "uninstall", "wheel", "download"}
+                    for token in module_args
+                ) and any(
+                    token in {".", "./", "-e", "--editable"}
+                    or token.startswith(("./", ".\\"))
+                    for token in module_args
+                ):
+                    return UNKNOWN_SIDE_EFFECT
+                return MODELED_STATE_TRANSITION
+        return MODELED_STATE_TRANSITION
+    if first in {"npm", "pnpm", "yarn"}:
+        if any(token in {"install", "i", "ci", "link", "build"} for token in arguments):
+            return UNKNOWN_SIDE_EFFECT
+        return MODELED_STATE_TRANSITION
+    if first == "git" and len(core) > 1:
+        if _basename(core[1]) in _PRETEST_MUTATING_GIT_COMMANDS:
+            return UNKNOWN_SIDE_EFFECT
+        return MODELED_STATE_TRANSITION
+    if _safe_setup_command(core):
+        return MODELED_STATE_TRANSITION
+    return UNKNOWN_SIDE_EFFECT
+
+
+def _workspace_effect_for_command(
+    command: str,
+    root: Path | None = None,
+    cwd: Path | None = None,
+    seen: frozenset[Path] = frozenset(),
+) -> WorkspaceState:
+    """Classify setup effects; unknown commands are never treated as read-only."""
+
+    state: WorkspaceState = PROVEN_READ_ONLY
+    for segment in _shell_segments(command):
+        tokens = _tokens(segment)
+        if tokens is None:
+            return UNKNOWN_SIDE_EFFECT
+        if not tokens:
+            continue
+        core = _command_core_tokens(tokens)
+        if root is not None and cwd is not None and core:
+            raw_path = core[0]
+            script_hint = raw_path.startswith(("./", "../")) or "/" in raw_path or "\\" in raw_path
+            if script_hint and (raw_path.lower().endswith(".sh") or "scripts/" in raw_path.replace("\\", "/")):
+                try:
+                    script_path = safe_resolve(root, raw_path, cwd)
+                except PathSafetyError:
+                    return UNKNOWN_SIDE_EFFECT
+                if script_path in seen:
+                    return UNKNOWN_SIDE_EFFECT
+                if script_path.is_file():
+                    try:
+                        content = read_limited_text(script_path, MAX_CONFIG_BYTES)
+                    except (OSError, ValueError, UnicodeError):
+                        return UNKNOWN_SIDE_EFFECT
+                    effect = _workspace_effect_for_command(
+                        content, root, script_path.parent, seen | {script_path}
+                    )
+                else:
+                    effect = UNKNOWN_SIDE_EFFECT
+            else:
+                effect = _workspace_effect_for_tokens(segment, tokens)
+        else:
+            effect = _workspace_effect_for_tokens(segment, tokens)
+        state = _merge_workspace_state(state, effect)
+    return state
+
+
 def _contains_arbitrary_python_code(command: str) -> bool:
     for segment in _shell_segments(command):
         tokens = _tokens(segment)
@@ -896,6 +1031,19 @@ def _workflow_has_path_filters(events: Any) -> bool:
         return False
     return any(
         isinstance(config, dict) and any(key in config for key in ("paths", "paths-ignore"))
+        for config in events.values()
+    )
+
+
+def _workflow_has_ref_filters(events: Any) -> bool:
+    if not isinstance(events, dict):
+        return False
+    return any(
+        isinstance(config, dict)
+        and any(
+            key in config
+            for key in ("branches", "branches-ignore", "tags", "tags-ignore")
+        )
         for config in events.values()
     )
 
@@ -943,9 +1091,7 @@ def _github_path_pattern_regex(pattern: str) -> str | None:
                     pieces.append(".*")
                 continue
             pieces.append("[^/]*")
-        elif character == "?":
-            pieces.append("[^/]")
-        elif character in "[]{}()":
+        elif character in "?[]{}()+":
             return None
         else:
             pieces.append(re.escape(character))
@@ -987,6 +1133,81 @@ def _path_filter_runs(config: dict[str, Any], changed_files: tuple[str, ...]) ->
     if any(value is None for value in ignored):
         return None
     return any(not value for value in ignored)
+
+
+def _ref_name(value: str, *, tag: bool = False) -> str:
+    normalized = value.strip().replace("\\", "/")
+    prefixes = ("refs/tags/",) if tag else ("refs/heads/", "refs/tags/")
+    for prefix in prefixes:
+        if normalized.startswith(prefix):
+            return normalized[len(prefix) :]
+    return normalized
+
+
+def _ref_filter_runs(
+    config: dict[str, Any], event_context: str, ref: str | None, base_ref: str | None
+) -> bool | None:
+    """Evaluate branch/tag filters only when the triggering ref is bound."""
+
+    branch_keys = ("branches", "branches-ignore")
+    tag_keys = ("tags", "tags-ignore")
+    has_branches = any(key in config for key in branch_keys)
+    has_tags = any(key in config for key in tag_keys)
+    if not has_branches and not has_tags:
+        return True
+    if has_branches and all(key in config for key in branch_keys):
+        return None
+    if has_tags and all(key in config for key in tag_keys):
+        return None
+
+    if event_context == "pull_request":
+        if has_tags:
+            return None
+        value = base_ref
+        is_tag = False
+    elif event_context == "push":
+        if ref is None:
+            return None
+        is_tag = ref.replace("\\", "/").startswith("refs/tags/")
+        value = _ref_name(ref, tag=is_tag)
+        if is_tag and has_branches:
+            return False
+        if not is_tag and has_tags:
+            return False
+    else:
+        return None
+    if value is None:
+        return None
+
+    if is_tag:
+        patterns = config.get("tags")
+        ignored = config.get("tags-ignore")
+    else:
+        patterns = config.get("branches")
+        ignored = config.get("branches-ignore")
+    if patterns is not None:
+        return _path_patterns_match(value, patterns)
+    if ignored is not None:
+        ignored_match = _path_patterns_match(value, ignored)
+        return None if ignored_match is None else not ignored_match
+    return None
+
+
+def _workflow_filter_runs(
+    config: dict[str, Any],
+    event_context: str,
+    changed_files: tuple[str, ...] | None,
+    ref: str | None,
+    base_ref: str | None,
+) -> bool | None:
+    ref_result = _ref_filter_runs(config, event_context, ref, base_ref)
+    if ref_result is False or ref_result is None:
+        return ref_result
+    if "paths" in config or "paths-ignore" in config:
+        if changed_files is None:
+            return None
+        return _path_filter_runs(config, changed_files)
+    return True
 
 
 def _workflow_runs_for_changes(
@@ -1154,9 +1375,13 @@ class _Resolver:
         root: Path,
         changed_files: Sequence[str] | None = None,
         event_context: str | None = None,
+        ref: str | None = None,
+        base_ref: str | None = None,
     ) -> None:
         self.root = root.resolve()
         self.event_context = event_context
+        self.ref = ref
+        self.base_ref = base_ref
         self.invocations: list[PytestInvocation] = []
         self.issues: list[TraceIssue] = []
         self.workflows: list[str] = []
@@ -1394,6 +1619,8 @@ class _Resolver:
             matrix=changes.get("matrix", {}),
             inputs=changes.get("inputs", {}),
             provenance=changes.get("provenance", ()),
+            event_context=changes.get("event_context"),
+            workspace_state=changes.get("workspace_state", PROVEN_READ_ONLY),
         )
 
     def trace(self) -> TraceResult:
@@ -1565,12 +1792,96 @@ class _Resolver:
                 f"trigger declaration in {relative} is not statically representable",
                 context.provenance,
             )
+        selected_event: tuple[bool, dict[str, Any]] | None = None
+        if self.event_context is not None and events_present:
+            selected_event = _event_config(raw_events, self.event_context)
+            if selected_event is None:
+                self.issue(
+                    "WORKFLOW_EVENT_UNKNOWN",
+                    "workflow trigger declaration cannot be matched to the bound event",
+                    context.provenance,
+                )
+                self._workflow_stack.remove(path)
+                return
+            present, _ = selected_event
+            if not present:
+                # A workflow declared for another event is not part of this plan.
+                self._workflow_stack.remove(path)
+                return
         declared_event = event_signature or ("unknown" if events_present else "implicit")
         effective_event = context.event_context or declared_event
         self._workflow_events.setdefault(relative, set()).add(effective_event)
         event_kinds = _event_kinds(raw_events) if events_present else {"implicit"}
         self._workflow_event_kinds.setdefault(relative, set()).update(event_kinds or {"unknown"})
-        if _workflow_has_path_filters(raw_events):
+        selected_config = selected_event[1] if selected_event is not None else None
+        if self.event_context is not None and selected_config is not None:
+            filter_result = _workflow_filter_runs(
+                selected_config,
+                self.event_context,
+                self.changed_files,
+                self.ref,
+                self.base_ref,
+            )
+            has_filters = any(
+                key in selected_config
+                for key in ("paths", "paths-ignore", "branches", "branches-ignore", "tags", "tags-ignore")
+            )
+            if has_filters and filter_result is None:
+                filter_code = (
+                    "WORKFLOW_PATH_FILTER_UNKNOWN"
+                    if any(key in selected_config for key in ("paths", "paths-ignore"))
+                    else "WORKFLOW_EVENT_FILTER_UNKNOWN"
+                )
+                self.issue(
+                    filter_code,
+                    "workflow branch, tag, or path filters require bound event context",
+                    context.provenance,
+                )
+                self._workflow_stack.remove(path)
+                return
+            if has_filters and not filter_result:
+                self._workflow_stack.remove(path)
+                return
+        elif self.event_context is None and _workflow_has_ref_filters(raw_events):
+            single_event: tuple[str, dict[str, Any]] | None = None
+            if isinstance(raw_events, str):
+                single_event = (raw_events, {})
+            elif isinstance(raw_events, dict) and len(raw_events) == 1:
+                name, config = next(iter(raw_events.items()))
+                if isinstance(name, str) and (config is None or isinstance(config, dict)):
+                    single_event = (name, config or {})
+            if single_event is None:
+                self.issue(
+                    "WORKFLOW_EVENT_FILTER_UNKNOWN",
+                    "workflow branch or tag filters require one bound event and ref",
+                    context.provenance,
+                )
+                self._workflow_stack.remove(path)
+                return
+            filter_result = _workflow_filter_runs(
+                single_event[1],
+                single_event[0],
+                self.changed_files,
+                self.ref,
+                self.base_ref,
+            )
+            if filter_result is None:
+                filter_code = (
+                    "WORKFLOW_PATH_FILTER_UNKNOWN"
+                    if any(key in single_event[1] for key in ("paths", "paths-ignore"))
+                    else "WORKFLOW_EVENT_FILTER_UNKNOWN"
+                )
+                self.issue(
+                    filter_code,
+                    "workflow branch, tag, or path filters require bound context",
+                    context.provenance,
+                )
+                self._workflow_stack.remove(path)
+                return
+            if not filter_result:
+                self._workflow_stack.remove(path)
+                return
+        elif _workflow_has_path_filters(raw_events):
             if self.changed_files is None:
                 self._workflow_path_filters.add(relative)
             else:
@@ -1755,13 +2066,13 @@ class _Resolver:
         context: _Context,
         default_shell: str | None = "bash",
         default_cwd: Path | None = None,
-    ) -> None:
+    ) -> WorkspaceState:
         if not isinstance(steps, list):
             self.issue(
                 "STEPS_UNKNOWN", "workflow steps are not statically enumerable", context.provenance
             )
-            return
-        workspace_changed = context.workspace_changed
+            return UNKNOWN_SIDE_EFFECT
+        workspace_state = context.workspace_state
         for index, raw_step in enumerate(steps):
             if not isinstance(raw_step, dict):
                 self.issue(
@@ -1796,15 +2107,20 @@ class _Resolver:
                     relevant=condition_relevant,
                 )
                 raw_run = _scalar(raw_step.get("run")) if "run" in raw_step else None
-                if raw_run is not None and _script_contains_file_mutation(raw_run):
-                    workspace_changed = True
+                if raw_run is not None:
+                    workspace_state = _merge_workspace_state(
+                        workspace_state,
+                        _workspace_effect_for_command(
+                            raw_run, self.root, context.cwd
+                        ),
+                    )
                 continue
             step_env, step_env_complete = _env_mapping(raw_step.get("env"), context)
             step_context = replace(
                 context,
                 env={**context.env, **step_env},
                 provenance=provenance,
-                workspace_changed=workspace_changed,
+                workspace_state=workspace_state,
             )
             if not step_env_complete:
                 self.issue(
@@ -1872,22 +2188,37 @@ class _Resolver:
                     )
                     continue
                 command_context = replace(step_context, cwd=cwd)
-                if workspace_changed and _command_may_run_tests(command):
+                command_effect = _workspace_effect_for_command(command, self.root, cwd)
+                command_has_runner = any(
+                    _contains_runner_hint(segment) for segment in _shell_segments(command)
+                )
+                if workspace_state == UNKNOWN_SIDE_EFFECT and _command_may_run_tests(command):
                     self.issue(
                         "WORKSPACE_MUTATION_UNKNOWN",
                         "a previous workflow step may have changed workspace bytes before this test command",
                         provenance,
+                        relevant=command_has_runner or _relevant_text(command),
+                    )
+                elif command_effect == UNKNOWN_SIDE_EFFECT and command_has_runner:
+                    self.issue(
+                        "PRETEST_MUTATION_UNKNOWN",
+                        "an unknown setup effect precedes or contains this test command",
+                        provenance,
                     )
                 else:
                     self._resolve_command(command, command_context, 0, shell=shell)
-                if _script_contains_file_mutation(command):
-                    workspace_changed = True
+                workspace_state = _merge_workspace_state(workspace_state, command_effect)
             elif "uses" in raw_step:
                 uses = raw_step.get("uses")
                 if isinstance(uses, str) and uses.startswith("./"):
                     action_dir = self._resolve_path(uses[2:], self.root, provenance)
                     if action_dir is not None:
-                        self._resolve_composite(action_dir, step_context, default_shell)
+                        nested_state = self._resolve_composite(
+                            action_dir, replace(step_context, workspace_state=workspace_state), default_shell
+                        )
+                        workspace_state = _merge_workspace_state(workspace_state, nested_state)
+                    else:
+                        workspace_state = UNKNOWN_SIDE_EFFECT
                 elif isinstance(uses, str):
                     action_name = uses.split("@", 1)[0].lower()
                     if action_name == "actions/checkout":
@@ -1898,7 +2229,7 @@ class _Resolver:
                                 "actions/checkout inputs are not statically enumerable",
                                 provenance,
                             )
-                            workspace_changed = True
+                            workspace_state = UNKNOWN_SIDE_EFFECT
                         else:
                             workspace_inputs = {
                                 "repository",
@@ -1925,7 +2256,7 @@ class _Resolver:
                                     )
                                 self.issue(code, message, provenance)
                             if configured:
-                                workspace_changed = True
+                                workspace_state = UNKNOWN_SIDE_EFFECT
                     if action_name in _WORKSPACE_RESTORING_ACTIONS:
                         raw_with = raw_step.get("with")
                         effect = _workspace_restore_effect(
@@ -1940,7 +2271,11 @@ class _Resolver:
                                 f"{action_name} may restore files into the analyzed workspace",
                                 provenance,
                             )
-                            workspace_changed = True
+                            workspace_state = UNKNOWN_SIDE_EFFECT
+                        else:
+                            workspace_state = _merge_workspace_state(
+                                workspace_state, MODELED_STATE_TRANSITION
+                            )
                     if action_name == "pre-commit-ci/lite-action" and self._precommit_config_is_non_test():
                         continue
                     if action_name not in _KNOWN_SETUP_ACTIONS:
@@ -1949,16 +2284,19 @@ class _Resolver:
                             f"external action {uses!r} is not modeled as a setup-only action",
                             provenance,
                         )
+                        workspace_state = UNKNOWN_SIDE_EFFECT
                 else:
                     self.issue(
                         "EXTERNAL_ACTION_UNKNOWN",
                         f"action in step {label} is not statically known",
                         provenance,
                     )
+                    workspace_state = UNKNOWN_SIDE_EFFECT
+        return workspace_state
 
     def _resolve_composite(
         self, action_dir: Path, context: _Context, default_shell: str | None
-    ) -> None:
+    ) -> WorkspaceState:
         action_file = next(
             (
                 candidate
@@ -1973,7 +2311,7 @@ class _Resolver:
                 f"local composite action {action_dir} is missing action.yml",
                 context.provenance,
             )
-            return
+            return UNKNOWN_SIDE_EFFECT
         try:
             data = yaml.safe_load(read_limited_text(action_file, MAX_CONFIG_BYTES))
         except ValueError as exc:
@@ -1982,14 +2320,14 @@ class _Resolver:
                 f"could not parse {action_file}: {exc}",
                 context.provenance,
             )
-            return
+            return UNKNOWN_SIDE_EFFECT
         except (OSError, yaml.YAMLError, RecursionError, MemoryError) as exc:
             self.issue(
                 "COMPOSITE_ACTION_PARSE_ERROR",
                 f"could not parse {action_file}: {exc}",
                 context.provenance,
             )
-            return
+            return UNKNOWN_SIDE_EFFECT
         runs = data.get("runs") if isinstance(data, dict) else None
         if not isinstance(runs, dict) or runs.get("using") != "composite":
             self.issue(
@@ -1997,8 +2335,8 @@ class _Resolver:
                 f"{action_file} is not a static composite action",
                 context.provenance,
             )
-            return
-        self._resolve_steps(
+            return UNKNOWN_SIDE_EFFECT
+        return self._resolve_steps(
             runs.get("steps", []),
             replace(
                 context,
@@ -3055,5 +3393,7 @@ def trace_github_actions(
     root: Path,
     changed_files: Sequence[str] | None = None,
     event: str | None = None,
+    ref: str | None = None,
+    base_ref: str | None = None,
 ) -> TraceResult:
-    return _Resolver(root, changed_files, event).trace()
+    return _Resolver(root, changed_files, event, ref, base_ref).trace()

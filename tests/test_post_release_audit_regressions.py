@@ -31,6 +31,18 @@ jobs:
 """
 
 
+def two_step_workflow(first: str, second: str) -> str:
+    return f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: {first}
+      - run: {second}
+"""
+
+
 def test_pretest_file_mutation_invalidates_the_selection_graph(tmp_path) -> None:
     write_files(
         tmp_path,
@@ -87,13 +99,11 @@ def test_helper_script_mutation_invalidates_the_selection_graph(tmp_path) -> Non
     assert result.relevant_incomplete
 
 
-def test_repository_install_helper_is_resolved_instead_of_treated_as_coreutils(
-    tmp_path,
-) -> None:
+def test_repository_install_helper_side_effects_invalidate_later_test_inference(tmp_path) -> None:
     write_files(
         tmp_path,
         {
-            ".github/workflows/ci.yml": workflow("scripts/install\npytest tests"),
+            ".github/workflows/ci.yml": two_step_workflow("scripts/install", "pytest tests"),
             "scripts/install": "#!/bin/sh\npython -m venv .venv\n",
             "tests/test_a.py": "def test_a():\n    assert True\n",
         },
@@ -101,8 +111,74 @@ def test_repository_install_helper_is_resolved_instead_of_treated_as_coreutils(
 
     result = trace_github_actions(tmp_path)
 
-    assert len(result.invocations) == 1
-    assert not any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert not result.invocations
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+
+
+def test_arbitrary_setup_command_invalidates_later_test_inference(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(
+                "node scripts/generate-tests.js", "pytest tests"
+            ),
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_package_install_from_repository_invalidates_later_test_inference(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(
+                "python -m pip install .", "pytest tests"
+            ),
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_nested_composite_workspace_effect_propagates_to_parent(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/prepare
+      - run: pytest tests
+""",
+            ".github/actions/prepare/action.yml": """name: prepare
+description: prepare workspace
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: rm tests/test_a.py
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
 
 
 @pytest.mark.parametrize(
@@ -397,6 +473,80 @@ jobs:
     assert not pull_request.invocations
     assert not any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in pull_request.issues)
     assert push.invocations
+
+
+def test_event_context_excludes_workflows_for_other_events(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="pull_request")
+
+    assert not result.invocations
+    assert not result.relevant_incomplete
+
+
+def test_branch_filters_require_bound_ref_context(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on:
+  push:
+    branches:
+      - main
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest
+""",
+        },
+    )
+
+    unbound = trace_github_actions(tmp_path, event="push")
+    bound = trace_github_actions(tmp_path, event="push", ref="main")
+    excluded = trace_github_actions(tmp_path, event="push", ref="feature")
+
+    assert not unbound.invocations
+    assert any(issue.code == "WORKFLOW_EVENT_FILTER_UNKNOWN" for issue in unbound.issues)
+    assert bound.invocations
+    assert not excluded.invocations
+
+
+def test_unsupported_question_mark_glob_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on:
+  pull_request:
+    paths:
+      - '*.jsx?'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, ("page.js",), event="pull_request")
+
+    assert not result.invocations
+    assert any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
 
 
 def test_npm_test_includes_the_pretest_lifecycle_script(tmp_path) -> None:
