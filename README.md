@@ -38,7 +38,13 @@ python -m pip install .
 greengap scan .
 greengap plan .
 greengap plan . --json
+greengap plan . --changed-file src/greengap/trace.py
 ```
+
+When a workflow uses `paths` or `paths-ignore`, supply the actual changed-file
+set with one or more `--changed-file` options. Without that binding GreenGap
+records the workflow scope as `UNKNOWN`; it never infers a change set and never
+turns incomplete evidence into `NOT_PLANNED`.
 
 `greengap plan` exits with:
 

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import ast
 import configparser
+import fnmatch
 import itertools
 import json
 import re
 import shlex
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
@@ -269,23 +272,35 @@ def _event_kinds_overlap(left: str, right: str) -> bool:
 
 
 def _contains_runner_hint(value: str) -> bool:
-    lowered = value.lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "pytest",
-            "coverage run",
-            " tox",
-            "tox ",
-            "nox",
-            "invoke",
-            "just test",
-            "make test",
-            "npm test",
-            "pnpm test",
-            "yarn test",
+    tokens = _tokens(value)
+    if not tokens:
+        return False
+    first = _basename(tokens[0])
+    if first in {"pytest", "pytest.exe", "tox", "tox.exe", "nox", "invoke", "pre-commit", "pre_commit"}:
+        return True
+    if first.endswith("pytest") or first.endswith("pytest.exe"):
+        return True
+    if first.endswith("coverage") or first.endswith("coverage.exe"):
+        return len(tokens) > 1 and tokens[1] == "run"
+    if first in {"make", "gmake"}:
+        return any(token.lower() in {"test", "tests", "check", "check-all"} for token in tokens[1:])
+    if first == "coverage":
+        return len(tokens) > 1 and tokens[1] == "run"
+    if first.startswith("python") or first == "py":
+        return any(
+            index + 1 < len(tokens)
+            and token == "-m"
+            and _basename(tokens[index + 1]) in {"pytest", "pre-commit", "pre_commit"}
+            for index, token in enumerate(tokens[:-1])
         )
-    )
+    if first in {"npm", "pnpm", "yarn"}:
+        arguments = tokens[1:]
+        return "test" in arguments or (
+            len(arguments) > 1 and arguments[0] == "run" and arguments[1] == "test"
+        )
+    if first == "just":
+        return any(token.lower() in {"test", "tests", "check", "check-all"} for token in tokens[1:])
+    return False
 
 
 def _has_unquoted(command: str, needle: str) -> bool:
@@ -318,11 +333,7 @@ def _has_unquoted(command: str, needle: str) -> bool:
 
 
 def _runner_segment_count(command: str) -> int:
-    return sum(
-        _contains_runner_hint(piece)
-        for line in command.splitlines()
-        for piece in re.split(r"\s*;\s*", line)
-    )
+    return sum(_contains_runner_hint(piece) for piece in _shell_segments(command))
 
 
 def _has_unsafe_redirection(command: str) -> bool:
@@ -336,9 +347,10 @@ def _has_unsafe_redirection(command: str) -> bool:
 def _shell_control_flow_unknown(command: str) -> bool:
     """Reject branches/alternatives that can change whether a test command runs."""
 
-    if any(_has_unquoted(command, operator) for operator in ("&&", "||")) and _contains_runner_hint(command):
+    runner_present = any(_contains_runner_hint(piece) for piece in _shell_segments(command))
+    if any(_has_unquoted(command, operator) for operator in ("&&", "||")) and runner_present:
         return True
-    if _has_unsafe_redirection(command) and _contains_runner_hint(command):
+    if _has_unsafe_redirection(command) and runner_present:
         return True
     if _runner_segment_count(command) > 1:
         return True
@@ -352,7 +364,7 @@ def _shell_control_flow_unknown(command: str) -> bool:
         for line in command.splitlines()
     ):
         return True
-    if re.search(r"(?m)(?:^|;)\s*cd\b[^;\n]*(?:;|$)", command) and _contains_runner_hint(command):
+    if re.search(r"(?m)(?:^|;)\s*cd\b[^;\n]*(?:;|$)", command) and runner_present:
         return True
     lines = command.splitlines()
     for index, line in enumerate(lines):
@@ -534,6 +546,45 @@ def _matrix_rows(spec: Any) -> tuple[list[dict[str, Any]] | None, str | None]:
 
 
 def _shell_segments(command: str) -> tuple[str, ...]:
+    def split_operators(line: str) -> tuple[str, ...]:
+        pieces: list[str] = []
+        current: list[str] = []
+        quote: str | None = None
+        escaped = False
+        index = 0
+        while index < len(line):
+            character = line[index]
+            if escaped:
+                current.append(character)
+                escaped = False
+                index += 1
+                continue
+            if character == "\\" and quote != "'":
+                current.append(character)
+                escaped = True
+                index += 1
+                continue
+            if quote is not None:
+                current.append(character)
+                if character == quote:
+                    quote = None
+                index += 1
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                current.append(character)
+                index += 1
+                continue
+            if character == ";" or line.startswith("&&", index) or line.startswith("||", index):
+                pieces.append("".join(current))
+                current = []
+                index += 2 if character != ";" else 1
+                continue
+            current.append(character)
+            index += 1
+        pieces.append("".join(current))
+        return tuple(pieces)
+
     logical_lines: list[str] = []
     pending = ""
     heredoc: str | None = None
@@ -559,7 +610,7 @@ def _shell_segments(command: str) -> tuple[str, ...]:
     for line in logical_lines:
         if not line or line.startswith("#"):
             continue
-        for piece in re.split(r"\s*(?:&&|\|\||;)\s*", line):
+        for piece in split_operators(line):
             piece = piece.strip()
             if not piece or piece in {"then", "fi", "else", "do", "done", "{", "}"}:
                 continue
@@ -616,6 +667,84 @@ def _basename(token: str) -> str:
     return token.replace("\\", "/").rsplit("/", 1)[-1].lower()
 
 
+def _safe_python_code(tokens: tuple[str, ...]) -> bool:
+    """Allow only a tiny read-only diagnostic subset of ``python -c``."""
+
+    try:
+        code_index = tokens.index("-c")
+        tree = ast.parse(" ".join(tokens[code_index + 1 :]), mode="exec")
+    except (ValueError, SyntaxError):
+        return False
+    imported: set[str] = set()
+    allowed_modules = {"platform", "struct", "sys"}
+    allowed_attributes = {
+        "platform": {"platform", "python_version"},
+        "struct": {"calcsize"},
+        "sys": {"version", "version_info"},
+    }
+    allowed_functions = {"bool", "float", "int", "len", "print", "repr", "str", "tuple"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name not in allowed_modules for alias in node.names):
+                return False
+            imported.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module not in allowed_modules or any(alias.name == "*" for alias in node.names):
+                return False
+            imported.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Load) and node.id not in imported | allowed_functions:
+                return False
+        elif isinstance(node, ast.Attribute):
+            if not isinstance(node.value, ast.Name):
+                return False
+            if node.value.id not in imported:
+                return False
+            module = node.value.id
+            if node.attr not in allowed_attributes.get(module, set()):
+                return False
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                if node.func.id not in allowed_functions:
+                    return False
+            elif isinstance(node.func, ast.Attribute):
+                if not isinstance(node.func.value, ast.Name):
+                    return False
+                module = node.func.value.id
+                if node.func.attr not in allowed_attributes.get(module, set()):
+                    return False
+            else:
+                return False
+        elif isinstance(
+            node,
+            ast.Module
+            | ast.Expr
+            | ast.Constant
+            | ast.JoinedStr
+            | ast.FormattedValue
+            | ast.BinOp
+            | ast.UnaryOp
+            | ast.BoolOp
+            | ast.Compare
+            | ast.IfExp
+            | ast.Tuple
+            | ast.List
+            | ast.Set
+            | ast.Dict
+            | ast.alias
+            | ast.keyword
+            | ast.Load
+            | ast.operator
+            | ast.unaryop
+            | ast.boolop
+            | ast.cmpop,
+        ):
+            continue
+        else:
+            return False
+    return True
+
+
 def _safe_setup_command(tokens: tuple[str, ...]) -> bool:
     """Recognize commands that cannot select or execute the test suite by themselves."""
 
@@ -634,7 +763,7 @@ def _safe_setup_command(tokens: tuple[str, ...]) -> bool:
         if len(tokens) == 1:
             return True
         if "-c" in tokens:
-            return not _contains_runner_hint(" ".join(tokens))
+            return _safe_python_code(tokens)
         for index, token in enumerate(tokens[:-1]):
             if token == "-m":
                 return _basename(tokens[index + 1]) in _SAFE_PYTHON_MODULES
@@ -653,6 +782,156 @@ def _command_may_run_tests(command: str) -> bool:
         if tokens is None or not _safe_setup_command(tokens):
             return True
     return False
+
+
+_PRETEST_MUTATION_COMMANDS = {
+    "chmod",
+    "chown",
+    "cp",
+    "install",
+    "ln",
+    "mkdir",
+    "mv",
+    "patch",
+    "rm",
+    "rsync",
+    "sed",
+    "tee",
+    "touch",
+    "truncate",
+}
+_PRETEST_MUTATING_GIT_COMMANDS = {
+    "apply",
+    "checkout",
+    "clean",
+    "merge",
+    "restore",
+    "reset",
+    "switch",
+}
+
+
+def _segment_mutates_files(segment: str, tokens: tuple[str, ...]) -> bool:
+    if _has_unquoted(segment, ">"):
+        return True
+    command = _basename(tokens[0]) if tokens else ""
+    if command in _PRETEST_MUTATION_COMMANDS:
+        return True
+    if command == "git" and len(tokens) > 1:
+        return _basename(tokens[1]) in _PRETEST_MUTATING_GIT_COMMANDS
+    return False
+
+
+def _pretest_mutation_unknown(command: str) -> bool:
+    """Detect file-changing commands that precede a statically visible runner."""
+
+    segments = _shell_segments(command)
+    runner_visible = any(_contains_runner_hint(segment) for segment in segments)
+    if not runner_visible:
+        return False
+    for segment in segments:
+        tokens = _tokens(segment)
+        if not tokens:
+            continue
+        if _contains_runner_hint(segment):
+            return False
+        if _segment_mutates_files(segment, tokens):
+            return True
+    return False
+
+
+def _pretest_script_unknown(command: str) -> bool:
+    """Require lifecycle setup to be statically harmless or test-resolvable."""
+
+    for segment in _shell_segments(command):
+        tokens = _tokens(segment)
+        if tokens is None or _segment_mutates_files(segment, tokens):
+            return True
+        if all(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token) for token in tokens):
+            continue
+        if _contains_runner_hint(segment) or _safe_setup_command(tokens):
+            continue
+        return True
+    return False
+
+
+def _script_contains_file_mutation(command: str) -> bool:
+    for segment in _shell_segments(command):
+        tokens = _tokens(segment)
+        if tokens and _segment_mutates_files(segment, tokens):
+            return True
+    return False
+
+
+def _contains_arbitrary_python_code(command: str) -> bool:
+    for segment in _shell_segments(command):
+        tokens = _tokens(segment)
+        if not tokens:
+            continue
+        if (
+            (_basename(tokens[0]) in {"python", "py"} or _basename(tokens[0]).startswith("python"))
+            and "-c" in tokens
+            and not _safe_python_code(tokens)
+        ):
+            return True
+    return False
+
+
+def _workflow_has_path_filters(events: Any) -> bool:
+    if not isinstance(events, dict):
+        return False
+    return any(
+        isinstance(config, dict) and any(key in config for key in ("paths", "paths-ignore"))
+        for config in events.values()
+    )
+
+
+def _path_patterns_match(path: str, patterns: Any) -> bool | None:
+    if not isinstance(patterns, list) or not patterns or not all(
+        isinstance(pattern, str) and pattern for pattern in patterns
+    ):
+        return None
+    matched = False
+    for raw_pattern in patterns:
+        negated = raw_pattern.startswith("!")
+        pattern = raw_pattern[1:] if negated else raw_pattern
+        if not pattern or not fnmatch.fnmatchcase(path, pattern):
+            continue
+        matched = not negated
+    return matched
+
+
+def _workflow_runs_for_changes(events: Any, changed_files: tuple[str, ...]) -> bool | None:
+    """Evaluate path filters only when an explicit changed-file set is bound."""
+
+    if not isinstance(events, dict):
+        return True
+    filtered_event_seen = False
+    for config in events.values():
+        if not isinstance(config, dict):
+            return True
+        has_paths = "paths" in config
+        has_ignored = "paths-ignore" in config
+        if has_paths and has_ignored:
+            return None
+        if not has_paths and not has_ignored:
+            return True
+        filtered_event_seen = True
+        if has_paths:
+            matches = [_path_patterns_match(path, config["paths"]) for path in changed_files]
+            if any(value is None for value in matches):
+                return None
+            if any(matches):
+                return True
+        else:
+            ignored = [
+                _path_patterns_match(path, config["paths-ignore"]) for path in changed_files
+            ]
+            if any(value is None for value in ignored):
+                return None
+            if any(not value for value in ignored):
+                return True
+    return not filtered_event_seen
 
 
 def _pipeline_is_safe(command: str) -> bool:
@@ -733,11 +1012,25 @@ def _relative_matrix(row: dict[str, Any]) -> str:
 
 
 class _Resolver:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, changed_files: Sequence[str] | None = None) -> None:
         self.root = root.resolve()
         self.invocations: list[PytestInvocation] = []
         self.issues: list[TraceIssue] = []
         self.workflows: list[str] = []
+        if changed_files is None:
+            self.changed_files: tuple[str, ...] | None = None
+        else:
+            normalized: list[str] = []
+            for changed_file in changed_files:
+                try:
+                    normalized.append(normalize_repo_path(self.root, changed_file))
+                except PathSafetyError as exc:
+                    self.issue(
+                        "CHANGED_FILE_UNKNOWN",
+                        f"changed file is outside the repository or unsafe: {exc}",
+                        (str(changed_file),),
+                    )
+            self.changed_files = tuple(dict.fromkeys(normalized))
         self._workflow_stack: set[Path] = set()
         self._script_stack: set[Path] = set()
         self._make_stack: set[tuple[Path, str]] = set()
@@ -745,6 +1038,7 @@ class _Resolver:
         self._tox_stack: set[Path] = set()
         self._workflow_events: dict[str, set[str]] = {}
         self._workflow_event_kinds: dict[str, set[str]] = {}
+        self._workflow_path_filters: set[str] = set()
 
     def issue(
         self, code: str, message: str, provenance: tuple[str, ...], relevant: bool = True
@@ -799,6 +1093,66 @@ class _Resolver:
                         return False
         return True
 
+    def _precommit_entries(self) -> tuple[str, ...] | None:
+        """Return statically declared hook entries, or None if unsafe."""
+
+        path = next(
+            (
+                candidate
+                for candidate in (
+                    self.root / ".pre-commit-config.yaml",
+                    self.root / ".pre-commit-config.yml",
+                )
+                if candidate.is_file()
+            ),
+            None,
+        )
+        if path is None:
+            return None
+        try:
+            data = yaml.safe_load(read_limited_text(path, MAX_CONFIG_BYTES))
+        except (OSError, ValueError, UnicodeError, yaml.YAMLError, RecursionError, MemoryError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("repos"), list):
+            return None
+        entries: list[str] = []
+        for raw_repo in data["repos"]:
+            if not isinstance(raw_repo, dict) or not isinstance(raw_repo.get("hooks"), list):
+                return None
+            for raw_hook in raw_repo["hooks"]:
+                if not isinstance(raw_hook, dict):
+                    return None
+                entry = _scalar(raw_hook.get("entry"))
+                if entry is None:
+                    return None
+                entries.append(entry)
+        return tuple(entries)
+
+    def _resolve_precommit(self, context: _Context, depth: int) -> None:
+        if self._precommit_config_is_non_test():
+            return
+        entries = self._precommit_entries()
+        if entries is None:
+            self.issue(
+                "PRE_COMMIT_HOOKS_UNKNOWN",
+                "pre-commit hooks could not be statically enumerated",
+                context.provenance,
+            )
+            return
+        if not entries:
+            self.issue(
+                "PRE_COMMIT_HOOKS_UNKNOWN",
+                "pre-commit configuration declares no statically visible hooks",
+                context.provenance,
+            )
+            return
+        for entry in entries:
+            self._resolve_command(
+                entry,
+                replace(context, provenance=context.provenance + ("pre-commit:hook",)),
+                depth + 1,
+            )
+
     def _job_may_run_tests(self, job: dict[str, Any]) -> bool:
         """Use only statically visible test-bearing steps for condition relevance."""
 
@@ -840,9 +1194,9 @@ class _Resolver:
                 f"workflow directory is unsafe: {exc}",
                 (".github/workflows",),
             )
-            return TraceResult((), tuple(self.issues), ())
+            return TraceResult((), tuple(self.issues), (), self.changed_files)
         if not workflow_dir.is_dir():
-            return TraceResult((), (), ())
+            return TraceResult((), (), (), self.changed_files)
         try:
             paths = tuple(
                 sorted(
@@ -857,7 +1211,7 @@ class _Resolver:
                 f"could not enumerate workflow files: {exc}",
                 (".github/workflows",),
             )
-            return TraceResult((), tuple(self.issues), ())
+            return TraceResult((), tuple(self.issues), (), self.changed_files)
         if len(paths) > MAX_WORKFLOW_FILES:
             self.issue(
                 "WORKFLOW_COUNT_LIMIT",
@@ -881,6 +1235,12 @@ class _Resolver:
             for invocation in self.invocations
             if invocation.provenance
         }
+        for workflow in sorted(invocation_workflows & self._workflow_path_filters):
+            self.issue(
+                "WORKFLOW_PATH_FILTER_UNKNOWN",
+                "workflow path filters require an actual changed-file set before CI scope can be proven",
+                (workflow,),
+            )
         event_signatures = {
             event
             for workflow, events in self._workflow_events.items()
@@ -903,12 +1263,14 @@ class _Resolver:
         }
         final_issues: list[TraceIssue] = []
         for issue in self.issues:
-            workflow = issue.provenance[0] if issue.provenance else None
-            issue_kinds = self._workflow_event_kinds.get(workflow or "")
+            workflow_name: str | None = (
+                issue.provenance[0] if issue.provenance else None
+            )
+            issue_kinds = self._workflow_event_kinds.get(workflow_name or "")
             if (
                 issue.relevant
                 and invocation_workflows
-                and workflow not in invocation_workflows
+                and workflow_name not in invocation_workflows
                 and issue_kinds
                 and invocation_kinds
                 and not any(
@@ -920,7 +1282,12 @@ class _Resolver:
                 issue = replace(issue, relevant=False)
             if issue not in final_issues:
                 final_issues.append(issue)
-        return TraceResult(tuple(self.invocations), tuple(final_issues), tuple(self.workflows))
+        return TraceResult(
+            tuple(self.invocations),
+            tuple(final_issues),
+            tuple(self.workflows),
+            self.changed_files,
+        )
 
     def _load_yaml(self, path: Path, provenance: tuple[str, ...]) -> dict[str, Any] | None:
         try:
@@ -982,6 +1349,20 @@ class _Resolver:
         self._workflow_events.setdefault(relative, set()).add(effective_event)
         event_kinds = _event_kinds(raw_events) if events_present else {"implicit"}
         self._workflow_event_kinds.setdefault(relative, set()).update(event_kinds or {"unknown"})
+        if _workflow_has_path_filters(raw_events):
+            if self.changed_files is None:
+                self._workflow_path_filters.add(relative)
+            else:
+                runs_for_changes = _workflow_runs_for_changes(raw_events, self.changed_files)
+                if runs_for_changes is None:
+                    self.issue(
+                        "WORKFLOW_PATH_FILTER_UNKNOWN",
+                        "workflow path filters could not be evaluated for the bound change set",
+                        context.provenance,
+                    )
+                elif not runs_for_changes:
+                    self._workflow_stack.remove(path)
+                    return
         workflow_shell = _default_shell(data.get("defaults"), None, context)
         root_env, _ = _env_mapping(data.get("env"), context)
         merged_root = {**context.env, **root_env}
@@ -1265,6 +1646,18 @@ class _Resolver:
                         self._resolve_composite(action_dir, step_context, default_shell)
                 elif isinstance(uses, str):
                     action_name = uses.split("@", 1)[0].lower()
+                    if action_name == "actions/checkout":
+                        raw_with = raw_step.get("with", {})
+                        sparse_value = (
+                            raw_with.get("sparse-checkout") if isinstance(raw_with, dict) else None
+                        )
+                        sparse_enabled = sparse_value not in (None, "", False, [])
+                        if isinstance(raw_with, dict) and sparse_enabled:
+                            self.issue(
+                                "CHECKOUT_SPARSE_UNKNOWN",
+                                "actions/checkout sparse inputs change the analyzed workspace surface",
+                                provenance,
+                            )
                     if action_name == "pre-commit-ci/lite-action" and self._precommit_config_is_non_test():
                         continue
                     if action_name not in _KNOWN_SETUP_ACTIONS:
@@ -1407,6 +1800,20 @@ class _Resolver:
                 context.provenance,
             )
             return
+        if _contains_arbitrary_python_code(command):
+            self.issue(
+                "PYTHON_CODE_UNKNOWN",
+                "arbitrary python -c code is outside the statically auditable command graph",
+                context.provenance,
+            )
+            return
+        if _pretest_mutation_unknown(command):
+            self.issue(
+                "PRETEST_MUTATION_UNKNOWN",
+                "file-changing setup precedes a test runner, so the CI test surface is not byte-stable",
+                context.provenance,
+            )
+            return
         if _has_pipeline_token(command) and not _pipeline_is_safe(command):
             self.issue(
                 "SHELL_PIPE_UNKNOWN",
@@ -1481,11 +1888,19 @@ class _Resolver:
                         key, value = token.split("=", 1)
                         shell_env[key] = value
                 continue
-            if first == "pre-commit":
-                if not self._precommit_config_is_non_test():
+            if first in {"pre-commit", "pre_commit"}:
+                self._resolve_precommit(nested_context, depth)
+                continue
+            if first.startswith("python") and "-m" in tokens:
+                module_indexes = [index for index, token in enumerate(tokens[:-1]) if token == "-m"]
+                if any(_basename(tokens[index + 1]) in {"pre-commit", "pre_commit"} for index in module_indexes):
+                    self._resolve_precommit(nested_context, depth)
+                    continue
+            if (first.startswith("python") or first == "py") and "-c" in tokens:
+                if not _safe_python_code(tokens):
                     self.issue(
-                        "UNKNOWN_TEST_RUNNER",
-                        "pre-commit hooks could not be proven not to run tests",
+                        "PYTHON_CODE_UNKNOWN",
+                        "arbitrary python -c code is outside the statically auditable command graph",
                         context.provenance,
                     )
                 continue
@@ -1819,6 +2234,13 @@ class _Resolver:
         except (OSError, ValueError, UnicodeError) as exc:
             self.issue("SCRIPT_UNRESOLVED", f"could not read {path}: {exc}", context.provenance)
             return
+        if _script_contains_file_mutation(content):
+            self.issue(
+                "PRETEST_MUTATION_UNKNOWN",
+                "shell script changes the workspace before or during pytest selection",
+                context.provenance,
+            )
+            return
         if _shell_control_flow_unknown(content):
             self.issue(
                 "SHELL_CONTROL_FLOW_UNKNOWN",
@@ -1873,11 +2295,14 @@ class _Resolver:
         current: list[str] = []
         for line in lines:
             if line.startswith((" ", "\t")) and current:
-                targets[current[-1]][1].append(line.strip())
+                for name in current:
+                    targets[name][1].append(line.strip())
                 continue
-            match = re.match(r"^([A-Za-z0-9_.%/-]+)\s*:\s*(.*)$", line)
+            match = re.match(
+                r"^([A-Za-z0-9_.%/-]+(?:\s+[A-Za-z0-9_.%/-]+)*)\s*:\s*(.*)$", line
+            )
             if match:
-                names = [match.group(1)]
+                names = match.group(1).split()
                 prerequisites = tuple(match.group(2).split())
                 for name in names:
                     targets[name] = [list(prerequisites), []]
@@ -1964,6 +2389,14 @@ class _Resolver:
             return
         self._make_stack.add(key)
         prerequisites, recipes = rule
+        if _pretest_mutation_unknown("\n".join(recipes)):
+            self.issue(
+                "PRETEST_MUTATION_UNKNOWN",
+                "file-changing Make setup precedes a test runner",
+                context.provenance + (f"make:{target}",),
+            )
+            self._make_stack.remove(key)
+            return
         for prerequisite in prerequisites:
             if prerequisite in rules:
                 self._resolve_make_target(prerequisite, rules, variables, context, depth + 1)
@@ -2093,6 +2526,39 @@ class _Resolver:
             result.append(command)
         return result, True
 
+    def _tox_pytest_environment_unknown(
+        self,
+        config: tuple[list[str], dict[str, dict[str, Any]], dict[str, Any] | None],
+        name: str,
+    ) -> bool:
+        """Detect tox environment variables that can narrow pytest collection."""
+
+        _, envs, tox = config
+        if tox is not None:
+            base = tox.get("env_run_base", {})
+            selected = envs.get(name, {})
+            if not isinstance(base, dict) or not isinstance(selected, dict):
+                return True
+            raw = selected.get("set_env", selected.get("setenv", base.get("set_env", base.get("setenv"))))
+        else:
+            base = envs.get("__base__", {})
+            selected = envs.get(name, {})
+            raw = selected.get("setenv", base.get("setenv"))
+        if raw is None:
+            return False
+        if isinstance(raw, dict):
+            return any(str(key).upper() in {
+                "PYTEST_ADDOPTS",
+                "PYTEST_PLUGINS",
+                "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+            } for key in raw)
+        return any(
+            line.split("=", 1)[0].strip().upper()
+            in {"PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD"}
+            for line in str(raw).splitlines()
+            if "=" in line
+        )
+
     def _resolve_tox(self, tokens: tuple[str, ...], context: _Context, depth: int) -> None:
         config = self._tox_config(context.cwd)
         if config is None:
@@ -2139,6 +2605,13 @@ class _Resolver:
             )
             return
         for name in selected:
+            if self._tox_pytest_environment_unknown(config, name):
+                self.issue(
+                    "PYTEST_CONFIGURATION_UNKNOWN",
+                    f"tox environment {name!r} sets pytest selection or plugin configuration",
+                    context.provenance + (f"tox:{name}",),
+                )
+                continue
             commands, complete = self._tox_commands(config, name, posargs)
             if not complete:
                 self.issue(
@@ -2201,23 +2674,41 @@ class _Resolver:
                 context.provenance,
             )
             return
-        key = (cwd, name)
-        if key in self._package_stack:
+        scripts = package[1]
+        lifecycle_names = [name]
+        if command in {"test", "run"}:
+            lifecycle_names = [f"pre{name}", name, f"post{name}"]
+        selected_scripts = [lifecycle for lifecycle in lifecycle_names if lifecycle in scripts]
+        pre_lifecycle = f"pre{name}"
+        if pre_lifecycle in scripts and _pretest_script_unknown(scripts[pre_lifecycle]):
             self.issue(
-                "RESOLUTION_CYCLE", f"package script cycle detected at {name}", context.provenance
+                "NPM_PRETEST_UNKNOWN",
+                "npm pre-test lifecycle script is not statically harmless or test-resolvable",
+                context.provenance,
             )
             return
-        self._package_stack.add(key)
-        script = package[1][name]
-        if posargs:
-            script = f"{script} {' '.join(shlex.quote(arg) for arg in posargs)}"
-        self._resolve_command(
-            script,
-            replace(context, cwd=cwd, provenance=context.provenance + (f"npm:{name}",)),
-            depth,
-        )
-        self._package_stack.remove(key)
+        for lifecycle in selected_scripts:
+            key = (cwd, lifecycle)
+            if key in self._package_stack:
+                self.issue(
+                    "RESOLUTION_CYCLE",
+                    f"package script cycle detected at {lifecycle}",
+                    context.provenance,
+                )
+                continue
+            self._package_stack.add(key)
+            script = scripts[lifecycle]
+            if posargs and lifecycle == name:
+                script = f"{script} {' '.join(shlex.quote(arg) for arg in posargs)}"
+            self._resolve_command(
+                script,
+                replace(context, cwd=cwd, provenance=context.provenance + (f"npm:{lifecycle}",)),
+                depth,
+            )
+            self._package_stack.remove(key)
 
 
-def trace_github_actions(root: Path) -> TraceResult:
-    return _Resolver(root).trace()
+def trace_github_actions(
+    root: Path, changed_files: Sequence[str] | None = None
+) -> TraceResult:
+    return _Resolver(root, changed_files).trace()

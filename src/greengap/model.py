@@ -137,6 +137,7 @@ class TraceResult:
     invocations: tuple[PytestInvocation, ...] = ()
     issues: tuple[TraceIssue, ...] = ()
     workflows: tuple[str, ...] = ()
+    changed_files: tuple[str, ...] | None = None
 
     @property
     def relevant_incomplete(self) -> bool:
@@ -149,6 +150,9 @@ class TraceResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "workflows": list(self.workflows),
+            "changed_files": (
+                None if self.changed_files is None else list(self.changed_files)
+            ),
             "invocations": [invocation.to_dict() for invocation in self.invocations],
             "issues": [issue.to_dict() for issue in self.issues],
             "complete": self.complete,

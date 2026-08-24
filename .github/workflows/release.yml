@@ -1,8 +1,22 @@
 name: Release artifacts
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable tag to package (for example v0.1.3)
+        required: true
+        type: string
+      title:
+        description: Draft release title
+        required: true
+        default: GreenGap release
+        type: string
+      notes:
+        description: Draft release notes
+        required: true
+        default: Early alpha release; see the changelog for the certified scope and fail-closed UNKNOWN caveat.
+        type: string
 
 permissions: {}
 
@@ -10,6 +24,10 @@ jobs:
   artifacts:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_TITLE: ${{ inputs.title }}
+      RELEASE_NOTES: ${{ inputs.notes }}
     permissions:
       contents: write
       id-token: write
@@ -17,26 +35,55 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
+          ref: refs/tags/${{ inputs.tag }}
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.13"
-      - name: Build and verify distributions
+      - name: Verify exact tag source
         run: |
+          set -euo pipefail
+          test -n "${RELEASE_TAG}"
+          git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"
+          expected="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          actual="$(git rev-parse HEAD)"
+          test "${expected}" = "${actual}"
+          test -z "$(git status --porcelain)"
+          echo "RELEASE_COMMIT=${actual}" >> "${GITHUB_ENV}"
+          echo "RELEASE_TREE=$(git rev-parse 'HEAD^{tree}')" >> "${GITHUB_ENV}"
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "${GITHUB_ENV}"
+      - name: Build and verify distributions once
+        run: |
+          set -euo pipefail
           python -m pip install --upgrade pip build twine
+          rm -rf dist SHA256SUMS PROVENANCE.json sbom.spdx.json
           python -m build
           python -m twine check dist/*
-          sha256sum dist/* > SHA256SUMS
+          python scripts/create_release_provenance.py \
+            --dist dist \
+            --output PROVENANCE.json \
+            --tag "${RELEASE_TAG}" \
+            --commit "${RELEASE_COMMIT}" \
+            --tree "${RELEASE_TREE}"
       - name: Generate SBOM
         uses: anchore/sbom-action@e11c554f704a0b820cbf8c51673f6945e0731532
         with:
           path: .
           format: spdx-json
           output-file: sbom.spdx.json
-      - name: Attest build provenance
+      - name: Create and verify exact release checksums
+        run: |
+          set -euo pipefail
+          sha256sum dist/* sbom.spdx.json PROVENANCE.json > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Attest exact release bytes
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with:
-          subject-path: "dist/*"
+          subject-path: |
+            dist/*
+            SHA256SUMS
+            PROVENANCE.json
+            sbom.spdx.json
       - name: Upload release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -45,8 +92,33 @@ jobs:
             dist/*
             SHA256SUMS
             sbom.spdx.json
+            PROVENANCE.json
           if-no-files-found: error
-      - name: Attach release artifacts
+      - name: Create immutable draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/* SHA256SUMS sbom.spdx.json --clobber
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "release ${RELEASE_TAG} already exists; refusing to replace or resume it" >&2
+            exit 1
+          fi
+          gh release create "${RELEASE_TAG}" \
+            --draft \
+            --verify-tag \
+            --title "${RELEASE_TITLE}" \
+            --notes "${RELEASE_NOTES}"
+          test -z "$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name')"
+      - name: Attach release artifacts once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" dist/* SHA256SUMS sbom.spdx.json PROVENANCE.json
+          expected="$(find dist -maxdepth 1 -type f -printf '%f\n' | sort)"
+          expected="${expected}"$'\nSHA256SUMS\nPROVENANCE.json\nsbom.spdx.json'
+          actual="$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' | sort)"
+          test "${actual}" = "$(printf '%s\n' "${expected}" | sort)"
+      - name: Human publication boundary
+        run: |
+          echo "Draft ${RELEASE_TAG} contains the attested, checksummed build. Publish it exactly once after human inspection; reruns refuse to replace it."

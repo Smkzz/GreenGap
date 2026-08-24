@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 PINNED = {
     "outcome": ("python-trio/outcome", "03ed6218b08001877745bb1a9e180c8c5cf7c903"),
     "requests": ("psf/requests", "8f8b212de8c2129d7954c6cd373762880375620a"),
@@ -86,8 +85,50 @@ def git_optional(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def sparse_checkout_enabled(root: Path) -> bool:
+    """Detect sparse state from config, Git's sparse command, or its pattern file."""
+
+    for key in ("core.sparseCheckout", "core.sparseCheckoutCone"):
+        value = git_optional(root, "config", "--bool", "--get", key)
+        if value.lower() in {"true", "1", "yes", "on"}:
+            return True
+
+    listed = subprocess.run(
+        ["git", "sparse-checkout", "list"],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    if listed.returncode == 0:
+        return True
+    if listed.returncode not in {1, 128}:
+        raise RuntimeError(listed.stderr.strip() or "unable to inspect sparse checkout state")
+
+    sparse_path = git(root, "rev-parse", "--git-path", "info/sparse-checkout")
+    pattern_file = Path(sparse_path)
+    if not pattern_file.is_absolute():
+        pattern_file = root / pattern_file
+    return pattern_file.is_file() and bool(pattern_file.read_bytes().strip())
+
+
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def candidate_identity(root: Path) -> dict[str, Any]:
+    """Bind the qualification receipt to the exact GreenGap source worktree."""
+
+    try:
+        dirty = git(root, "status", "--porcelain")
+        return {
+            "commit": git(root, "rev-parse", "HEAD"),
+            "tree": git(root, "rev-parse", "HEAD^{tree}"),
+            "clean": not dirty,
+        }
+    except (OSError, RuntimeError) as exc:
+        return {"error": str(exc), "clean": False}
 
 
 def validate_checkout(root: Path, expected: str) -> tuple[bool, str]:
@@ -96,8 +137,7 @@ def validate_checkout(root: Path, expected: str) -> tuple[bool, str]:
             return False, "HEAD does not match pinned revision"
         if git(root, "status", "--porcelain"):
             return False, "worktree is dirty"
-        sparse = git_optional(root, "config", "--get", "core.sparseCheckout")
-        if sparse.lower() in {"true", "1", "yes"}:
+        if sparse_checkout_enabled(root):
             return False, "sparse checkout is enabled"
         tracked = git(root, "ls-files", "-z")
         missing = [item for item in tracked.split("\0") if item and not (root / item).exists()]
@@ -108,15 +148,20 @@ def validate_checkout(root: Path, expected: str) -> tuple[bool, str]:
     return True, ""
 
 
-def run_plan(repo: Path, python_executable: str) -> tuple[int, dict[str, Any]]:
+def run_plan(
+    repo: Path, python_executable: str, changed_files: tuple[str, ...]
+) -> tuple[int, dict[str, Any]]:
     project_root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
     source_path = str(project_root / "src")
     env["PYTHONPATH"] = source_path + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    command = [python_executable, "-m", "greengap", "plan", str(repo), "--json"]
+    for changed_file in changed_files:
+        command.extend(("--changed-file", changed_file))
     result = subprocess.run(
-        [python_executable, "-m", "greengap", "plan", str(repo), "--json"],
+        command,
         text=True,
         capture_output=True,
         env=env,
@@ -136,7 +181,9 @@ def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]
     if not valid:
         return {"repository": name, "status": "ENVIRONMENT_INVALID", "reason": reason}
     before_head = git(root, "rev-parse", "HEAD")
-    baseline_code, baseline = run_plan(root, python_executable)
+    mutation = MUTATIONS[name]
+    changed_files = (mutation.path,)
+    baseline_code, baseline = run_plan(root, python_executable, changed_files)
     if baseline_code != 0 or not baseline.get("complete") or baseline.get("blocker_count", 0):
         status = (
             "ENVIRONMENT_INVALID"
@@ -144,7 +191,6 @@ def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]
             else "FALSE_POSITIVE"
         )
         return {"repository": name, "status": status, "baseline": baseline}
-    mutation = MUTATIONS[name]
     target = root / mutation.path
     if not target.exists():
         return {
@@ -164,7 +210,7 @@ def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]
                 "reason": "expected mutation bytes not found",
             }
         target.write_bytes(original.replace(mutation.old, mutation.new, mutation.count))
-        code, mutation_payload = run_plan(root, python_executable)
+        code, mutation_payload = run_plan(root, python_executable, changed_files)
         mutation_status = (
             "PASS" if code == 1 and mutation_payload.get("blocker_count", 0) > 0 else "FALSE_NEGATIVE"
         )
@@ -212,6 +258,7 @@ def main() -> int:
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    project_root = Path(__file__).resolve().parents[1]
     results = []
     for name in PINNED:
         interpreter = interpreter_for(name, args.python_dir) if args.python_dir else args.python
@@ -227,6 +274,7 @@ def main() -> int:
         results.append(qualify_one(name, args.root / name, interpreter))
     payload = {
         "gate": "stage0e_full_checkout",
+        "candidate": candidate_identity(project_root),
         "attempted": len(results),
         "environment_valid": sum(
             item.get("status") not in {"ENVIRONMENT_INVALID", "UPSTREAM_DRIFT"} for item in results

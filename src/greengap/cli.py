@@ -38,11 +38,15 @@ def run_scan(root: Path, timeout: float = 60.0, initial: Any | None = None) -> S
     )
 
 
-def run_plan(root: Path, timeout: float = 60.0) -> PlanReport:
+def run_plan(
+    root: Path,
+    timeout: float = 60.0,
+    changed_files: tuple[str, ...] | None = None,
+) -> PlanReport:
     root = root.resolve()
     snapshot = workspace_snapshot(root, timeout=min(timeout, 10.0))
     candidates, collection = scan_pytest(root, timeout)
-    trace = trace_github_actions(root)
+    trace = trace_github_actions(root, changed_files)
     final = workspace_snapshot(root, timeout=min(timeout, 10.0))
     stable = snapshot.fingerprint == final.fingerprint and snapshot.complete and final.complete
     errors = list(snapshot.errors) + list(final.errors)
@@ -125,6 +129,13 @@ def _build_parser() -> argparse.ArgumentParser:
         command.add_argument("repo", nargs="?", default=".")
         command.add_argument("--json", action="store_true", dest="as_json")
         command.add_argument("--timeout", type=float, default=60.0)
+        if name == "plan":
+            command.add_argument(
+                "--changed-file",
+                action="append",
+                dest="changed_files",
+                help="bind workflow path filters to a changed repository-relative file (repeatable)",
+            )
     verify = subparsers.add_parser(
         "verify", help="parse JUnit evidence without claiming identity completeness"
     )
@@ -202,7 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(_human_scan(scan_report))
         return 0 if scan_report.stable and scan_report.collection.complete else 2
 
-    plan_report = run_plan(root, args.timeout)
+    plan_report = run_plan(root, args.timeout, tuple(args.changed_files) if args.changed_files else None)
     if args.as_json:
         print(json_dump(plan_report.to_dict()), end="")
     else:

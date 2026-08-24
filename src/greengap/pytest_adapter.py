@@ -9,6 +9,7 @@ import fnmatch
 import importlib.metadata
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -93,6 +94,13 @@ def _read_ini(path: Path, section: str) -> dict[str, str]:
 def pytest_config(root: Path) -> tuple[dict[str, Any], str | None]:
     """Read the first pytest configuration file pytest would normally honor."""
 
+    pytest_toml = root / "pytest.toml"
+    if pytest_toml.exists():
+        data = _read_toml(pytest_toml)
+        options = data.get("pytest", {})
+        if isinstance(options, dict):
+            return options, pytest_toml.as_posix()
+
     ini = root / "pytest.ini"
     if ini.exists():
         return _read_ini(ini, "pytest"), ini.as_posix()
@@ -100,7 +108,11 @@ def pytest_config(root: Path) -> tuple[dict[str, Any], str | None]:
     pyproject = root / "pyproject.toml"
     if pyproject.exists():
         data = _read_toml(pyproject)
-        options = data.get("tool", {}).get("pytest", {}).get("ini_options", {})
+        native_options = data.get("tool", {}).get("pytest", {})
+        if isinstance(native_options, dict):
+            options = native_options.get("ini_options", native_options)
+        else:
+            options = {}
         if isinstance(options, dict):
             return options, pyproject.as_posix()
 
@@ -305,6 +317,140 @@ class _BoundedProcessResult:
     output_limited: bool = False
 
 
+def _process_group_options() -> dict[str, Any]:
+    """Start collection in an isolated process group/session."""
+
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _create_windows_job(process: subprocess.Popen[Any]) -> Any | None:
+    """Put a collection process in a kill-on-close Windows Job Object."""
+
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [("value", ctypes.c_ulonglong)] * 6
+
+        class _BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("per_process_user_time_limit", ctypes.c_longlong),
+                ("per_job_user_time_limit", ctypes.c_longlong),
+                ("limit_flags", wintypes.DWORD),
+                ("minimum_working_set_size", ctypes.c_size_t),
+                ("maximum_working_set_size", ctypes.c_size_t),
+                ("active_process_limit", wintypes.DWORD),
+                ("affinity", ctypes.c_size_t),
+                ("priority_class", wintypes.DWORD),
+                ("scheduling_class", wintypes.DWORD),
+            ]
+
+        class _ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("basic_limit_information", _BasicLimitInformation),
+                ("io_info", _IoCounters),
+                ("process_memory_limit", ctypes.c_size_t),
+                ("job_memory_limit", ctypes.c_size_t),
+                ("peak_process_memory_used", ctypes.c_size_t),
+                ("peak_job_memory_used", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.INT,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        information = _ExtendedLimitInformation()
+        information.basic_limit_information.limit_flags = 0x2000
+        configured = kernel32.SetInformationJobObject(
+            job,
+            9,
+            ctypes.byref(information),
+            ctypes.sizeof(information),
+        )
+        if not configured:
+            kernel32.CloseHandle(job)
+            return None
+        process_handle = kernel32.OpenProcess(0x0001 | 0x0100, False, process.pid)
+        if not process_handle:
+            kernel32.CloseHandle(job)
+            return None
+        assigned = kernel32.AssignProcessToJobObject(job, process_handle)
+        kernel32.CloseHandle(process_handle)
+        if not assigned:
+            kernel32.CloseHandle(job)
+            return None
+        return (kernel32, job)
+    except (AttributeError, OSError, TypeError):
+        return None
+
+
+def _close_windows_job(job: Any | None) -> None:
+    if job is None:
+        return
+    kernel32, handle = job
+    with contextlib.suppress(OSError):
+        kernel32.CloseHandle(handle)
+
+
+def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
+    """Terminate a bounded collection process and every descendant it owns."""
+
+    if os.name == "nt":
+        if process.poll() is not None:
+            return
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+    else:
+        killpg = getattr(os, "killpg", None)
+        sigterm = getattr(signal, "SIGTERM", 15)
+        sigkill = getattr(signal, "SIGKILL", 9)
+        if callable(killpg):
+            try:
+                killpg(process.pid, sigterm)
+            except (OSError, ProcessLookupError):
+                with contextlib.suppress(OSError):
+                    process.terminate()
+        else:
+            with contextlib.suppress(OSError):
+                process.terminate()
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            if callable(killpg):
+                try:
+                    killpg(process.pid, sigkill)
+                except (OSError, ProcessLookupError):
+                    with contextlib.suppress(OSError):
+                        process.kill()
+            else:
+                with contextlib.suppress(OSError):
+                    process.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=2.0)
+
+
 def _drain_pipe(
     pipe: Any, target: bytearray, limit: int, overflow: threading.Event
 ) -> None:
@@ -333,6 +479,7 @@ def _run_pytest_bounded(
         env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        **_process_group_options(),
     )
     stdout_buffer = bytearray()
     stderr_buffer = bytearray()
@@ -351,6 +498,7 @@ def _run_pytest_bounded(
     )
     for reader in readers:
         reader.start()
+    windows_job = _create_windows_job(process)
 
     deadline = monotonic() + min(max(timeout, 0.01), MAX_COLLECTION_SECONDS)
     timed_out = False
@@ -363,18 +511,11 @@ def _run_pytest_bounded(
             break
         overflow.wait(min(0.05, remaining))
 
-    if process.poll() is None:
-        with contextlib.suppress(OSError):
-            process.terminate()
-        try:
-            process.wait(timeout=1.0)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(OSError):
-                process.kill()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=1.0)
+    if process.poll() is None or os.name != "nt":
+        _terminate_process_tree(process)
     for reader in readers:
         reader.join(timeout=2.0)
+    _close_windows_job(windows_job)
     return _BoundedProcessResult(
         process.returncode,
         as_text(bytes(stdout_buffer)),
