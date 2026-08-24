@@ -57,6 +57,10 @@ _KNOWN_SETUP_ACTIONS = {
     "hynek/build-and-inspect-python-package",
     "zizmorcore/zizmor-action",
 }
+_WORKSPACE_RESTORING_ACTIONS = {
+    "actions/cache",
+    "actions/download-artifact",
+}
 _SAFE_SETUP_COMMANDS = {
     "cat",
     "chmod",
@@ -949,37 +953,122 @@ def _github_path_pattern_regex(pattern: str) -> str | None:
     return "".join(pieces)
 
 
-def _workflow_runs_for_changes(events: Any, changed_files: tuple[str, ...]) -> bool | None:
-    """Evaluate path filters only when an explicit changed-file set is bound."""
+def _event_config(events: Any, event_name: str) -> tuple[bool, dict[str, Any]] | None:
+    """Select one GitHub event configuration without unioning other events."""
 
-    if not isinstance(events, dict):
+    if isinstance(events, str):
+        return (events == event_name, {})
+    if isinstance(events, list) and all(isinstance(item, str) for item in events):
+        return (event_name in events, {})
+    if isinstance(events, dict) and all(isinstance(key, str) for key in events):
+        if event_name not in events:
+            return False, {}
+        config = events[event_name]
+        if config is None:
+            return True, {}
+        if isinstance(config, dict):
+            return True, config
+    return None
+
+
+def _path_filter_runs(config: dict[str, Any], changed_files: tuple[str, ...]) -> bool | None:
+    has_paths = "paths" in config
+    has_ignored = "paths-ignore" in config
+    if has_paths and has_ignored:
+        return None
+    if not has_paths and not has_ignored:
         return True
-    filtered_event_seen = False
-    for config in events.values():
-        if not isinstance(config, dict):
-            return True
-        has_paths = "paths" in config
-        has_ignored = "paths-ignore" in config
-        if has_paths and has_ignored:
+    if has_paths:
+        matches = [_path_patterns_match(path, config["paths"]) for path in changed_files]
+        if any(value is None for value in matches):
             return None
-        if not has_paths and not has_ignored:
+        return any(matches)
+    ignored = [_path_patterns_match(path, config["paths-ignore"]) for path in changed_files]
+    if any(value is None for value in ignored):
+        return None
+    return any(not value for value in ignored)
+
+
+def _workflow_runs_for_changes(
+    events: Any,
+    changed_files: tuple[str, ...],
+    event_context: str | None = None,
+) -> bool | None:
+    """Evaluate path filters only for one explicitly bound event context."""
+
+    if event_context is not None:
+        selected = _event_config(events, event_context)
+        if selected is None:
+            return None
+        present, config = selected
+        return False if not present else _path_filter_runs(config, changed_files)
+    if isinstance(events, dict):
+        event_names = tuple(key for key in events if isinstance(key, str))
+        if len(event_names) != 1:
+            return None
+        return _path_filter_runs(events[event_names[0]] or {}, changed_files)
+    return None
+
+
+def _path_is_within(root: Path, cwd: Path, raw_path: str) -> bool | None:
+    """Classify a static action path as inside the analyzed repository."""
+
+    text = raw_path.strip()
+    if not text or "${{" in text or "*" in text:
+        return None
+    if text.startswith("~"):
+        return False
+    try:
+        candidate = (cwd / text).resolve() if not Path(text).is_absolute() else Path(text).resolve()
+        candidate.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
+def _workspace_restore_effect(
+    action_name: str, raw_with: Any, root: Path, cwd: Path
+) -> bool | None:
+    """Return whether a file-producing action can affect repository bytes."""
+
+    if action_name == "actions/download-artifact":
+        if raw_with is None:
             return True
-        filtered_event_seen = True
-        if has_paths:
-            matches = [_path_patterns_match(path, config["paths"]) for path in changed_files]
-            if any(value is None for value in matches):
-                return None
-            if any(matches):
+        if not isinstance(raw_with, dict):
+            return None
+        raw_path = raw_with.get("path")
+        if raw_path is None:
+            return True
+        path = _scalar(raw_path)
+        return None if path is None else _path_is_within(root, cwd, path)
+    if not isinstance(raw_with, dict):
+        return None
+    if "path" not in raw_with:
+        return None
+    raw_paths = _scalar(raw_with["path"])
+    if raw_paths is None or not raw_paths.strip():
+        return None
+    for raw_path in raw_paths.splitlines():
+        path = raw_path.strip()
+        if not path:
+            continue
+        inside = _path_is_within(root, cwd, path)
+        if inside is None:
+            return None
+        if inside:
+            normalized = path.replace("\\", "/")
+            while normalized.startswith("./"):
+                normalized = normalized[2:]
+            if not (
+                normalized == ".mypy_cache"
+                or normalized.startswith(".mypy_cache/")
+                or normalized == ".ruff_cache"
+                or normalized.startswith(".ruff_cache/")
+                or normalized == "__pycache__"
+                or normalized.startswith("__pycache__/")
+            ):
                 return True
-        else:
-            ignored = [
-                _path_patterns_match(path, config["paths-ignore"]) for path in changed_files
-            ]
-            if any(value is None for value in ignored):
-                return None
-            if any(not value for value in ignored):
-                return True
-    return not filtered_event_seen
+    return False
 
 
 def _pipeline_is_safe(command: str) -> bool:
@@ -1060,8 +1149,14 @@ def _relative_matrix(row: dict[str, Any]) -> str:
 
 
 class _Resolver:
-    def __init__(self, root: Path, changed_files: Sequence[str] | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        changed_files: Sequence[str] | None = None,
+        event_context: str | None = None,
+    ) -> None:
         self.root = root.resolve()
+        self.event_context = event_context
         self.invocations: list[PytestInvocation] = []
         self.issues: list[TraceIssue] = []
         self.workflows: list[str] = []
@@ -1345,7 +1440,17 @@ class _Resolver:
                     (f"workflow:{path}",),
                 )
                 continue
-            self._resolve_workflow(path, _Context(self.root, {}, {}, {}, (relative,)))
+            self._resolve_workflow(
+                path,
+                _Context(
+                    self.root,
+                    {},
+                    {},
+                    {},
+                    (relative,),
+                    self.event_context,
+                ),
+            )
         invocation_workflows = {
             invocation.provenance[0]
             for invocation in self.invocations
@@ -1469,13 +1574,19 @@ class _Resolver:
             if self.changed_files is None:
                 self._workflow_path_filters.add(relative)
             else:
-                runs_for_changes = _workflow_runs_for_changes(raw_events, self.changed_files)
+                runs_for_changes = _workflow_runs_for_changes(
+                    raw_events,
+                    self.changed_files,
+                    self.event_context,
+                )
                 if runs_for_changes is None:
                     self.issue(
                         "WORKFLOW_PATH_FILTER_UNKNOWN",
                         "workflow path filters could not be evaluated for the bound change set",
                         context.provenance,
                     )
+                    self._workflow_stack.remove(path)
+                    return
                 elif not runs_for_changes:
                     self._workflow_stack.remove(path)
                     return
@@ -1815,6 +1926,21 @@ class _Resolver:
                                 self.issue(code, message, provenance)
                             if configured:
                                 workspace_changed = True
+                    if action_name in _WORKSPACE_RESTORING_ACTIONS:
+                        raw_with = raw_step.get("with")
+                        effect = _workspace_restore_effect(
+                            action_name,
+                            raw_with,
+                            self.root,
+                            step_context.cwd,
+                        )
+                        if effect is None or effect:
+                            self.issue(
+                                "WORKSPACE_RESTORE_UNKNOWN",
+                                f"{action_name} may restore files into the analyzed workspace",
+                                provenance,
+                            )
+                            workspace_changed = True
                     if action_name == "pre-commit-ci/lite-action" and self._precommit_config_is_non_test():
                         continue
                     if action_name not in _KNOWN_SETUP_ACTIONS:
@@ -2732,6 +2858,31 @@ class _Resolver:
             if "=" in line
         )
 
+    def _tox_execution_context_unknown(
+        self,
+        config: tuple[list[str], dict[str, dict[str, Any]], dict[str, Any] | None],
+        name: str,
+    ) -> bool:
+        """Reject tox lanes whose setup changes cwd or runs pre-commands."""
+
+        _, envs, tox = config
+        if tox is not None:
+            base = tox.get("env_run_base", {})
+            selected = envs.get(name, {})
+        else:
+            base = envs.get("__base__", {})
+            selected = envs.get(name, {})
+        if not isinstance(base, dict) or not isinstance(selected, dict):
+            return True
+        for mapping in (base, selected):
+            for key in ("changedir", "change_dir"):
+                if key in mapping and mapping[key] not in (None, ""):
+                    return True
+            commands_pre = mapping.get("commands_pre")
+            if commands_pre not in (None, "", [], ()):
+                return True
+        return False
+
     def _resolve_tox(self, tokens: tuple[str, ...], context: _Context, depth: int) -> None:
         config = self._tox_config(context.cwd)
         if config is None:
@@ -2778,6 +2929,13 @@ class _Resolver:
             )
             return
         for name in selected:
+            if self._tox_execution_context_unknown(config, name):
+                self.issue(
+                    "TOX_EXECUTION_CONTEXT_UNKNOWN",
+                    f"tox environment {name!r} changes directory or runs commands_pre",
+                    context.provenance + (f"tox:{name}",),
+                )
+                continue
             if self._tox_pytest_environment_unknown(config, name):
                 self.issue(
                     "PYTEST_CONFIGURATION_UNKNOWN",
@@ -2894,6 +3052,8 @@ class _Resolver:
 
 
 def trace_github_actions(
-    root: Path, changed_files: Sequence[str] | None = None
+    root: Path,
+    changed_files: Sequence[str] | None = None,
+    event: str | None = None,
 ) -> TraceResult:
-    return _Resolver(root, changed_files).trace()
+    return _Resolver(root, changed_files, event).trace()

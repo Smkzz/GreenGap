@@ -105,6 +105,68 @@ def test_repository_install_helper_is_resolved_instead_of_treated_as_coreutils(
     assert not any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
 
 
+@pytest.mark.parametrize(
+    ("action", "with_block"),
+    [
+        (
+            "actions/cache@v4",
+            "with:\n          path: .\n          key: source",
+        ),
+        ("actions/cache@v4", "with:\n          key: source"),
+        ("actions/download-artifact@v4", "with:\n          name: test-config"),
+    ],
+)
+def test_workspace_restoring_actions_invalidate_later_test_inference(
+    tmp_path, action: str, with_block: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: {action}
+        {with_block}
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "WORKSPACE_RESTORE_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_cache_of_known_generated_metadata_does_not_poison_test_inference(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache@v4
+        with:
+          path: .mypy_cache
+          key: mypy
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert not any(issue.code == "WORKSPACE_RESTORE_UNKNOWN" for issue in result.issues)
+
+
 def test_sparse_checkout_inputs_require_a_bound_workspace_surface(tmp_path) -> None:
     write_files(
         tmp_path,
@@ -275,6 +337,66 @@ commands = pytest
 
     assert not result.invocations
     assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+
+
+@pytest.mark.parametrize(
+    "tox_field",
+    [
+        "changedir = tests/unit",
+        "change_dir = tests/unit",
+        "commands_pre = rm generated.py",
+    ],
+)
+def test_tox_execution_context_fields_invalidate_file_scope(tmp_path, tox_field: str) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("tox -e py311"),
+            "tox.ini": f"""[tox]
+envlist = py311
+[testenv]
+{tox_field}
+commands = pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "TOX_EXECUTION_CONTEXT_UNKNOWN" for issue in result.issues)
+
+
+def test_changed_files_require_event_binding_for_mixed_event_filters(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on:
+  push:
+  pull_request:
+    paths:
+      - src/**
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest
+""",
+        },
+    )
+
+    unbound = trace_github_actions(tmp_path, ("tests/test_a.py",))
+    pull_request = trace_github_actions(
+        tmp_path, ("tests/test_a.py",), event="pull_request"
+    )
+    push = trace_github_actions(tmp_path, ("tests/test_a.py",), event="push")
+
+    assert not unbound.invocations
+    assert any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in unbound.issues)
+    assert not pull_request.invocations
+    assert not any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in pull_request.issues)
+    assert push.invocations
 
 
 def test_npm_test_includes_the_pretest_lifecycle_script(tmp_path) -> None:
