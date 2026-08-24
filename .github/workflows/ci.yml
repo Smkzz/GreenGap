@@ -113,7 +113,10 @@ jobs:
             python -m compileall -q src tests scripts
             python -c "from scripts.create_release_provenance import create_manifest; print(create_manifest.__name__)"
           )
-          python -m pip install --force-reinstall --no-deps --no-build-isolation "${archive}"
+          archive_path="$(realpath "${archive}")"
+          archive_hash="$(sha256sum "${archive_path}" | cut -d ' ' -f1)"
+          printf 'greengap @ file://%s --hash=sha256:%s\n' "${archive_path}" "${archive_hash}" > sdist-requirements.txt
+          python -m pip install --force-reinstall --no-deps --no-build-isolation --require-hashes -r sdist-requirements.txt
           python -m pip check
           greengap --version
 
