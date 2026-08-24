@@ -12,6 +12,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import tomllib
 from collections.abc import Iterator
@@ -550,22 +551,25 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
         environment["PYTHONPATH"] = str(src)
     else:
         environment.pop("PYTHONPATH", None)
-    args = [
-        sys.executable,
-        "-m",
-        "pytest",
-        *_explicit_project_plugin_args(root),
-        "--collect-only",
-        "-q",
-    ]
-    try:
-        completed = _run_pytest_bounded(args, root, environment, timeout)
-    except OSError as exc:
-        return CollectionResult(
-            complete=False,
-            environment_valid=False,
-            error=f"could not start pytest: {exc}",
-        )
+    with tempfile.TemporaryDirectory(prefix="greengap-pytest-cache-") as cache_dir:
+        args = [
+            sys.executable,
+            "-m",
+            "pytest",
+            *_explicit_project_plugin_args(root),
+            "--collect-only",
+            "-q",
+            "-o",
+            f"cache_dir={cache_dir}",
+        ]
+        try:
+            completed = _run_pytest_bounded(args, root, environment, timeout)
+        except OSError as exc:
+            return CollectionResult(
+                complete=False,
+                environment_valid=False,
+                error=f"could not start pytest: {exc}",
+            )
 
     stdout = completed.stdout
     stderr = completed.stderr

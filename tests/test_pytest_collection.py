@@ -22,6 +22,15 @@ def test_real_collection_returns_node_ids_and_paths(tmp_path) -> None:
     assert result.nodes[0].nodeid.startswith("tests/test_a.py::")
 
 
+def test_real_collection_keeps_pytest_cache_out_of_the_workspace(tmp_path) -> None:
+    write_files(tmp_path, {"tests/test_a.py": "def test_a():\n    assert True\n"})
+
+    result = collect_pytest(tmp_path, timeout=30)
+
+    assert result.complete
+    assert not (tmp_path / ".pytest_cache").exists()
+
+
 def test_real_collection_can_collect_zero_tests(tmp_path) -> None:
     write_files(tmp_path, {"README.md": "empty\n"})
     result = collect_pytest(tmp_path, timeout=30)
