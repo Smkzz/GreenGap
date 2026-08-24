@@ -12,7 +12,8 @@ on:
 permissions: {}
 
 jobs:
-  analysis:
+  scorecard-gate:
+    name: scorecard-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -34,6 +35,12 @@ jobs:
         uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
         with:
           sarif_file: results.sarif
+      - name: Enforce clean Scorecard findings
+        shell: bash
+        run: |
+          set -euo pipefail
+          findings="$(jq '[.runs[]?.results[]?] | length' results.sarif)"
+          test "${findings}" -eq 0
       - name: Upload raw Scorecard results
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
