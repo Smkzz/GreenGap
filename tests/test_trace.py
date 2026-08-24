@@ -172,6 +172,29 @@ def test_package_manager_equivalents_are_supported(manager: str, tmp_path) -> No
     assert result.invocations[0].paths == ("tests",)
 
 
+@pytest.mark.parametrize("manager", ["pnpm", "yarn"])
+def test_non_npm_lifecycle_hooks_are_not_invented(manager: str, tmp_path) -> None:
+    command = f"{manager} run test" if manager == "pnpm" else f"{manager} test"
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow(command),
+            "package.json": json.dumps(
+                {
+                    "scripts": {
+                        "pretest": "pytest tests/preflight",
+                        "test": "echo test",
+                    }
+                }
+            ),
+        },
+    )
+    result = trace_github_actions(tmp_path)
+    assert not result.invocations
+    assert any(issue.code == "PACKAGE_LIFECYCLE_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
 def test_local_composite_action_is_resolved(tmp_path) -> None:
     write_files(
         tmp_path,

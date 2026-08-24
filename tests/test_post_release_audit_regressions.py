@@ -48,6 +48,30 @@ def test_pretest_file_mutation_invalidates_the_selection_graph(tmp_path) -> None
     assert result.relevant_incomplete
 
 
+def test_cross_step_file_mutation_invalidates_later_test_inference(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: rm tests/test_a.py
+      - run: pytest
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
 def test_helper_script_mutation_invalidates_the_selection_graph(tmp_path) -> None:
     write_files(
         tmp_path,
@@ -85,6 +109,32 @@ jobs:
     result = trace_github_actions(tmp_path)
 
     assert any(issue.code == "CHECKOUT_SPARSE_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize("input_name", ["repository", "ref", "path", "filter"])
+def test_checkout_surface_inputs_require_a_bound_workspace(tmp_path, input_name: str) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          {input_name}: changed-value
+      - run: pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "CHECKOUT_WORKSPACE_UNKNOWN" for issue in result.issues)
     assert result.relevant_incomplete
 
 
@@ -143,6 +193,49 @@ def test_native_pytest_configuration_formats_drive_candidate_discovery(
     assert selected == (tmp_path / config_name).as_posix()
     assert options["python_files"] == ["check_*.py"]
     assert any(candidate.path == "tests/check_math.py" and candidate.confidence == "high" for candidate in candidates)
+
+
+@pytest.mark.parametrize(
+    ("config_name", "config"),
+    [
+        (".pytest.toml", '[pytest]\npython_files = ["check_*.py"]\npython_functions = ["check_*"]\n'),
+        (".pytest.ini", "[pytest]\npython_files = check_*.py\npython_functions = check_*\n"),
+    ],
+)
+def test_hidden_pytest_configuration_formats_drive_candidate_discovery(
+    tmp_path, config_name: str, config: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            config_name: config,
+            "tests/check_math.py": "def check_addition():\n    assert 1 + 1 == 2\n",
+        },
+    )
+
+    options, selected = pytest_config(tmp_path)
+    candidates = discover_candidates(tmp_path)
+
+    assert selected == (tmp_path / config_name).as_posix()
+    assert any(candidate.path == "tests/check_math.py" for candidate in candidates)
+
+
+def test_bare_pyproject_does_not_mask_pytest_tox_configuration(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            "pyproject.toml": "[project]\nname = 'fixture'\n",
+            "tox.ini": "[pytest]\npython_files = check_*.py\npython_functions = check_*\n",
+            "tests/check_math.py": "def check_addition():\n    assert 1 + 1 == 2\n",
+        },
+    )
+
+    options, selected = pytest_config(tmp_path)
+    candidates = discover_candidates(tmp_path)
+
+    assert selected == (tmp_path / "tox.ini").as_posix()
+    assert options["python_files"] == "check_*.py"
+    assert any(candidate.path == "tests/check_math.py" for candidate in candidates)
 
 
 def test_tox_setenv_pytest_addopts_invalidates_file_scope(tmp_path) -> None:
@@ -267,6 +360,30 @@ def test_python_module_precommit_resolves_test_bearing_local_hooks(tmp_path) -> 
     assert any(invocation.covers("tests/hooks/test_hook.py") for invocation in result.invocations)
 
 
+def test_precommit_selected_hook_does_not_resolve_unselected_test_hooks(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("pre-commit run lint --all-files"),
+            ".pre-commit-config.yaml": """repos:
+  - repo: local
+    hooks:
+      - id: lint
+        entry: echo lint
+        language: system
+      - id: pytest-hook
+        entry: pytest tests/hooks
+        language: system
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert not any(issue.code == "PRE_COMMIT_HOOKS_UNKNOWN" for issue in result.issues)
+
+
 def test_workflow_path_filters_require_an_actual_change_set(tmp_path) -> None:
     write_files(
         tmp_path,
@@ -295,6 +412,32 @@ jobs:
     assert bound.changed_files == ("src/main.py",)
     assert not any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in bound.issues)
     assert bound.invocations
+
+
+def test_github_path_star_does_not_cross_directory_boundaries(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on:
+  pull_request:
+    paths:
+      - src/*
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest
+""",
+        },
+    )
+
+    nested = trace_github_actions(tmp_path, ("src/a/b.py",))
+    root_file = trace_github_actions(tmp_path, ("src/a.py",))
+
+    assert not nested.invocations
+    assert not any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in nested.issues)
+    assert root_file.invocations
 
 
 def _pid_exists(pid: int) -> bool:
@@ -420,6 +563,16 @@ def test_release_workflow_is_build_once_and_non_overwriting() -> None:
     assert "gh release view" in workflow_text
     assert "refusing to replace or resume it" in workflow_text
     assert "gh release upload" in workflow_text
+    assert "pip==26.2.1" in workflow_text
+    assert "build==1.5.0" in workflow_text
+    assert "twine==7.0.0" in workflow_text
+
+
+def test_sdist_manifest_includes_certification_support_files() -> None:
+    manifest = (Path(__file__).parents[1] / "MANIFEST.in").read_text(encoding="utf-8")
+
+    assert "recursive-include tests *.py" in manifest
+    assert "recursive-include scripts *.py" in manifest
 
 
 def test_release_provenance_manifest_binds_exact_artifact_bytes(tmp_path) -> None:

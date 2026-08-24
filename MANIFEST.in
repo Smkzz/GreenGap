@@ -1,0 +1,4 @@
+include CHANGELOG.md CONTRIBUTING.md LICENSE README.md SECURITY.md pyproject.toml
+recursive-include src/greengap *.py py.typed
+recursive-include tests *.py
+recursive-include scripts *.py

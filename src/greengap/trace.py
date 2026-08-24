@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import configparser
-import fnmatch
 import itertools
 import json
 import re
@@ -110,6 +109,7 @@ class _Context:
     inputs: dict[str, Any]
     provenance: tuple[str, ...]
     event_context: str | None = None
+    workspace_changed: bool = False
 
 
 def _scalar(value: Any) -> str | None:
@@ -895,10 +895,48 @@ def _path_patterns_match(path: str, patterns: Any) -> bool | None:
     for raw_pattern in patterns:
         negated = raw_pattern.startswith("!")
         pattern = raw_pattern[1:] if negated else raw_pattern
-        if not pattern or not fnmatch.fnmatchcase(path, pattern):
+        if not pattern:
+            return None
+        regex = _github_path_pattern_regex(pattern)
+        if regex is None:
+            return None
+        if re.fullmatch(regex, path.replace("\\", "/")) is None:
             continue
         matched = not negated
     return matched
+
+
+def _github_path_pattern_regex(pattern: str) -> str | None:
+    """Translate GitHub's path-filter wildcards to a whole-path regex.
+
+    GitHub's single-star wildcard never crosses a slash; double-star is the
+    recursive form. Unsupported glob syntax is reported as unknown by the
+    caller rather than being treated as a literal or a broader match.
+    """
+
+    normalized = pattern.replace("\\", "/")
+    pieces: list[str] = []
+    index = 0
+    while index < len(normalized):
+        character = normalized[index]
+        if character == "*":
+            if index + 1 < len(normalized) and normalized[index + 1] == "*":
+                index += 2
+                if index < len(normalized) and normalized[index] == "/":
+                    pieces.append("(?:.*/)?")
+                    index += 1
+                else:
+                    pieces.append(".*")
+                continue
+            pieces.append("[^/]*")
+        elif character == "?":
+            pieces.append("[^/]")
+        elif character in "[]{}()":
+            return None
+        else:
+            pieces.append(re.escape(character))
+        index += 1
+    return "".join(pieces)
 
 
 def _workflow_runs_for_changes(events: Any, changed_files: tuple[str, ...]) -> bool | None:
@@ -1093,8 +1131,8 @@ class _Resolver:
                         return False
         return True
 
-    def _precommit_entries(self) -> tuple[str, ...] | None:
-        """Return statically declared hook entries, or None if unsafe."""
+    def _precommit_entries(self) -> tuple[tuple[str, str, tuple[str, ...]], ...] | None:
+        """Return statically declared hook ids, entries, and stages."""
 
         path = next(
             (
@@ -1115,20 +1153,75 @@ class _Resolver:
             return None
         if not isinstance(data, dict) or not isinstance(data.get("repos"), list):
             return None
-        entries: list[str] = []
+        entries: list[tuple[str, str, tuple[str, ...]]] = []
         for raw_repo in data["repos"]:
             if not isinstance(raw_repo, dict) or not isinstance(raw_repo.get("hooks"), list):
                 return None
             for raw_hook in raw_repo["hooks"]:
                 if not isinstance(raw_hook, dict):
                     return None
+                hook_id = _scalar(raw_hook.get("id"))
                 entry = _scalar(raw_hook.get("entry"))
-                if entry is None:
+                if not hook_id or entry is None:
                     return None
-                entries.append(entry)
+                raw_stages = raw_hook.get("stages")
+                stages: tuple[str, ...]
+                if isinstance(raw_stages, str):
+                    stages = (raw_stages,)
+                elif isinstance(raw_stages, list) and all(isinstance(stage, str) for stage in raw_stages):
+                    stages = tuple(raw_stages)
+                elif raw_stages in (None, []):
+                    stages = ()
+                else:
+                    return None
+                entries.append((hook_id, entry, stages))
         return tuple(entries)
 
-    def _resolve_precommit(self, context: _Context, depth: int) -> None:
+    def _resolve_precommit_selection(
+        self, tokens: tuple[str, ...]
+    ) -> tuple[frozenset[str] | None, str | None] | None:
+        try:
+            run_index = tokens.index("run")
+        except ValueError:
+            return None
+        selected: set[str] = set()
+        stage: str | None = None
+        value_options = {"--config", "--hook-stage", "--from-ref", "--to-ref", "--source"}
+        index = run_index + 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                selected.update(tokens[index + 1 :])
+                break
+            if token in {"--hook-stage", "--stage"}:
+                if index + 1 >= len(tokens):
+                    return None
+                stage = tokens[index + 1]
+                index += 2
+                continue
+            if token.startswith("--hook-stage=") or token.startswith("--stage="):
+                stage = token.split("=", 1)[1]
+                index += 1
+                continue
+            if token in value_options:
+                if index + 1 >= len(tokens):
+                    return None
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            selected.add(token)
+            index += 1
+        return (frozenset(selected) if selected else None), stage
+
+    def _resolve_precommit(
+        self,
+        context: _Context,
+        depth: int,
+        selected_hooks: frozenset[str] | None = None,
+        selected_stage: str | None = None,
+    ) -> None:
         if self._precommit_config_is_non_test():
             return
         entries = self._precommit_entries()
@@ -1146,10 +1239,23 @@ class _Resolver:
                 context.provenance,
             )
             return
-        for entry in entries:
+        selected_entries = tuple(
+            (hook_id, entry)
+            for hook_id, entry, stages in entries
+            if (selected_hooks is None or hook_id in selected_hooks)
+            and (selected_stage is None or not stages or selected_stage in stages)
+        )
+        if selected_hooks is not None and not any(hook_id in selected_hooks for hook_id, _, _ in entries):
+            self.issue(
+                "PRE_COMMIT_HOOK_UNKNOWN",
+                "selected pre-commit hook id is not declared in the repository configuration",
+                context.provenance,
+            )
+            return
+        for hook_id, entry in selected_entries:
             self._resolve_command(
                 entry,
-                replace(context, provenance=context.provenance + ("pre-commit:hook",)),
+                replace(context, provenance=context.provenance + (f"pre-commit:{hook_id}",)),
                 depth + 1,
             )
 
@@ -1534,6 +1640,7 @@ class _Resolver:
                 "STEPS_UNKNOWN", "workflow steps are not statically enumerable", context.provenance
             )
             return
+        workspace_changed = context.workspace_changed
         for index, raw_step in enumerate(steps):
             if not isinstance(raw_step, dict):
                 self.issue(
@@ -1567,9 +1674,17 @@ class _Resolver:
                     provenance,
                     relevant=condition_relevant,
                 )
+                raw_run = _scalar(raw_step.get("run")) if "run" in raw_step else None
+                if raw_run is not None and _script_contains_file_mutation(raw_run):
+                    workspace_changed = True
                 continue
             step_env, step_env_complete = _env_mapping(raw_step.get("env"), context)
-            step_context = replace(context, env={**context.env, **step_env}, provenance=provenance)
+            step_context = replace(
+                context,
+                env={**context.env, **step_env},
+                provenance=provenance,
+                workspace_changed=workspace_changed,
+            )
             if not step_env_complete:
                 self.issue(
                     "STEP_ENV_UNRESOLVED",
@@ -1635,9 +1750,17 @@ class _Resolver:
                         provenance,
                     )
                     continue
-                self._resolve_command(
-                    command, replace(step_context, cwd=cwd), 0, shell=shell
-                )
+                command_context = replace(step_context, cwd=cwd)
+                if workspace_changed and _command_may_run_tests(command):
+                    self.issue(
+                        "WORKSPACE_MUTATION_UNKNOWN",
+                        "a previous workflow step may have changed workspace bytes before this test command",
+                        provenance,
+                    )
+                else:
+                    self._resolve_command(command, command_context, 0, shell=shell)
+                if _script_contains_file_mutation(command):
+                    workspace_changed = True
             elif "uses" in raw_step:
                 uses = raw_step.get("uses")
                 if isinstance(uses, str) and uses.startswith("./"):
@@ -1648,16 +1771,40 @@ class _Resolver:
                     action_name = uses.split("@", 1)[0].lower()
                     if action_name == "actions/checkout":
                         raw_with = raw_step.get("with", {})
-                        sparse_value = (
-                            raw_with.get("sparse-checkout") if isinstance(raw_with, dict) else None
-                        )
-                        sparse_enabled = sparse_value not in (None, "", False, [])
-                        if isinstance(raw_with, dict) and sparse_enabled:
+                        if not isinstance(raw_with, dict):
                             self.issue(
-                                "CHECKOUT_SPARSE_UNKNOWN",
-                                "actions/checkout sparse inputs change the analyzed workspace surface",
+                                "CHECKOUT_WORKSPACE_UNKNOWN",
+                                "actions/checkout inputs are not statically enumerable",
                                 provenance,
                             )
+                            workspace_changed = True
+                        else:
+                            workspace_inputs = {
+                                "repository",
+                                "ref",
+                                "path",
+                                "filter",
+                                "sparse-checkout",
+                                "sparse-checkout-cone-mode",
+                                "submodules",
+                                "lfs",
+                                "clean",
+                            }
+                            configured = workspace_inputs.intersection(raw_with)
+                            for input_name in sorted(configured):
+                                if input_name == "sparse-checkout":
+                                    code = "CHECKOUT_SPARSE_UNKNOWN"
+                                    message = (
+                                        "actions/checkout sparse inputs change the analyzed workspace surface"
+                                    )
+                                else:
+                                    code = "CHECKOUT_WORKSPACE_UNKNOWN"
+                                    message = (
+                                        f"actions/checkout input {input_name!r} changes the analyzed workspace surface"
+                                    )
+                                self.issue(code, message, provenance)
+                            if configured:
+                                workspace_changed = True
                     if action_name == "pre-commit-ci/lite-action" and self._precommit_config_is_non_test():
                         continue
                     if action_name not in _KNOWN_SETUP_ACTIONS:
@@ -1889,12 +2036,28 @@ class _Resolver:
                         shell_env[key] = value
                 continue
             if first in {"pre-commit", "pre_commit"}:
-                self._resolve_precommit(nested_context, depth)
+                selection = self._resolve_precommit_selection(tokens)
+                if selection is None:
+                    self.issue(
+                        "PRE_COMMIT_COMMAND_UNKNOWN",
+                        "only an explicit pre-commit run command has auditable hook selection",
+                        context.provenance,
+                    )
+                else:
+                    self._resolve_precommit(nested_context, depth, *selection)
                 continue
             if first.startswith("python") and "-m" in tokens:
                 module_indexes = [index for index, token in enumerate(tokens[:-1]) if token == "-m"]
                 if any(_basename(tokens[index + 1]) in {"pre-commit", "pre_commit"} for index in module_indexes):
-                    self._resolve_precommit(nested_context, depth)
+                    selection = self._resolve_precommit_selection(tokens)
+                    if selection is None:
+                        self.issue(
+                            "PRE_COMMIT_COMMAND_UNKNOWN",
+                            "only an explicit pre-commit run command has auditable hook selection",
+                            context.provenance,
+                        )
+                    else:
+                        self._resolve_precommit(nested_context, depth, *selection)
                     continue
             if (first.startswith("python") or first == "py") and "-c" in tokens:
                 if not _safe_python_code(tokens):
@@ -2676,11 +2839,23 @@ class _Resolver:
             return
         scripts = package[1]
         lifecycle_names = [name]
-        if command in {"test", "run"}:
+        if manager == "npm" and command in {"test", "run"}:
             lifecycle_names = [f"pre{name}", name, f"post{name}"]
+        elif manager != "npm" and any(
+            lifecycle in scripts for lifecycle in (f"pre{name}", f"post{name}")
+        ):
+            self.issue(
+                "PACKAGE_LIFECYCLE_UNKNOWN",
+                f"{manager} lifecycle hooks are not assumed to run implicitly",
+                context.provenance,
+            )
         selected_scripts = [lifecycle for lifecycle in lifecycle_names if lifecycle in scripts]
         pre_lifecycle = f"pre{name}"
-        if pre_lifecycle in scripts and _pretest_script_unknown(scripts[pre_lifecycle]):
+        if (
+            manager == "npm"
+            and pre_lifecycle in scripts
+            and _pretest_script_unknown(scripts[pre_lifecycle])
+        ):
             self.issue(
                 "NPM_PRETEST_UNKNOWN",
                 "npm pre-test lifecycle script is not statically harmless or test-resolvable",

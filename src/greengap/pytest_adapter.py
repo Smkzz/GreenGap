@@ -94,27 +94,25 @@ def _read_ini(path: Path, section: str) -> dict[str, str]:
 def pytest_config(root: Path) -> tuple[dict[str, Any], str | None]:
     """Read the first pytest configuration file pytest would normally honor."""
 
-    pytest_toml = root / "pytest.toml"
-    if pytest_toml.exists():
-        data = _read_toml(pytest_toml)
-        options = data.get("pytest", {})
-        if isinstance(options, dict):
-            return options, pytest_toml.as_posix()
+    for pytest_toml in (root / "pytest.toml", root / ".pytest.toml"):
+        if pytest_toml.exists():
+            data = _read_toml(pytest_toml)
+            options = data.get("pytest", {})
+            return (options if isinstance(options, dict) else {}), pytest_toml.as_posix()
 
-    ini = root / "pytest.ini"
-    if ini.exists():
-        return _read_ini(ini, "pytest"), ini.as_posix()
+    for ini in (root / "pytest.ini", root / ".pytest.ini"):
+        if ini.exists():
+            return _read_ini(ini, "pytest"), ini.as_posix()
 
     pyproject = root / "pyproject.toml"
     if pyproject.exists():
         data = _read_toml(pyproject)
-        native_options = data.get("tool", {}).get("pytest", {})
-        if isinstance(native_options, dict):
-            options = native_options.get("ini_options", native_options)
-        else:
-            options = {}
-        if isinstance(options, dict):
-            return options, pyproject.as_posix()
+        tool = data.get("tool", {})
+        pytest_options = tool.get("pytest") if isinstance(tool, dict) and "pytest" in tool else None
+        if isinstance(pytest_options, dict):
+            native_options = pytest_options.get("ini_options", pytest_options)
+            if isinstance(native_options, dict):
+                return native_options, pyproject.as_posix()
 
     tox_ini = root / "tox.ini"
     if tox_ini.exists():
