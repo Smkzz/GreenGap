@@ -87,6 +87,24 @@ def test_helper_script_mutation_invalidates_the_selection_graph(tmp_path) -> Non
     assert result.relevant_incomplete
 
 
+def test_repository_install_helper_is_resolved_instead_of_treated_as_coreutils(
+    tmp_path,
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("scripts/install\npytest tests"),
+            "scripts/install": "#!/bin/sh\npython -m venv .venv\n",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert not any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+
+
 def test_sparse_checkout_inputs_require_a_bound_workspace_surface(tmp_path) -> None:
     write_files(
         tmp_path,

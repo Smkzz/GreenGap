@@ -814,8 +814,18 @@ _PRETEST_MUTATING_GIT_COMMANDS = {
 def _segment_mutates_files(segment: str, tokens: tuple[str, ...]) -> bool:
     if _has_unquoted(segment, ">"):
         return True
-    command = _basename(tokens[0]) if tokens else ""
-    if command in _PRETEST_MUTATION_COMMANDS:
+    raw_command = tokens[0] if tokens else ""
+    command = _basename(raw_command)
+    # A repository-relative helper such as ``scripts/install`` must be
+    # resolved and inspected as a script.  Treating its basename as the
+    # coreutils ``install`` command makes ordinary dependency setup poison
+    # every later test step.  Absolute/system commands remain conservative.
+    repository_relative = raw_command.startswith(("./", "../")) or (
+        ("/" in raw_command or "\\" in raw_command)
+        and not raw_command.startswith(("/", "\\"))
+        and not re.match(r"^[A-Za-z]:[\\/]", raw_command)
+    )
+    if command in _PRETEST_MUTATION_COMMANDS and not repository_relative:
         return True
     if command == "git" and len(tokens) > 1:
         return _basename(tokens[1]) in _PRETEST_MUTATING_GIT_COMMANDS
