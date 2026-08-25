@@ -2465,6 +2465,8 @@ class _Resolver:
             return UNKNOWN_SIDE_EFFECT
 
         action_name = raw_uses.split("@", 1)[0].lower()
+        if action_name == "pre-commit-ci/lite-action" and self._precommit_config_is_non_test():
+            return MODELED_STATE_TRANSITION
         if action_name == "actions/checkout":
             self.issue(
                 "CHECKOUT_CONDITION_UNKNOWN",
