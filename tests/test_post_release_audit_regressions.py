@@ -611,7 +611,12 @@ jobs:
 
     unbound = trace_github_actions(tmp_path, ("tests/test_a.py",))
     pull_request = trace_github_actions(
-        tmp_path, ("tests/test_a.py",), event="pull_request"
+        tmp_path,
+        ("tests/test_a.py",),
+        event="pull_request",
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=1,
     )
     push = trace_github_actions(tmp_path, ("tests/test_a.py",), event="push")
 
@@ -689,7 +694,14 @@ jobs:
         },
     )
 
-    result = trace_github_actions(tmp_path, ("page.js",), event="pull_request")
+    result = trace_github_actions(
+        tmp_path,
+        ("page.js",),
+        event="pull_request",
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=1,
+    )
 
     assert not result.invocations
     assert any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in result.issues)
@@ -791,6 +803,114 @@ def test_read_only_python_diagnostic_is_explicitly_allowlisted(tmp_path) -> None
     assert not any(issue.code == "PYTHON_CODE_UNKNOWN" for issue in result.issues)
 
 
+def test_python_script_execution_invalidates_later_test_inference(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {".github/workflows/ci.yml": workflow("python scripts/rewrite.py\npytest")},
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTHON_EXECUTION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_unknown_python_module_invalidates_later_test_inference(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {".github/workflows/ci.yml": workflow("python -m repository_rewriter\npytest")},
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTHON_EXECUTION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_git_archive_output_is_not_read_only(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {".github/workflows/ci.yml": two_step_workflow("git archive --output=pytest.ini HEAD", "pytest")},
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "GIT_COMMAND_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_nested_tox_workspace_effects_propagate_to_later_pytest(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("tox run -e py311"),
+            "tox.ini": "[tox]\nenvlist = py311\n[testenv]\ncommands =\n    rm pytest.ini\n    pytest\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+
+
+def test_nested_precommit_workspace_effect_propagates_to_later_pytest(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(
+                "pre-commit run mutate --all-files", "pytest"
+            ),
+            ".pre-commit-config.yaml": """repos:
+  - repo: local
+    hooks:
+      - id: mutate
+        entry: rm pytest.ini
+        language: system
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+def test_nested_package_script_workspace_effect_propagates_to_later_pytest(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("npm test"),
+            "package.json": '{"scripts": {"test": "python scripts/rewrite.py\\npytest"}}',
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTHON_EXECUTION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_pytest_output_target_invalidates_subsequent_selection(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {".github/workflows/ci.yml": two_step_workflow("pytest tests/unit --junitxml=pytest.ini", "pytest")},
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert any(issue.code == "PYTEST_WORKSPACE_OUTPUT_UNKNOWN" for issue in result.issues)
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
 def test_python_module_precommit_resolves_test_bearing_local_hooks(tmp_path) -> None:
     write_files(
         tmp_path,
@@ -859,7 +979,13 @@ jobs:
     assert any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in result.issues)
     assert result.relevant_incomplete
 
-    bound = trace_github_actions(tmp_path, ("src/main.py",))
+    bound = trace_github_actions(
+        tmp_path,
+        ("src/main.py",),
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=1,
+    )
 
     assert bound.changed_files == ("src/main.py",)
     assert not any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in bound.issues)
@@ -884,12 +1010,170 @@ jobs:
         },
     )
 
-    nested = trace_github_actions(tmp_path, ("src/a/b.py",))
-    root_file = trace_github_actions(tmp_path, ("src/a.py",))
+    nested = trace_github_actions(
+        tmp_path,
+        ("src/a/b.py",),
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=1,
+    )
+    root_file = trace_github_actions(
+        tmp_path,
+        ("src/a.py",),
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=1,
+    )
 
     assert not nested.invocations
     assert not any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in nested.issues)
     assert root_file.invocations
+
+
+def test_push_branch_and_tag_filters_apply_only_to_the_matching_ref_type(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - v*
+    paths:
+      - src/**
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest
+""",
+        },
+    )
+    binding = {
+        "changed_files": ("src/main.py",),
+        "change_set_complete": True,
+        "commit_count": 1,
+        "changed_file_count": 1,
+    }
+
+    branch = trace_github_actions(tmp_path, event="push", ref="refs/heads/main", **binding)
+    other_branch = trace_github_actions(
+        tmp_path, event="push", ref="refs/heads/feature", **binding
+    )
+    tag = trace_github_actions(
+        tmp_path,
+        event="push",
+        ref="refs/tags/v1.0.0",
+        changed_files=("docs/readme.md",),
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=1,
+    )
+    other_tag = trace_github_actions(
+        tmp_path,
+        event="push",
+        ref="refs/tags/nightly",
+        changed_files=("docs/readme.md",),
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=1,
+    )
+
+    assert branch.invocations
+    assert not other_branch.invocations
+    assert tag.invocations
+    assert not other_tag.invocations
+
+
+def test_workflow_event_types_require_and_match_activity_binding(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on:
+  pull_request:
+    types: [closed]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest
+""",
+        },
+    )
+
+    unbound = trace_github_actions(tmp_path, event="pull_request")
+    opened = trace_github_actions(tmp_path, event="pull_request", activity="opened")
+    closed = trace_github_actions(tmp_path, event="pull_request", activity="closed")
+
+    assert not unbound.invocations
+    assert any(issue.code == "WORKFLOW_EVENT_FILTER_UNKNOWN" for issue in unbound.issues)
+    assert not opened.invocations
+    assert not opened.relevant_incomplete
+    assert closed.invocations
+
+
+def test_path_filters_require_complete_change_set_metadata(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on:
+  push:
+    paths:
+      - src/**
+  pull_request:
+    paths:
+      - src/**
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest
+""",
+        },
+    )
+
+    missing = trace_github_actions(
+        tmp_path, ("src/main.py",), event="pull_request", base_ref="main"
+    )
+    complete = trace_github_actions(
+        tmp_path,
+        ("src/main.py",),
+        event="pull_request",
+        base_ref="main",
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=1,
+    )
+    oversized = trace_github_actions(
+        tmp_path,
+        ("src/main.py",),
+        event="pull_request",
+        base_ref="main",
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=3001,
+    )
+    push_ref_unbound = trace_github_actions(
+        tmp_path,
+        ("src/main.py",),
+        event="push",
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=1,
+    )
+
+    assert not missing.invocations
+    assert any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in missing.issues)
+    assert complete.invocations
+    assert not any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in complete.issues)
+    assert not oversized.invocations
+    assert any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in oversized.issues)
+    assert not push_ref_unbound.invocations
+    assert any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in push_ref_unbound.issues)
 
 
 def _pid_exists(pid: int) -> bool:

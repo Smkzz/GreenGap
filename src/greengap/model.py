@@ -138,6 +138,14 @@ class TraceResult:
     issues: tuple[TraceIssue, ...] = ()
     workflows: tuple[str, ...] = ()
     changed_files: tuple[str, ...] | None = None
+    event: str | None = None
+    activity: str | None = None
+    ref: str | None = None
+    base_ref: str | None = None
+    change_set_complete: bool = False
+    commit_count: int | None = None
+    changed_file_count: int | None = None
+    diff_timed_out: bool = False
 
     @property
     def relevant_incomplete(self) -> bool:
@@ -153,6 +161,14 @@ class TraceResult:
             "changed_files": (
                 None if self.changed_files is None else list(self.changed_files)
             ),
+            "event": self.event,
+            "activity": self.activity,
+            "ref": self.ref,
+            "base_ref": self.base_ref,
+            "change_set_complete": self.change_set_complete,
+            "commit_count": self.commit_count,
+            "changed_file_count": self.changed_file_count,
+            "diff_timed_out": self.diff_timed_out,
             "invocations": [invocation.to_dict() for invocation in self.invocations],
             "issues": [issue.to_dict() for issue in self.issues],
             "complete": self.complete,

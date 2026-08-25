@@ -167,7 +167,19 @@ def run_plan(
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
     command = [python_executable, "-m", "greengap", "plan", str(repo), "--json"]
-    command.extend(("--event", "pull_request", "--base-ref", base_ref))
+    command.extend(
+        (
+            "--event",
+            "pull_request",
+            "--base-ref",
+            base_ref,
+            "--change-set-complete",
+            "--commit-count",
+            "1",
+            "--changed-file-count",
+            str(len(changed_files)),
+        )
+    )
     for changed_file in changed_files:
         command.extend(("--changed-file", changed_file))
     result = subprocess.run(

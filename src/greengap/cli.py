@@ -45,11 +45,27 @@ def run_plan(
     event: str | None = None,
     ref: str | None = None,
     base_ref: str | None = None,
+    activity: str | None = None,
+    change_set_complete: bool = False,
+    commit_count: int | None = None,
+    changed_file_count: int | None = None,
+    diff_timed_out: bool = False,
 ) -> PlanReport:
     root = root.resolve()
     snapshot = workspace_snapshot(root, timeout=min(timeout, 10.0))
     candidates, collection = scan_pytest(root, timeout)
-    trace = trace_github_actions(root, changed_files, event, ref, base_ref)
+    trace = trace_github_actions(
+        root,
+        changed_files,
+        event,
+        ref,
+        base_ref,
+        activity,
+        change_set_complete,
+        commit_count,
+        changed_file_count,
+        diff_timed_out,
+    )
     final = workspace_snapshot(root, timeout=min(timeout, 10.0))
     stable = snapshot.fingerprint == final.fingerprint and snapshot.complete and final.complete
     errors = list(snapshot.errors) + list(final.errors)
@@ -154,6 +170,31 @@ def _build_parser() -> argparse.ArgumentParser:
                 dest="base_ref",
                 help="bind pull-request branch filters to the base branch",
             )
+            command.add_argument(
+                "--activity",
+                dest="activity",
+                help="bind an event activity for workflow types filters (for example opened or closed)",
+            )
+            command.add_argument(
+                "--change-set-complete",
+                action="store_true",
+                help="assert that the supplied changed-file set is complete for GitHub path-filter evaluation",
+            )
+            command.add_argument(
+                "--commit-count",
+                type=int,
+                help="number of commits represented by the bound change set",
+            )
+            command.add_argument(
+                "--changed-file-count",
+                type=int,
+                help="number of changed files represented by the bound change set",
+            )
+            command.add_argument(
+                "--diff-timed-out",
+                action="store_true",
+                help="indicate that GitHub's path-filter diff computation timed out",
+            )
     verify = subparsers.add_parser(
         "verify", help="parse JUnit evidence without claiming identity completeness"
     )
@@ -238,6 +279,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.event,
         args.ref,
         args.base_ref,
+        args.activity,
+        args.change_set_complete,
+        args.commit_count,
+        args.changed_file_count,
+        args.diff_timed_out,
     )
     if args.as_json:
         print(json_dump(plan_report.to_dict()), end="")
