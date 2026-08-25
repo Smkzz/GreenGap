@@ -108,6 +108,39 @@ _SAFE_SETUP_COMMANDS = {
     "uname",
     "which",
 }
+# Runner relevance and workspace safety are separate contracts.  This set is
+# intentionally small: commands not listed here must be audited by their
+# command-specific effect classifier rather than inheriting safety from the
+# setup-command allowlist above.
+_WORKSPACE_READ_ONLY_COMMANDS = {
+    "[",
+    "cat",
+    "cd",
+    "echo",
+    "env",
+    "export",
+    "exit",
+    "grep",
+    "ls",
+    "pwd",
+    "printf",
+    "return",
+    "set",
+    "sha256sum",
+    "sort",
+    "test",
+    "true",
+    "uname",
+    "which",
+}
+_WORKSPACE_MODELED_COMMANDS = {
+    "greengap",
+    "mypy",
+    "pip-audit",
+    "pyright",
+    "ruff",
+    "twine",
+}
 _SAFE_PYTHON_MODULES = {
     "compileall",
     "coverage",
@@ -686,6 +719,10 @@ def _has_shell_command_substitution(command: str) -> bool:
                 quote = None
             elif character == "`" or (
                 character == "$" and index + 1 < len(command) and command[index + 1] == "("
+            ) or (
+                character in "<>"
+                and index + 1 < len(command)
+                and command[index + 1] == "("
             ):
                 return True
             index += 1
@@ -696,6 +733,10 @@ def _has_shell_command_substitution(command: str) -> bool:
             continue
         if character == "`" or (
             character == "$" and index + 1 < len(command) and command[index + 1] == "("
+        ) or (
+            character in "<>"
+            and index + 1 < len(command)
+            and command[index + 1] == "("
         ):
             return True
         index += 1
@@ -1048,6 +1089,17 @@ def _segment_mutates_files(segment: str, tokens: tuple[str, ...]) -> bool:
     )
     if command in _PRETEST_MUTATION_COMMANDS and not repository_relative:
         return True
+    if command == "sort" and any(
+        token == "-o" or token == "--output" or token.startswith("--output=")
+        for token in tokens[1:]
+    ):
+        return True
+    if command == "coverage" and any(
+        token in {"-o", "--output-file"}
+        or token.startswith("--output-file=")
+        for token in tokens[1:]
+    ):
+        return True
     if command == "git":
         return not _safe_git_command(tokens)
     return False
@@ -1134,6 +1186,8 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
         # this token-level transition only prevents them from being mistaken
         # for proven read-only commands.
         return MODELED_STATE_TRANSITION
+    if first in {".", "source"}:
+        return UNKNOWN_SIDE_EFFECT
     if (
         core[0].startswith(("./", "../"))
         or "/" in core[0]
@@ -1149,6 +1203,12 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
         # commands can rewrite lock/configuration bytes and remain unknown.
         return MODELED_STATE_TRANSITION if len(core) > 1 and core[1] == "run" else UNKNOWN_SIDE_EFFECT
     if first in {"pip", "pip3"}:
+        if any(
+            token == option or token.startswith(option + "=")
+            for token in arguments
+            for option in {"--target", "--prefix", "--root", "--src"}
+        ):
+            return UNKNOWN_SIDE_EFFECT
         if any(
             token in {"install", "uninstall", "wheel", "download"}
             for token in arguments
@@ -1170,6 +1230,12 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
             if module == "compileall":
                 return MODELED_STATE_TRANSITION
             if module == "build":
+                return UNKNOWN_SIDE_EFFECT
+            if module == "coverage" and any(
+                token in {"-o", "--output-file"}
+                or token.startswith("--output-file=")
+                for token in module_args
+            ):
                 return UNKNOWN_SIDE_EFFECT
             if module == "venv":
                 return UNKNOWN_SIDE_EFFECT
@@ -1194,14 +1260,20 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
         # and the audited module allowlist are safe here.
         return PROVEN_READ_ONLY if len(core) == 1 else UNKNOWN_SIDE_EFFECT
     if first in {"npm", "pnpm", "yarn"}:
+        if "exec" in arguments:
+            return UNKNOWN_SIDE_EFFECT
         if any(token in {"install", "i", "ci", "link", "build"} for token in arguments):
             return UNKNOWN_SIDE_EFFECT
         return MODELED_STATE_TRANSITION
     if first == "mkdocs":
-        return MODELED_STATE_TRANSITION if arguments and arguments[0] == "build" else UNKNOWN_SIDE_EFFECT
+        return UNKNOWN_SIDE_EFFECT
     if first == "git":
         return MODELED_STATE_TRANSITION if _safe_git_command(core) else UNKNOWN_SIDE_EFFECT
-    if _safe_setup_command(core):
+    if first in _WORKSPACE_READ_ONLY_COMMANDS:
+        return PROVEN_READ_ONLY
+    if first in _WORKSPACE_MODELED_COMMANDS and _safe_setup_command(core):
+        return MODELED_STATE_TRANSITION
+    if first == "gh" and _safe_gh_command(core):
         return MODELED_STATE_TRANSITION
     return UNKNOWN_SIDE_EFFECT
 
@@ -3402,6 +3474,28 @@ class _Resolver:
                     state, self._resolve_shell(tokens, nested_context, depth + 1)
                 )
                 continue
+            if first in {".", "source"}:
+                if len(tokens) != 2:
+                    self.issue(
+                        "SHELL_SCRIPT_UNKNOWN",
+                        "source command does not have one statically known script path",
+                        context.provenance,
+                    )
+                    state = UNKNOWN_SIDE_EFFECT
+                    continue
+                script_path = self._resolve_path(tokens[1], nested_context.cwd, context.provenance)
+                if script_path is None or not script_path.is_file():
+                    self.issue(
+                        "SHELL_SCRIPT_UNKNOWN",
+                        "source command script path is unavailable or unsafe",
+                        context.provenance,
+                    )
+                    state = UNKNOWN_SIDE_EFFECT
+                    continue
+                state = _merge_workspace_state(
+                    state, self._resolve_script(script_path, nested_context, depth + 1)
+                )
+                continue
             token_text = tokens[0].replace("\\", "/")
             shell_script_hint = token_text.lower().endswith(".sh") or token_text.startswith(
                 "scripts/"
@@ -4121,7 +4215,7 @@ class _Resolver:
         config: tuple[list[str], dict[str, dict[str, Any]], dict[str, Any] | None],
         name: str,
     ) -> bool:
-        """Reject tox lanes whose setup changes cwd or runs pre-commands."""
+        """Reject tox lanes whose lifecycle commands are not fully modeled."""
 
         _, envs, tox = config
         if tox is not None:
@@ -4136,9 +4230,9 @@ class _Resolver:
             for key in ("changedir", "change_dir"):
                 if key in mapping and mapping[key] not in (None, ""):
                     return True
-            commands_pre = mapping.get("commands_pre")
-            if commands_pre not in (None, "", [], ()):
-                return True
+            for lifecycle in ("commands_pre", "commands_post"):
+                if mapping.get(lifecycle) not in (None, "", [], ()):
+                    return True
         return False
 
     def _resolve_tox(
@@ -4193,7 +4287,7 @@ class _Resolver:
             if self._tox_execution_context_unknown(config, name):
                 self.issue(
                     "TOX_EXECUTION_CONTEXT_UNKNOWN",
-                    f"tox environment {name!r} changes directory or runs commands_pre",
+                    f"tox environment {name!r} changes directory or has unresolved lifecycle commands",
                     context.provenance + (f"tox:{name}",),
                 )
                 state = UNKNOWN_SIDE_EFFECT
@@ -4268,7 +4362,12 @@ class _Resolver:
             )
             posargs = tokens[index + 2 :] if command == "run" else tokens[index + 1 :]
         else:
-            return MODELED_STATE_TRANSITION
+            self.issue(
+                "PACKAGE_COMMAND_UNKNOWN",
+                f"package-manager command {command!r} is outside the audited test/run subset",
+                context.provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
         if cwd is None:
             return UNKNOWN_SIDE_EFFECT
         package = self._package_json(cwd)

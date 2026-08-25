@@ -222,7 +222,7 @@ def expected_unknown_baseline(name: str, plan: dict[str, Any]) -> bool:
         and findings
         and all(isinstance(item, dict) and item.get("state") == "UNKNOWN" for item in findings)
         and all(
-            EXPECTED_UNKNOWN_EVIDENCE.issubset(set(item.get("evidence", ())))
+            set(item.get("evidence", ())) == EXPECTED_UNKNOWN_EVIDENCE
             for item in findings
             if isinstance(item, dict)
         )

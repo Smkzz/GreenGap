@@ -404,6 +404,67 @@ def test_bash_substitution_inside_double_quote_with_apostrophe_is_unknown(tmp_pa
     assert result.relevant_incomplete
 
 
+def test_bash_process_substitution_is_not_hidden_execution(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(
+                "cat <(cp ci/pytest.ini pytest.ini)", "pytest"
+            ),
+            "ci/pytest.ini": "[pytest]\npython_files = check_*.py\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "SHELL_COMMAND_SUBSTITUTION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_sourced_shell_script_effects_propagate_to_later_pytest(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(". scripts/rewrite.sh", "pytest"),
+            "scripts/rewrite.sh": "cp ci/pytest.ini pytest.ini\n",
+            "ci/pytest.ini": "[pytest]\npython_files = check_*.py\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sort -o pytest.ini ci/pytest.ini",
+        "coverage xml -o pytest.ini",
+        "python -m coverage xml -o pytest.ini",
+        "pip install --target=tests package",
+        "mkdocs build",
+    ],
+)
+def test_option_driven_setup_writers_invalidate_later_test_inference(
+    tmp_path, command: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(command, "pytest"),
+            "ci/pytest.ini": "[pytest]\npython_files = check_*.py\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
 def test_git_branch_edit_description_is_not_read_only(tmp_path) -> None:
     write_files(
         tmp_path,
@@ -741,6 +802,29 @@ def test_stage0e_accepts_a_stable_valid_unknown_as_expected_abstention() -> None
     assert expected_unknown_baseline("outcome", plan)
 
 
+def test_stage0e_requires_exact_expected_unknown_evidence() -> None:
+    plan = {
+        "stable": True,
+        "complete": False,
+        "blocker_count": 0,
+        "snapshot": {"fingerprint": "fixture-fingerprint"},
+        "collection": {"complete": True, "environment_valid": True},
+        "errors": [],
+        "findings": [
+            {
+                "state": "UNKNOWN",
+                "evidence": [
+                    "PYTHON_EXECUTION_UNKNOWN",
+                    "WORKSPACE_MUTATION_UNKNOWN",
+                    "UNEXPECTED_EXTRA_REASON",
+                ],
+            }
+        ],
+    }
+
+    assert not expected_unknown_baseline("outcome", plan)
+
+
 def test_stage0e_keeps_mixed_findings_as_a_false_positive() -> None:
     plan = {
         "stable": True,
@@ -873,6 +957,7 @@ commands = pytest
         "changedir = tests/unit",
         "change_dir = tests/unit",
         "commands_pre = rm generated.py",
+        "commands_post = cp ci/pytest.ini pytest.ini",
     ],
 )
 def test_tox_execution_context_fields_invalidate_file_scope(tmp_path, tox_field: str) -> None:
@@ -1216,6 +1301,24 @@ def test_nested_package_script_workspace_effect_propagates_to_later_pytest(tmp_p
 
     assert not result.invocations
     assert any(issue.code == "PYTHON_EXECUTION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_npm_exec_is_not_treated_as_a_modeled_package_transition(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(
+                "npm exec -c 'cp ci/pytest.ini pytest.ini'", "pytest"
+            ),
+            "ci/pytest.ini": "[pytest]\npython_files = check_*.py\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PACKAGE_COMMAND_UNKNOWN" for issue in result.issues)
     assert result.relevant_incomplete
 
 
