@@ -288,6 +288,135 @@ jobs:
     assert result.relevant_incomplete
 
 
+@pytest.mark.parametrize(
+    ("action", "with_block"),
+    [
+        (
+            "anchore/sbom-action@0123456789abcdef0123456789abcdef01234567",
+            "with:\n          output-file: pytest.ini\n          format: spdx-json",
+        ),
+        ("hynek/build-and-inspect-python-package@0123456789abcdef0123456789abcdef01234567", ""),
+        ("github/codeql-action/autobuild@0123456789abcdef0123456789abcdef01234567", ""),
+    ],
+)
+def test_known_external_actions_are_not_workspace_trusted(
+    tmp_path, action: str, with_block: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: {action}
+        {with_block}
+      - run: pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "EXTERNAL_ACTION_WORKSPACE_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_pipeline_nested_make_effects_propagate_to_later_pytest(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow("make prepare | cat", "pytest"),
+            "Makefile": "prepare:\n\tcp ci/pytest.ini pytest.ini\n",
+            "ci/pytest.ini": "[pytest]\npython_files = check_*.py\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+def test_pipeline_nested_shell_effects_propagate_to_later_pytest(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow("bash scripts/prepare.sh | cat", "pytest"),
+            "scripts/prepare.sh": "#!/usr/bin/env bash\ncp ci/pytest.ini pytest.ini\n",
+            "ci/pytest.ini": "[pytest]\npython_files = check_*.py\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+def test_pipeline_nested_tox_effects_propagate_to_later_pytest(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow("tox run -e py | cat", "pytest"),
+            "tox.ini": "[tox]\nenvlist = py\n[testenv]\ncommands_pre = rm pytest.ini\ncommands = pytest\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+def test_pipeline_redirection_is_not_rewritten_as_quoted_data(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow("echo config | cat > pytest.ini", "pytest"),
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+def test_bash_substitution_inside_double_quote_with_apostrophe_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(
+                'echo "it\'s $(cp ci/pytest.ini pytest.ini)"', "pytest"
+            ),
+            "ci/pytest.ini": "[pytest]\npython_files = check_*.py\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "SHELL_COMMAND_SUBSTITUTION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_git_branch_edit_description_is_not_read_only(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {".github/workflows/ci.yml": two_step_workflow("git branch --edit-description", "pytest")},
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "GIT_COMMAND_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
 def test_git_external_diff_execution_invalidates_later_test_inference(tmp_path) -> None:
     write_files(
         tmp_path,
@@ -597,10 +726,19 @@ def test_stage0e_accepts_a_stable_valid_unknown_as_expected_abstention() -> None
         "snapshot": {"fingerprint": "fixture-fingerprint"},
         "collection": {"complete": True, "environment_valid": True},
         "errors": [],
-        "findings": [{"state": "UNKNOWN"}, {"state": "UNKNOWN"}],
+        "findings": [
+            {
+                "state": "UNKNOWN",
+                "evidence": ["PYTHON_EXECUTION_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"],
+            },
+            {
+                "state": "UNKNOWN",
+                "evidence": ["PYTHON_EXECUTION_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"],
+            },
+        ],
     }
 
-    assert expected_unknown_baseline(plan)
+    assert expected_unknown_baseline("outcome", plan)
 
 
 def test_stage0e_keeps_mixed_findings_as_a_false_positive() -> None:
@@ -614,7 +752,26 @@ def test_stage0e_keeps_mixed_findings_as_a_false_positive() -> None:
         "findings": [{"state": "UNKNOWN"}, {"state": "PLANNED"}],
     }
 
-    assert not expected_unknown_baseline(plan)
+    assert not expected_unknown_baseline("outcome", plan)
+
+
+def test_stage0e_does_not_accept_an_unqualified_unknown_repository() -> None:
+    plan = {
+        "stable": True,
+        "complete": False,
+        "blocker_count": 0,
+        "snapshot": {"fingerprint": "fixture-fingerprint"},
+        "collection": {"complete": True, "environment_valid": True},
+        "errors": [],
+        "findings": [
+            {
+                "state": "UNKNOWN",
+                "evidence": ["PYTHON_EXECUTION_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"],
+            }
+        ],
+    }
+
+    assert not expected_unknown_baseline("requests", plan)
 
 
 @pytest.mark.parametrize(

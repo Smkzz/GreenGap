@@ -35,6 +35,10 @@ BASE_REFS = {
     "httpcore": "master",
     "markupsafe": "main",
 }
+EXPECTED_UNKNOWN_REPOSITORIES = frozenset({"outcome", "httpcore"})
+EXPECTED_UNKNOWN_EVIDENCE = frozenset(
+    {"PYTHON_EXECUTION_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"}
+)
 
 
 @dataclass(frozen=True)
@@ -197,14 +201,15 @@ def run_plan(
     return result.returncode, payload
 
 
-def expected_unknown_baseline(plan: dict[str, Any]) -> bool:
-    """Recognize a stable, valid, fail-closed abstention rather than a false positive."""
+def expected_unknown_baseline(name: str, plan: dict[str, Any]) -> bool:
+    """Recognize only the two qualified build-taint abstentions."""
 
     collection = plan.get("collection", {})
     snapshot = plan.get("snapshot", {})
     findings = plan.get("findings", [])
     return bool(
-        plan.get("stable")
+        name in EXPECTED_UNKNOWN_REPOSITORIES
+        and plan.get("stable")
         and not plan.get("complete")
         and plan.get("blocker_count") == 0
         and isinstance(snapshot, dict)
@@ -216,6 +221,11 @@ def expected_unknown_baseline(plan: dict[str, Any]) -> bool:
         and isinstance(findings, list)
         and findings
         and all(isinstance(item, dict) and item.get("state") == "UNKNOWN" for item in findings)
+        and all(
+            EXPECTED_UNKNOWN_EVIDENCE.issubset(set(item.get("evidence", ())))
+            for item in findings
+            if isinstance(item, dict)
+        )
     )
 
 
@@ -234,7 +244,7 @@ def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]
             "ENVIRONMENT_INVALID"
             if not baseline.get("collection", {}).get("environment_valid", True)
             else "EXPECTED_UNKNOWN"
-            if expected_unknown_baseline(baseline)
+            if expected_unknown_baseline(name, baseline)
             else "FALSE_POSITIVE"
         )
         return {"repository": name, "status": status, "baseline": baseline}
@@ -328,10 +338,16 @@ def main() -> int:
         ),
         "passed": sum(item.get("status") == "PASS" for item in results),
         "expected_unknown": sum(item.get("status") == "EXPECTED_UNKNOWN" for item in results),
+        "expected_unknown_repositories": sorted(
+            item["repository"] for item in results if item.get("status") == "EXPECTED_UNKNOWN"
+        ),
         "results": results,
         "status": "PASS_WITH_EXPECTED_UNKNOWN"
         if len(results) == 5
-        and any(item.get("status") == "EXPECTED_UNKNOWN" for item in results)
+        and {
+            item["repository"] for item in results if item.get("status") == "EXPECTED_UNKNOWN"
+        }
+        == EXPECTED_UNKNOWN_REPOSITORIES
         and all(item.get("status") in {"PASS", "EXPECTED_UNKNOWN"} for item in results)
         else "PASS"
         if len(results) == 5 and all(item.get("status") == "PASS" for item in results)

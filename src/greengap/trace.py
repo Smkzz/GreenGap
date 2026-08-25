@@ -32,7 +32,7 @@ MAX_YAML_DEPTH = 64
 _EXPRESSION = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 _ASSIGNMENT = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:=)\s*(.*)$")
 _VARIABLE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
-_KNOWN_SETUP_ACTIONS = {
+_KNOWN_EXTERNAL_ACTIONS = {
     "actions/checkout",
     "actions/setup-python",
     "actions/setup-node",
@@ -56,6 +56,19 @@ _KNOWN_SETUP_ACTIONS = {
     "softprops/action-gh-release",
     "hynek/build-and-inspect-python-package",
     "zizmorcore/zizmor-action",
+}
+# Only these external actions have a deliberately narrow, workspace-safe
+# contract in the analyzer.  All other external actions remain UNKNOWN even
+# when their names are familiar; a known action is not proof that its code or
+# configurable outputs cannot affect the checkout.
+_PROVEN_WORKSPACE_SAFE_ACTIONS = {
+    "actions/setup-python",
+    "actions/setup-node",
+    "actions/setup-go",
+    "actions/setup-java",
+    "astral-sh/setup-uv",
+    "deadsnakes/action",
+    "docker/setup-qemu-action",
 }
 _WORKSPACE_RESTORING_ACTIONS = {
     "actions/cache",
@@ -668,6 +681,15 @@ def _has_shell_command_substitution(command: str) -> bool:
                 quote = None
             index += 1
             continue
+        if quote == '"':
+            if character == '"':
+                quote = None
+            elif character == "`" or (
+                character == "$" and index + 1 < len(command) and command[index + 1] == "("
+            ):
+                return True
+            index += 1
+            continue
         if character in {"'", '"'}:
             quote = character
             index += 1
@@ -964,8 +986,8 @@ def _safe_git_command(tokens: tuple[str, ...]) -> bool:
     }:
         return True
     if command == "branch":
-        return not any(
-            token in {"-d", "-D", "--delete", "--move", "-m", "-M", "--copy", "-c"}
+        return all(
+            token in {"-a", "--all", "-r", "--remotes", "-l", "--list", "--show-current"}
             for token in arguments[1:]
         )
     if command == "remote":
@@ -1108,6 +1130,9 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
         "tox",
         "tox.exe",
     }:
+        # The class-level resolver composes their nested repository commands;
+        # this token-level transition only prevents them from being mistaken
+        # for proven read-only commands.
         return MODELED_STATE_TRANSITION
     if (
         core[0].startswith(("./", "../"))
@@ -1279,11 +1304,15 @@ def _workspace_effect_for_command(
     if _has_shell_command_substitution(command):
         return UNKNOWN_SIDE_EFFECT
     if _has_pipeline_token(command):
-        return (
-            MODELED_STATE_TRANSITION
-            if _pipeline_is_safe(command)
-            else UNKNOWN_SIDE_EFFECT
-        )
+        components = _pipeline_commands(command)
+        if not components:
+            return UNKNOWN_SIDE_EFFECT
+        state: WorkspaceState = PROVEN_READ_ONLY
+        for component in components:
+            state = _merge_workspace_state(
+                state, _workspace_effect_for_command(component, root, cwd)
+            )
+        return state
     state: WorkspaceState = PROVEN_READ_ONLY
     for segment in _shell_segments(command):
         tokens = _tokens(segment)
@@ -1730,36 +1759,73 @@ def _workspace_restore_effect(
     return False
 
 
-def _pipeline_is_safe(command: str) -> bool:
-    """Return true only for pipelines made entirely from setup allowlist commands."""
+def _pipeline_commands(command: str) -> tuple[str, ...] | None:
+    """Split raw pipeline components without turning shell operators into data."""
 
-    found = False
+    commands: list[str] = []
+    found_pipeline = False
     for line in command.splitlines():
-        tokens = _tokens(line)
-        if tokens is None or "|" not in tokens:
-            continue
-        found = True
-        component: list[str] = []
-        for token in (*tokens, "|"):
-            if token == "|":
-                if not component:
-                    return False
-                component_tokens = tuple(component)
-                if _workspace_effect_for_tokens(
-                    shlex.join(component_tokens), component_tokens
-                ) == UNKNOWN_SIDE_EFFECT:
-                    return False
-                component = []
-            else:
-                component.append(token)
-    return found
+        current: list[str] = []
+        pieces: list[str] = []
+        quote: str | None = None
+        escaped = False
+        index = 0
+        while index < len(line):
+            character = line[index]
+            if escaped:
+                current.append(character)
+                escaped = False
+                index += 1
+                continue
+            if character == "\\" and quote != "'":
+                current.append(character)
+                escaped = True
+                index += 1
+                continue
+            if quote is not None:
+                current.append(character)
+                if character == quote:
+                    quote = None
+                index += 1
+                continue
+            if character in {"'", '"'}:
+                quote = character
+                current.append(character)
+                index += 1
+                continue
+            if character == "|":
+                if index + 1 < len(line) and line[index + 1] == "|":
+                    current.extend(("|", "|"))
+                    index += 2
+                    continue
+                piece = "".join(current).strip()
+                if not piece:
+                    return None
+                pieces.append(piece)
+                current = []
+                found_pipeline = True
+                index += 2 if index + 1 < len(line) and line[index + 1] == "&" else 1
+                continue
+            current.append(character)
+            index += 1
+        if quote is not None:
+            return None
+        tail = "".join(current).strip()
+        if found_pipeline and pieces:
+            if not tail:
+                return None
+            pieces.append(tail)
+            commands.extend(pieces)
+        elif line.strip():
+            commands.append(line.strip())
+    if not found_pipeline:
+        return ()
+    return tuple(commands)
 
 
 def _has_pipeline_token(command: str) -> bool:
-    return any(
-        tokens is not None and "|" in tokens
-        for tokens in (_tokens(line) for line in command.splitlines())
-    )
+    components = _pipeline_commands(command)
+    return components is None or bool(components)
 
 
 def _relevant_text(value: str) -> bool:
@@ -2092,7 +2158,7 @@ class _Resolver:
                 action_name = uses.split("@", 1)[0].lower()
                 if action_name == "pre-commit-ci/lite-action" and self._precommit_config_is_non_test():
                     continue
-                if action_name.startswith("./") or action_name not in _KNOWN_SETUP_ACTIONS:
+                if action_name.startswith("./") or action_name not in _KNOWN_EXTERNAL_ACTIONS:
                     return True
         return False
 
@@ -2608,7 +2674,7 @@ class _Resolver:
                         if isinstance(raw_uses, str)
                         else ""
                     )
-                    condition_relevant = action_name not in _KNOWN_SETUP_ACTIONS and not (
+                    condition_relevant = action_name not in _KNOWN_EXTERNAL_ACTIONS and not (
                         action_name == "pre-commit-ci/lite-action"
                         and self._precommit_config_is_non_test()
                     )
@@ -2813,11 +2879,24 @@ class _Resolver:
                         workspace_state = UNKNOWN_SIDE_EFFECT
                     if action_name == "pre-commit-ci/lite-action" and self._precommit_config_is_non_test():
                         continue
-                    if action_name not in _KNOWN_SETUP_ACTIONS:
+                    if (
+                        action_name not in _PROVEN_WORKSPACE_SAFE_ACTIONS
+                        and action_name != "actions/checkout"
+                        and action_name not in _WORKSPACE_RESTORING_ACTIONS
+                        and action_name != "ossf/scorecard-action"
+                    ):
+                        known_action = action_name in _KNOWN_EXTERNAL_ACTIONS
                         self.issue(
-                            "EXTERNAL_ACTION_UNKNOWN",
-                            f"external action {uses!r} is not modeled as a setup-only action",
+                            "EXTERNAL_ACTION_WORKSPACE_UNKNOWN"
+                            if known_action
+                            else "EXTERNAL_ACTION_UNKNOWN",
+                            (
+                                f"known external action {uses!r} may execute or write workspace bytes"
+                                if known_action
+                                else f"external action {uses!r} is not modeled as a setup-only action"
+                            ),
                             provenance,
+                            relevant=not known_action,
                         )
                         workspace_state = UNKNOWN_SIDE_EFFECT
                 else:
@@ -2892,11 +2971,19 @@ class _Resolver:
                 relevant=False,
             )
             return UNKNOWN_SIDE_EFFECT
-        if action_name not in _KNOWN_SETUP_ACTIONS:
+        if action_name not in _PROVEN_WORKSPACE_SAFE_ACTIONS:
+            known_action = action_name in _KNOWN_EXTERNAL_ACTIONS
             self.issue(
-                "EXTERNAL_ACTION_UNKNOWN",
-                f"conditional external action {raw_uses!r} is not modeled as setup-only",
+                "EXTERNAL_ACTION_WORKSPACE_UNKNOWN"
+                if known_action
+                else "EXTERNAL_ACTION_UNKNOWN",
+                (
+                    f"known conditional external action {raw_uses!r} may execute or write workspace bytes"
+                    if known_action
+                    else f"conditional external action {raw_uses!r} is not modeled as setup-only"
+                ),
                 provenance,
+                relevant=not known_action,
             )
             return UNKNOWN_SIDE_EFFECT
         return MODELED_STATE_TRANSITION
@@ -3052,17 +3139,31 @@ class _Resolver:
                 context.provenance,
             )
             return UNKNOWN_SIDE_EFFECT
-        if _has_pipeline_token(command) and not _pipeline_is_safe(command):
-            self.issue(
-                "SHELL_PIPE_UNKNOWN",
-                "shell pipelines are outside the supported static command subset",
-                context.provenance,
-            )
-            return UNKNOWN_SIDE_EFFECT
         if _has_pipeline_token(command):
-            return _merge_workspace_state(
-                context.workspace_state, MODELED_STATE_TRANSITION
-            )
+            components = _pipeline_commands(command)
+            if not components or any(_contains_runner_hint(component) for component in components):
+                self.issue(
+                    "SHELL_PIPE_UNKNOWN",
+                    "shell pipelines are outside the supported static command subset",
+                    context.provenance,
+                )
+                return UNKNOWN_SIDE_EFFECT
+            state = context.workspace_state
+            for component in components:
+                component_state = self._resolve_command(
+                    component,
+                    replace(context, workspace_state=state),
+                    depth + 1,
+                    shell=shell,
+                )
+                if component_state == UNKNOWN_SIDE_EFFECT:
+                    self.issue(
+                        "SHELL_PIPE_UNKNOWN",
+                        "a pipeline component has an unresolved workspace effect",
+                        context.provenance,
+                    )
+                state = _merge_workspace_state(state, component_state)
+            return state
         if _shell_control_flow_unknown(command):
             self.issue(
                 "SHELL_CONTROL_FLOW_UNKNOWN",
