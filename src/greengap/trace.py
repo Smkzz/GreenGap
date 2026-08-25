@@ -2715,13 +2715,13 @@ class _Resolver:
                                 workspace_state = UNKNOWN_SIDE_EFFECT
                     if action_name in _WORKSPACE_RESTORING_ACTIONS:
                         raw_with = raw_step.get("with")
-                        effect = _workspace_restore_effect(
+                        restore_effect = _workspace_restore_effect(
                             action_name,
                             raw_with,
                             self.root,
                             step_context.cwd,
                         )
-                        if effect is None or effect:
+                        if restore_effect is None or restore_effect:
                             self.issue(
                                 "WORKSPACE_RESTORE_UNKNOWN",
                                 f"{action_name} may restore files into the analyzed workspace",
