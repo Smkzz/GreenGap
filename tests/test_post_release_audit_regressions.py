@@ -10,7 +10,11 @@ from pathlib import Path
 
 import pytest
 from scripts.create_release_provenance import create_manifest
-from scripts.qualify_stage0e_full import sparse_checkout_enabled, validate_checkout
+from scripts.qualify_stage0e_full import (
+    expected_unknown_baseline,
+    sparse_checkout_enabled,
+    validate_checkout,
+)
 
 from greengap.pytest_adapter import _run_pytest_bounded, discover_candidates, pytest_config
 from greengap.trace import trace_github_actions
@@ -583,6 +587,34 @@ def test_stage0e_rejects_a_real_sparse_checkout(tmp_path) -> None:
     valid, reason = validate_checkout(tmp_path, expected)
     assert not valid
     assert "sparse" in reason.lower()
+
+
+def test_stage0e_accepts_a_stable_valid_unknown_as_expected_abstention() -> None:
+    plan = {
+        "stable": True,
+        "complete": False,
+        "blocker_count": 0,
+        "snapshot": {"fingerprint": "fixture-fingerprint"},
+        "collection": {"complete": True, "environment_valid": True},
+        "errors": [],
+        "findings": [{"state": "UNKNOWN"}, {"state": "UNKNOWN"}],
+    }
+
+    assert expected_unknown_baseline(plan)
+
+
+def test_stage0e_keeps_mixed_findings_as_a_false_positive() -> None:
+    plan = {
+        "stable": True,
+        "complete": False,
+        "blocker_count": 0,
+        "snapshot": {"fingerprint": "fixture-fingerprint"},
+        "collection": {"complete": True, "environment_valid": True},
+        "errors": [],
+        "findings": [{"state": "UNKNOWN"}, {"state": "PLANNED"}],
+    }
+
+    assert not expected_unknown_baseline(plan)
 
 
 @pytest.mark.parametrize(

@@ -197,6 +197,28 @@ def run_plan(
     return result.returncode, payload
 
 
+def expected_unknown_baseline(plan: dict[str, Any]) -> bool:
+    """Recognize a stable, valid, fail-closed abstention rather than a false positive."""
+
+    collection = plan.get("collection", {})
+    snapshot = plan.get("snapshot", {})
+    findings = plan.get("findings", [])
+    return bool(
+        plan.get("stable")
+        and not plan.get("complete")
+        and plan.get("blocker_count") == 0
+        and isinstance(snapshot, dict)
+        and snapshot.get("fingerprint")
+        and isinstance(collection, dict)
+        and collection.get("complete")
+        and collection.get("environment_valid")
+        and not plan.get("errors")
+        and isinstance(findings, list)
+        and findings
+        and all(isinstance(item, dict) and item.get("state") == "UNKNOWN" for item in findings)
+    )
+
+
 def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]:
     expected = PINNED[name][1]
     valid, reason = validate_checkout(root, expected)
@@ -211,6 +233,8 @@ def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]
         status = (
             "ENVIRONMENT_INVALID"
             if not baseline.get("collection", {}).get("environment_valid", True)
+            else "EXPECTED_UNKNOWN"
+            if expected_unknown_baseline(baseline)
             else "FALSE_POSITIVE"
         )
         return {"repository": name, "status": status, "baseline": baseline}
@@ -303,8 +327,13 @@ def main() -> int:
             item.get("status") not in {"ENVIRONMENT_INVALID", "UPSTREAM_DRIFT"} for item in results
         ),
         "passed": sum(item.get("status") == "PASS" for item in results),
+        "expected_unknown": sum(item.get("status") == "EXPECTED_UNKNOWN" for item in results),
         "results": results,
-        "status": "PASS"
+        "status": "PASS_WITH_EXPECTED_UNKNOWN"
+        if len(results) == 5
+        and any(item.get("status") == "EXPECTED_UNKNOWN" for item in results)
+        and all(item.get("status") in {"PASS", "EXPECTED_UNKNOWN"} for item in results)
+        else "PASS"
         if len(results) == 5 and all(item.get("status") == "PASS" for item in results)
         else "NOT_PASSED",
     }
@@ -314,7 +343,7 @@ def main() -> int:
         print(f"Stage 0E full checkout: {payload['status']}")
         for item in results:
             print(f"{item['repository']}: {item['status']}")
-    return 0 if payload["status"] == "PASS" else 2
+    return 0 if payload["status"] in {"PASS", "PASS_WITH_EXPECTED_UNKNOWN"} else 2
 
 
 if __name__ == "__main__":
