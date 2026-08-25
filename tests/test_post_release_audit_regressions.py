@@ -218,6 +218,153 @@ jobs:
     assert result.relevant_incomplete
 
 
+@pytest.mark.parametrize(
+    ("action", "with_block", "issue_code"),
+    [
+        (
+            "actions/cache@v4",
+            "with:\n          path: .\n          key: source",
+            "WORKSPACE_RESTORE_UNKNOWN",
+        ),
+        (
+            "actions/download-artifact@v4",
+            "with:\n          name: generated\n          path: .",
+            "WORKSPACE_RESTORE_UNKNOWN",
+        ),
+    ],
+)
+def test_unknown_condition_propagates_workspace_restoring_action_effect(
+    tmp_path, action: str, with_block: str, issue_code: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - if: ${{{{ github.ref == 'refs/heads/main' }}}}
+        uses: {action}
+        {with_block}
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == issue_code for issue in result.issues)
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_unknown_condition_propagates_checkout_workspace_effect(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - if: ${{ github.ref == 'refs/heads/main' }}
+        uses: actions/checkout@v4
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "CHECKOUT_CONDITION_UNKNOWN" for issue in result.issues)
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_unknown_condition_propagates_local_composite_workspace_effect(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - if: ${{ github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/prepare
+      - run: pytest tests
+""",
+            ".github/actions/prepare/action.yml": """name: prepare
+description: prepare workspace
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: rm tests/test_a.py
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "COMPOSITE_CONDITION_UNKNOWN" for issue in result.issues)
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_gh_release_download_is_not_treated_as_setup_only(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release download v0.1.3 --dir .
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_read_only_gh_release_view_does_not_poison_test_inference(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release view v0.1.3
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert not any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+
+
 def test_cache_of_known_generated_metadata_does_not_poison_test_inference(tmp_path) -> None:
     write_files(
         tmp_path,

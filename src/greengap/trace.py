@@ -72,7 +72,6 @@ _SAFE_SETUP_COMMANDS = {
     "export",
     "git",
     "grep",
-    "gh",
     "greengap",
     "ls",
     "mkdir",
@@ -777,6 +776,8 @@ def _safe_setup_command(tokens: tuple[str, ...]) -> bool:
         return True
     if first in _SAFE_SETUP_COMMANDS:
         return True
+    if first == "gh":
+        return _safe_gh_command(tokens)
     if first == "greengap":
         return set(tokens[1:]).issubset({"--version", "--help"})
     if first == "coverage":
@@ -790,6 +791,41 @@ def _safe_setup_command(tokens: tuple[str, ...]) -> bool:
             if token == "-m":
                 return _basename(tokens[index + 1]) in _SAFE_PYTHON_MODULES
         return False
+    return False
+
+
+def _safe_gh_command(tokens: tuple[str, ...]) -> bool:
+    """Recognize only statically read-only GitHub CLI commands.
+
+    ``gh`` has both read-only queries and commands that can materialize files
+    in the current directory (for example ``gh release download --dir .``).
+    The default is therefore unknown; only an explicit read-only subset is
+    trusted here.
+    """
+
+    if len(tokens) < 2 or _basename(tokens[0]).lower() != "gh":
+        return False
+    subcommand = tuple(token.lower() for token in tokens[1:])
+    if subcommand[:2] in {
+        ("release", "view"),
+        ("release", "list"),
+        ("pr", "view"),
+        ("pr", "list"),
+        ("pr", "checks"),
+        ("run", "view"),
+        ("run", "list"),
+        ("repo", "view"),
+        ("workflow", "view"),
+        ("workflow", "list"),
+    }:
+        return True
+    if subcommand[0] == "api":
+        for index, token in enumerate(subcommand[1:], start=1):
+            if token in {"-x", "--method"} and index + 1 < len(subcommand):
+                return subcommand[index + 1] == "get"
+            if token.startswith("--method="):
+                return token.partition("=")[2] == "get"
+        return True
     return False
 
 
@@ -2208,6 +2244,16 @@ class _Resolver:
                             raw_run, self.root, context.cwd
                         ),
                     )
+                elif "uses" in raw_step:
+                    workspace_state = _merge_workspace_state(
+                        workspace_state,
+                        self._conditional_action_workspace_effect(
+                            raw_step.get("uses"),
+                            raw_step.get("with"),
+                            context,
+                            provenance,
+                        ),
+                    )
                 continue
             step_env, step_env_complete = _env_mapping(raw_step.get("env"), context)
             step_context = replace(
@@ -2387,6 +2433,68 @@ class _Resolver:
                     )
                     workspace_state = UNKNOWN_SIDE_EFFECT
         return workspace_state
+
+    def _conditional_action_workspace_effect(
+        self,
+        raw_uses: Any,
+        raw_with: Any,
+        context: _Context,
+        provenance: tuple[str, ...],
+    ) -> WorkspaceState:
+        """Propagate workspace effects for a step whose condition is unknown.
+
+        An unresolved condition can skip an action entirely.  We must still
+        model the effect of the branch that does run, otherwise a later test
+        command can be treated as byte-stable when the conditional action may
+        have restored or replaced repository files.
+        """
+
+        if not isinstance(raw_uses, str):
+            self.issue(
+                "EXTERNAL_ACTION_UNKNOWN",
+                "conditional action is not statically known",
+                provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+        if raw_uses.startswith("./"):
+            self.issue(
+                "COMPOSITE_CONDITION_UNKNOWN",
+                "conditional local composite action may change workspace bytes",
+                provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+
+        action_name = raw_uses.split("@", 1)[0].lower()
+        if action_name == "actions/checkout":
+            self.issue(
+                "CHECKOUT_CONDITION_UNKNOWN",
+                "conditional actions/checkout may replace the analyzed workspace",
+                provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+        if action_name in _WORKSPACE_RESTORING_ACTIONS:
+            effect = _workspace_restore_effect(
+                action_name,
+                raw_with,
+                self.root,
+                context.cwd,
+            )
+            if effect is None or effect:
+                self.issue(
+                    "WORKSPACE_RESTORE_UNKNOWN",
+                    f"conditional {action_name} may restore files into the analyzed workspace",
+                    provenance,
+                )
+                return UNKNOWN_SIDE_EFFECT
+            return MODELED_STATE_TRANSITION
+        if action_name not in _KNOWN_SETUP_ACTIONS:
+            self.issue(
+                "EXTERNAL_ACTION_UNKNOWN",
+                f"conditional external action {raw_uses!r} is not modeled as setup-only",
+                provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+        return MODELED_STATE_TRANSITION
 
     def _resolve_composite(
         self, action_dir: Path, context: _Context, default_shell: str | None
