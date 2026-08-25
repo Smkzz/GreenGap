@@ -1307,12 +1307,12 @@ def _workspace_effect_for_command(
         components = _pipeline_commands(command)
         if not components:
             return UNKNOWN_SIDE_EFFECT
-        state: WorkspaceState = PROVEN_READ_ONLY
+        pipeline_state: WorkspaceState = PROVEN_READ_ONLY
         for component in components:
-            state = _merge_workspace_state(
-                state, _workspace_effect_for_command(component, root, cwd)
+            pipeline_state = _merge_workspace_state(
+                pipeline_state, _workspace_effect_for_command(component, root, cwd)
             )
-        return state
+        return pipeline_state
     state: WorkspaceState = PROVEN_READ_ONLY
     for segment in _shell_segments(command):
         tokens = _tokens(segment)
