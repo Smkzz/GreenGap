@@ -113,6 +113,39 @@ def test_make_variable_assignment_is_expanded(tmp_path) -> None:
     assert result.invocations[0].paths == ("tests/unit",)
 
 
+def test_make_special_declarations_do_not_become_the_default_target(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("make"),
+            "Makefile": ".PHONY: docs\ninit:\n\tpytest tests/unit\ndocs:\n\tmake html\n",
+        },
+    )
+    result = trace_github_actions(tmp_path)
+    assert result.invocations[0].paths == ("tests/unit",)
+    assert not result.relevant_incomplete
+
+
+def test_bound_event_name_resolves_event_guard(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - if: ${{ github.event_name == 'pull_request' }}
+        run: pytest tests
+""",
+        },
+    )
+    result = trace_github_actions(tmp_path, event="pull_request")
+    assert result.invocations[0].paths == ("tests",)
+    assert not result.relevant_incomplete
+
+
 def test_shell_script_with_static_prefix_branch_is_resolved(tmp_path) -> None:
     write_files(
         tmp_path,

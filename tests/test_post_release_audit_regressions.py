@@ -829,6 +829,23 @@ def test_unknown_python_module_invalidates_later_test_inference(tmp_path) -> Non
     assert result.relevant_incomplete
 
 
+def test_unasync_check_mode_is_modeled_as_read_only(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow(
+                "python scripts/unasync.py --check\npytest tests"
+            ),
+            "scripts/unasync.py": "print('check-only helper')\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert result.invocations
+    assert not any(issue.code == "PYTHON_EXECUTION_UNKNOWN" for issue in result.issues)
+
+
 def test_git_archive_output_is_not_read_only(tmp_path) -> None:
     write_files(
         tmp_path,

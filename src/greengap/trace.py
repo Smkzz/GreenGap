@@ -62,6 +62,7 @@ _WORKSPACE_RESTORING_ACTIONS = {
     "actions/download-artifact",
 }
 _SAFE_SETUP_COMMANDS = {
+    "[",
     "cat",
     "chmod",
     "cp",
@@ -69,6 +70,7 @@ _SAFE_SETUP_COMMANDS = {
     ".",
     "echo",
     "env",
+    "exit",
     "export",
     "git",
     "grep",
@@ -83,6 +85,7 @@ _SAFE_SETUP_COMMANDS = {
     "printf",
     "pwd",
     "rm",
+    "return",
     "set",
     "sha256sum",
     "sort",
@@ -152,6 +155,9 @@ def _lookup(name: str, context: _Context) -> Any | None:
         return context.env.get(key)
     if scope == "inputs":
         return context.inputs.get(key)
+    if scope == "github" and key == "event_name":
+        # GitHub Actions exposes the bound event name in every workflow run.
+        return context.event_context
     return None
 
 
@@ -647,6 +653,24 @@ def _safe_path_prefix(value: str) -> bool:
     )
 
 
+def _safe_executable_name(value: str) -> bool:
+    return value.lower() in {
+        "coverage",
+        "mkdocs",
+        "mypy",
+        "pip",
+        "pip3",
+        "python",
+        "python3",
+        "ruff",
+        "twine",
+    }
+
+
+def _safe_command_prefix(value: str) -> bool:
+    return _safe_path_prefix(value) or _safe_executable_name(value)
+
+
 def _expand_safe_prefix(command: str, env: dict[str, str]) -> tuple[str | None, str | None]:
     """Expand only variables that are provable executable path prefixes."""
 
@@ -657,8 +681,11 @@ def _expand_safe_prefix(command: str, env: dict[str, str]) -> tuple[str | None, 
         variable = match.group(1) or match.group(2) or ""
         rest = command[match.end() :].lstrip()
         runner_like = bool(
-            re.match(r"(?:coverage|python(?:3(?:\.\d+)?)?|pytest)(?:\s|/|\\|$)", rest)
-        )
+            re.match(
+                r"(?:coverage|mkdocs|mypy|pip(?:3)?|python(?:3(?:\.\d+)?)?|pytest|ruff|twine)(?:\s|/|\\|$)",
+                rest,
+            )
+        ) or variable.upper() in {"PIP", "PIP3", "PREFIX", "PYTHON"}
         if not runner_like:
             output.append(match.group(0))
             cursor = match.end()
@@ -666,7 +693,7 @@ def _expand_safe_prefix(command: str, env: dict[str, str]) -> tuple[str | None, 
         if variable not in env:
             return None, f"variable prefix ${variable} is not statically known"
         value = env[variable]
-        if not _safe_path_prefix(value):
+        if not _safe_command_prefix(value):
             return None, f"variable prefix ${variable} has a dynamic or unsafe value"
         output.append(value)
         cursor = match.end()
@@ -766,6 +793,15 @@ def _safe_python_code(tokens: tuple[str, ...]) -> bool:
     return True
 
 
+def _known_read_only_python_script(tokens: tuple[str, ...]) -> bool:
+    """Recognize the explicit check-only mode of the unasync helper."""
+
+    if len(tokens) < 3 or not _basename(tokens[0]).startswith("python"):
+        return False
+    script = tokens[1].replace("\\", "/").lower()
+    return (script == "scripts/unasync.py" or script.endswith("/scripts/unasync.py")) and tokens[2:] == ("--check",)
+
+
 def _safe_setup_command(tokens: tuple[str, ...]) -> bool:
     """Recognize commands that cannot select or execute the test suite by themselves."""
 
@@ -780,12 +816,16 @@ def _safe_setup_command(tokens: tuple[str, ...]) -> bool:
         return True
     if first == "gh":
         return _safe_gh_command(tokens)
+    if first == "mkdocs":
+        return len(tokens) > 1 and tokens[1] == "build"
     if first == "greengap":
         return set(tokens[1:]).issubset({"--version", "--help"})
     if first == "coverage":
         return len(tokens) > 1 and tokens[1] in {"erase", "combine", "xml", "report"}
     if first.startswith("python"):
         if len(tokens) == 1:
+            return True
+        if _known_read_only_python_script(tokens):
             return True
         if "-c" in tokens:
             return _safe_python_code(tokens)
@@ -1047,7 +1087,9 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
         if module_index is not None:
             module = _basename(core[module_index + 1]).lower()
             module_args = tuple(token.lower() for token in core[module_index + 2 :])
-            if module in {"build", "compileall", "venv"}:
+            if module in {"build", "compileall"}:
+                return MODELED_STATE_TRANSITION
+            if module == "venv":
                 return UNKNOWN_SIDE_EFFECT
             if module in {"pip", "pip_audit"}:
                 if module == "pip" and any(
@@ -1063,6 +1105,8 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
             if module in _SAFE_PYTHON_MODULES:
                 return MODELED_STATE_TRANSITION
             return UNKNOWN_SIDE_EFFECT
+        if _known_read_only_python_script(core):
+            return MODELED_STATE_TRANSITION
         # A Python script, stdin program, or dynamically selected executable
         # can rewrite any repository byte.  Only explicit read-only diagnostics
         # and the audited module allowlist are safe here.
@@ -1071,6 +1115,8 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
         if any(token in {"install", "i", "ci", "link", "build"} for token in arguments):
             return UNKNOWN_SIDE_EFFECT
         return MODELED_STATE_TRANSITION
+    if first == "mkdocs":
+        return MODELED_STATE_TRANSITION if arguments and arguments[0] == "build" else UNKNOWN_SIDE_EFFECT
     if first == "git":
         return MODELED_STATE_TRANSITION if _safe_git_command(core) else UNKNOWN_SIDE_EFFECT
     if _safe_setup_command(core):
@@ -1134,7 +1180,7 @@ def _make_workspace_effect(
             current = list(names)
             continue
         current = []
-    selected = targets or ([next(iter(rules))] if rules else [])
+    selected = targets or [next((name for name in rules if not name.startswith(".")), "")]
     if not selected:
         return UNKNOWN_SIDE_EFFECT
     state: WorkspaceState = PROVEN_READ_ONLY
@@ -1173,12 +1219,20 @@ def _workspace_effect_for_command(
 ) -> WorkspaceState:
     """Classify setup effects; unknown commands are never treated as read-only."""
 
+    if _has_pipeline_token(command):
+        return (
+            MODELED_STATE_TRANSITION
+            if _pipeline_is_safe(command)
+            else UNKNOWN_SIDE_EFFECT
+        )
     state: WorkspaceState = PROVEN_READ_ONLY
     for segment in _shell_segments(command):
         tokens = _tokens(segment)
         if tokens is None:
             return UNKNOWN_SIDE_EFFECT
         if not tokens:
+            continue
+        if segment.strip() in {"|", "||", "&&", ";"}:
             continue
         core = _command_core_tokens(tokens)
         if root is not None and cwd is not None and core:
@@ -1234,12 +1288,32 @@ def _pytest_output_mutates_workspace(tokens: tuple[str, ...]) -> bool:
         "--json-report-file",
         "--html",
         "--result-log",
-        "--cov-report",
     }
-    for token in tokens:
-        name, _, _ = token.partition("=")
-        if name in output_options:
+    selection_files = {
+        "pytest.ini",
+        ".pytest.ini",
+        "pyproject.toml",
+        "tox.ini",
+        "setup.cfg",
+        "setup.py",
+        "conftest.py",
+    }
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        name, separator, value = token.partition("=")
+        if name not in output_options:
+            index += 1
+            continue
+        if not separator:
+            if index + 1 >= len(tokens):
+                return True
+            value = tokens[index + 1]
+            index += 1
+        normalized = value.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if "$" in value or "{" in value or normalized in selection_files:
             return True
+        index += 1
     return False
 
 
@@ -2889,6 +2963,10 @@ class _Resolver:
                 context.provenance,
             )
             return UNKNOWN_SIDE_EFFECT
+        if _has_pipeline_token(command):
+            return _merge_workspace_state(
+                context.workspace_state, MODELED_STATE_TRANSITION
+            )
         if _shell_control_flow_unknown(command):
             self.issue(
                 "SHELL_CONTROL_FLOW_UNKNOWN",
@@ -2915,6 +2993,8 @@ class _Resolver:
                     )
                 continue
             if not tokens:
+                continue
+            if expanded.strip() in {"|", "||", "&&", ";"}:
                 continue
             prior_state = state
             state = _merge_workspace_state(
@@ -3015,6 +3095,8 @@ class _Resolver:
                         state = UNKNOWN_SIDE_EFFECT
                         continue
                 elif len(tokens) > 1:
+                    if _known_read_only_python_script(tokens):
+                        continue
                     self.issue(
                         "PYTHON_EXECUTION_UNKNOWN",
                         "python script or stdin execution can rewrite repository bytes",
@@ -3034,6 +3116,7 @@ class _Resolver:
                         "GIT_COMMAND_UNKNOWN",
                         "git command is not in the explicit read-only allowlist",
                         context.provenance,
+                        relevant=False,
                     )
                     state = UNKNOWN_SIDE_EFFECT
                 continue
@@ -3381,14 +3464,59 @@ class _Resolver:
     def _script_assignments(self, content: str) -> dict[str, str | None]:
         values: dict[str, str | None] = {}
         for line in content.splitlines():
-            match = _ASSIGNMENT.match(line.strip())
+            stripped = line.strip()
+            if stripped.startswith("export "):
+                stripped = stripped[len("export ") :].lstrip()
+            match = _ASSIGNMENT.match(stripped)
             if not match:
                 continue
             raw = match.group(2).strip()
             if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
                 raw = raw[1:-1]
-            values[match.group(1)] = raw if _safe_path_prefix(raw) else None
+            values[match.group(1)] = raw if _safe_command_prefix(raw) else None
         return values
+
+    def _filter_known_shell_branches(
+        self, content: str, env: dict[str, str]
+    ) -> str:
+        """Select only the simple GitHub Actions branch we can prove."""
+
+        lines = content.splitlines()
+        output: list[str] = []
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            stripped = line.strip()
+            match = re.match(
+                r"^if\s+\[\s+(-z|-n)\s+(['\"]?)\$GITHUB_ACTIONS\2\s+\];?\s+then\s*$",
+                stripped,
+                re.IGNORECASE,
+            )
+            if not match:
+                output.append(line)
+                index += 1
+                continue
+            condition_empty = match.group(1) == "-z"
+            actual_empty = not env.get("GITHUB_ACTIONS", "")
+            take_then = condition_empty == actual_empty
+            then_lines: list[str] = []
+            else_lines: list[str] = []
+            branch = then_lines
+            index += 1
+            while index < len(lines):
+                branch_line = lines[index]
+                branch_stripped = branch_line.strip()
+                if branch_stripped == "else":
+                    branch = else_lines
+                    index += 1
+                    continue
+                if branch_stripped == "fi":
+                    index += 1
+                    break
+                branch.append(branch_line)
+                index += 1
+            output.extend(then_lines if take_then else else_lines)
+        return "\n".join(output)
 
     def _resolve_script(
         self, path: Path, context: _Context, depth: int
@@ -3421,8 +3549,9 @@ class _Resolver:
             )
             return UNKNOWN_SIDE_EFFECT
         self._script_stack.add(path)
+        env = {"GITHUB_ACTIONS": "true", **context.env}
+        content = self._filter_known_shell_branches(content, env)
         assignments = self._script_assignments(content)
-        env = dict(context.env)
         for key, value in assignments.items():
             if value is not None:
                 env[key] = value
@@ -3546,7 +3675,9 @@ class _Resolver:
         rules, variables = data
         variables.update(context.env)
         variables.update(assignments)
-        selected = targets or (next(iter(rules), ""),)
+        selected = targets or (
+            next((name for name in rules if not name.startswith(".")), ""),
+        )
         if not selected or not selected[0]:
             self.issue(
                 "MAKE_TARGET_UNKNOWN",
