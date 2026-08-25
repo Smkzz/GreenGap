@@ -181,6 +181,122 @@ runs:
     assert result.relevant_incomplete
 
 
+def test_local_reusable_workflow_uses_workflow_call_trigger_context(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: pull_request
+jobs:
+  test:
+    uses: ./.github/workflows/reusable.yml
+""",
+            ".github/workflows/reusable.yml": """name: reusable
+on:
+  workflow_call:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="pull_request")
+
+    assert result.invocations
+    assert not any(issue.code == "WORKFLOW_EVENT_FILTER_UNKNOWN" for issue in result.issues)
+
+
+def test_pipeline_mutation_is_not_hidden_by_setup_allowlist(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(
+                "cp ci/pytest.ini pytest.ini | cat", "pytest"
+            ),
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "SHELL_PIPE_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_bash_command_substitution_is_not_hidden_by_outer_setup_command(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(
+                'echo "$(cp ci/pytest.ini pytest.ini)"', "pytest"
+            ),
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "SHELL_COMMAND_SUBSTITUTION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_python_build_backend_execution_invalidates_later_test_inference(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow("python -m build", "pytest"),
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTHON_EXECUTION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_external_action_outputs_invalidate_later_test_inference(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ossf/scorecard-action@0123456789abcdef0123456789abcdef01234567
+        with:
+          results_file: pytest.ini
+          results_format: sarif
+      - run: pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "EXTERNAL_ACTION_WORKSPACE_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_git_external_diff_execution_invalidates_later_test_inference(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {".github/workflows/ci.yml": two_step_workflow("git diff --ext-diff", "pytest")},
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "GIT_COMMAND_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
 @pytest.mark.parametrize(
     ("action", "with_block"),
     [

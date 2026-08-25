@@ -96,7 +96,6 @@ _SAFE_SETUP_COMMANDS = {
     "which",
 }
 _SAFE_PYTHON_MODULES = {
-    "build",
     "compileall",
     "coverage",
     "pip",
@@ -134,6 +133,7 @@ class _Context:
     provenance: tuple[str, ...]
     event_context: str | None = None
     workspace_state: WorkspaceState = PROVEN_READ_ONLY
+    workflow_event_context: str | None = None
 
 
 def _scalar(value: Any) -> str | None:
@@ -647,6 +647,59 @@ def _shell_segments(command: str) -> tuple[str, ...]:
     return tuple(segments)
 
 
+def _has_shell_command_substitution(command: str) -> bool:
+    """Detect shell command substitution whose nested effects are not parsed."""
+
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        character = command[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if character == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote == "'":
+            if character == "'":
+                quote = None
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            index += 1
+            continue
+        if character == "`" or (
+            character == "$" and index + 1 < len(command) and command[index + 1] == "("
+        ):
+            return True
+        index += 1
+    return False
+
+
+def _assignment_only_command(command: str) -> bool:
+    """Recognize assignments whose command-substitution output is not executed."""
+
+    saw_assignment = False
+    for segment in _shell_segments(command):
+        tokens = _tokens(segment)
+        if not tokens:
+            continue
+        if _basename(tokens[0]) == "export":
+            tokens = tokens[1:]
+        if tokens and all(
+            re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token) is not None for token in tokens
+        ):
+            saw_assignment = True
+            continue
+        if not _safe_setup_command(tokens):
+            return False
+    return saw_assignment
+
+
 def _safe_path_prefix(value: str) -> bool:
     return value == "" or (
         value.endswith(("/", "\\")) and bool(re.fullmatch(r"[A-Za-z0-9_./\\:-]+", value))
@@ -883,6 +936,8 @@ def _safe_git_command(tokens: tuple[str, ...]) -> bool:
     if len(tokens) < 2 or _basename(tokens[0]).lower() != "git":
         return False
     arguments = tuple(token.lower() for token in tokens[1:])
+    if any(token in {"--ext-diff", "--textconv"} for token in arguments[1:]):
+        return False
     if any(
         token == "-o" or token == "--output" or token.startswith("--output=")
         for token in arguments[1:]
@@ -1087,8 +1142,10 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
         if module_index is not None:
             module = _basename(core[module_index + 1]).lower()
             module_args = tuple(token.lower() for token in core[module_index + 2 :])
-            if module in {"build", "compileall"}:
+            if module == "compileall":
                 return MODELED_STATE_TRANSITION
+            if module == "build":
+                return UNKNOWN_SIDE_EFFECT
             if module == "venv":
                 return UNKNOWN_SIDE_EFFECT
             if module in {"pip", "pip_audit"}:
@@ -1219,6 +1276,8 @@ def _workspace_effect_for_command(
 ) -> WorkspaceState:
     """Classify setup effects; unknown commands are never treated as read-only."""
 
+    if _has_shell_command_substitution(command):
+        return UNKNOWN_SIDE_EFFECT
     if _has_pipeline_token(command):
         return (
             MODELED_STATE_TRANSITION
@@ -1683,7 +1742,12 @@ def _pipeline_is_safe(command: str) -> bool:
         component: list[str] = []
         for token in (*tokens, "|"):
             if token == "|":
-                if not component or not _safe_setup_command(tuple(component)):
+                if not component:
+                    return False
+                component_tokens = tuple(component)
+                if _workspace_effect_for_tokens(
+                    shlex.join(component_tokens), component_tokens
+                ) == UNKNOWN_SIDE_EFFECT:
                     return False
                 component = []
             else:
@@ -2041,6 +2105,7 @@ class _Resolver:
             provenance=changes.get("provenance", ()),
             event_context=changes.get("event_context"),
             workspace_state=changes.get("workspace_state", PROVEN_READ_ONLY),
+            workflow_event_context=changes.get("workflow_event_context"),
         )
 
     def trace(self) -> TraceResult:
@@ -2212,8 +2277,9 @@ class _Resolver:
                 context.provenance,
             )
         selected_event: tuple[bool, dict[str, Any]] | None = None
-        if self.event_context is not None and events_present:
-            selected_event = _event_config(raw_events, self.event_context, self.activity)
+        trigger_event = context.workflow_event_context or self.event_context
+        if trigger_event is not None and events_present:
+            selected_event = _event_config(raw_events, trigger_event, self.activity)
             if selected_event is None:
                 self.issue(
                     "WORKFLOW_EVENT_FILTER_UNKNOWN"
@@ -2235,10 +2301,10 @@ class _Resolver:
         event_kinds = _event_kinds(raw_events) if events_present else {"implicit"}
         self._workflow_event_kinds.setdefault(relative, set()).update(event_kinds or {"unknown"})
         selected_config = selected_event[1] if selected_event is not None else None
-        if self.event_context is not None and selected_config is not None:
+        if trigger_event is not None and selected_config is not None:
             filter_result = _workflow_filter_runs(
                 selected_config,
-                self.event_context,
+                trigger_event,
                 self.changed_files,
                 self.ref,
                 self.base_ref,
@@ -2267,7 +2333,7 @@ class _Resolver:
             if has_filters and not filter_result:
                 self._workflow_stack.remove(path)
                 return
-        elif self.event_context is None and _workflow_has_activity_filters(raw_events):
+        elif trigger_event is None and _workflow_has_activity_filters(raw_events):
             self.issue(
                 "WORKFLOW_EVENT_FILTER_UNKNOWN",
                 "workflow activity types require a bound event activity",
@@ -2275,7 +2341,7 @@ class _Resolver:
             )
             self._workflow_stack.remove(path)
             return
-        elif self.event_context is None and _workflow_has_ref_filters(raw_events):
+        elif trigger_event is None and _workflow_has_ref_filters(raw_events):
             single_event: tuple[str, dict[str, Any]] | None = None
             if isinstance(raw_events, str):
                 single_event = (raw_events, {})
@@ -2325,7 +2391,7 @@ class _Resolver:
                 runs_for_changes = _workflow_runs_for_changes(
                     raw_events,
                     self.changed_files,
-                    self.event_context,
+                    trigger_event,
                     self.change_set_complete,
                     self.commit_count,
                     self.changed_file_count,
@@ -2408,6 +2474,8 @@ class _Resolver:
                     context.inputs,
                     provenance,
                     effective_event,
+                    context.workspace_state,
+                    context.workflow_event_context,
                 )
                 if defer_job_condition:
                     row_condition = _condition_value(raw_job.get("if"), row_base)
@@ -2435,6 +2503,8 @@ class _Resolver:
                     context.inputs,
                     provenance,
                     effective_event,
+                    context.workspace_state,
+                    context.workflow_event_context,
                 )
                 workflow_cwd = self._default_working_directory(
                     data.get("defaults"), row_base, self.root, provenance
@@ -2497,6 +2567,7 @@ class _Resolver:
                 inputs=inputs,
                 cwd=self.root,
                 event_context=context.event_context,
+                workflow_event_context="workflow_call",
                 provenance=context.provenance + (f"uses:{normalize_repo_path(self.root, target)}",),
             ),
         )
@@ -2732,6 +2803,14 @@ class _Resolver:
                             workspace_state = _merge_workspace_state(
                                 workspace_state, MODELED_STATE_TRANSITION
                             )
+                    if action_name == "ossf/scorecard-action":
+                        self.issue(
+                            "EXTERNAL_ACTION_WORKSPACE_UNKNOWN",
+                            "ossf/scorecard-action may write its results file into the workspace",
+                            provenance,
+                            relevant=False,
+                        )
+                        workspace_state = UNKNOWN_SIDE_EFFECT
                     if action_name == "pre-commit-ci/lite-action" and self._precommit_config_is_non_test():
                         continue
                     if action_name not in _KNOWN_SETUP_ACTIONS:
@@ -2805,6 +2884,14 @@ class _Resolver:
                 )
                 return UNKNOWN_SIDE_EFFECT
             return MODELED_STATE_TRANSITION
+        if action_name == "ossf/scorecard-action":
+            self.issue(
+                "EXTERNAL_ACTION_WORKSPACE_UNKNOWN",
+                "conditional ossf/scorecard-action may write its results file into the workspace",
+                provenance,
+                relevant=False,
+            )
+            return UNKNOWN_SIDE_EFFECT
         if action_name not in _KNOWN_SETUP_ACTIONS:
             self.issue(
                 "EXTERNAL_ACTION_UNKNOWN",
@@ -2941,6 +3028,15 @@ class _Resolver:
                 "PowerShell control flow or command chaining is outside the supported static subset",
                 context.provenance,
             )
+            return UNKNOWN_SIDE_EFFECT
+        if _has_shell_command_substitution(command):
+            if not _assignment_only_command(command):
+                self.issue(
+                    "SHELL_COMMAND_SUBSTITUTION_UNKNOWN",
+                    "shell command substitution hides nested workspace effects",
+                    context.provenance,
+                    relevant=_relevant_text(command),
+                )
             return UNKNOWN_SIDE_EFFECT
         if _contains_arbitrary_python_code(command):
             self.issue(
