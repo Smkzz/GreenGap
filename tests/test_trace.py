@@ -146,7 +146,7 @@ jobs:
     assert not result.relevant_incomplete
 
 
-def test_shell_script_with_static_prefix_branch_is_resolved(tmp_path) -> None:
+def test_shell_script_with_static_prefix_branch_has_unproven_runner_identity(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -155,9 +155,9 @@ def test_shell_script_with_static_prefix_branch_is_resolved(tmp_path) -> None:
         },
     )
     result = trace_github_actions(tmp_path)
-    assert result.invocations
-    assert result.invocations[0].paths == ("tests/_sync",)
-    assert not result.issues
+    assert not result.invocations
+    assert any(issue.code == "EXECUTABLE_IDENTITY_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
 
 
 @pytest.mark.parametrize(
@@ -328,6 +328,7 @@ jobs:
             "pyproject.toml": """[tool.tox]
 env_list = ["py311"]
 [tool.tox.env_run_base]
+skip_install = true
 commands = ["pytest tests"]
 """,
         },
@@ -341,7 +342,7 @@ def test_tox_ini_selection_and_posargs_are_resolved(tmp_path) -> None:
         tmp_path,
         {
             ".github/workflows/ci.yml": workflow("tox -e py311 -- tests/test_one.py"),
-            "tox.ini": "[tox]\nenvlist = py311\n[testenv]\ncommands = pytest {posargs}\n",
+            "tox.ini": "[tox]\nenvlist = py311\n[testenv]\nskip_install = true\ncommands = pytest {posargs}\n",
         },
     )
     result = trace_github_actions(tmp_path)
@@ -399,6 +400,7 @@ def test_modern_tox_nested_argv_and_nonpytest_lane(tmp_path) -> None:
             "pyproject.toml": """[tool.tox]
 env_list = ["py311", "typing"]
 [tool.tox.env_run_base]
+skip_install = true
 commands = [["pytest", "-v", "--basetemp={env_tmp_dir}", {replace = "posargs", default = [], extend = true}]]
 [tool.tox.env.typing]
 commands = [["mypy"]]

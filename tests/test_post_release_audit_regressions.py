@@ -938,6 +938,7 @@ def test_tox_setenv_pytest_addopts_invalidates_file_scope(tmp_path) -> None:
             "tox.ini": """[tox]
 envlist = py311
 [testenv]
+skip_install = true
 setenv =
     PYTEST_ADDOPTS = tests/unit
 commands = pytest
@@ -968,6 +969,7 @@ def test_tox_execution_context_fields_invalidate_file_scope(tmp_path, tox_field:
             "tox.ini": f"""[tox]
 envlist = py311
 [testenv]
+skip_install = true
 {tox_field}
 commands = pytest
 """,
@@ -1254,7 +1256,7 @@ def test_nested_tox_workspace_effects_propagate_to_later_pytest(tmp_path) -> Non
         tmp_path,
         {
             ".github/workflows/ci.yml": workflow("tox run -e py311"),
-            "tox.ini": "[tox]\nenvlist = py311\n[testenv]\ncommands =\n    rm pytest.ini\n    pytest\n",
+            "tox.ini": "[tox]\nenvlist = py311\n[testenv]\nskip_install = true\ncommands =\n    rm pytest.ini\n    pytest\n",
         },
     )
 
@@ -1758,3 +1760,177 @@ def test_release_provenance_manifest_binds_exact_artifact_bytes(tmp_path) -> Non
     assert payload["tree"] == "b" * 40
     assert [item["name"] for item in payload["artifacts"]] == [wheel.name, sdist.name]
     assert payload["artifacts"][0]["size"] == len(b"wheel bytes")
+
+
+def test_repository_path_in_path_invalidates_bare_pytest_identity(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      PATH: scripts:$PATH
+    steps:
+      - run: pytest
+""",
+            "scripts/pytest": "#!/bin/sh\necho fake runner\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "EXECUTABLE_IDENTITY_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ruff check --fix tests",
+        "ruff check --output-file pytest.ini tests",
+        "mypy --junit-xml pytest.ini",
+        "pip-audit -o pytest.ini",
+        "python -m coverage run scripts/rewrite.py",
+    ],
+)
+def test_tool_output_or_execution_options_invalidate_later_pytest(tmp_path, command: str) -> None:
+    write_files(tmp_path, {".github/workflows/ci.yml": two_step_workflow(command, "pytest")})
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+def test_pip_requirements_recursively_detect_local_project_inputs(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(
+                "pip install -r requirements.txt", "pytest"
+            ),
+            "requirements.txt": "-r base.txt\n",
+            "base.txt": "-e .\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+def test_standard_precommit_hooks_are_not_assumed_workspace_safe(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(
+                "pre-commit run --all-files", "pytest"
+            ),
+            ".pre-commit-config.yaml": """repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PRE_COMMIT_HOOKS_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    "selector",
+    ["tests/test_*.py", "tests/test_mod.py::test_func", "@pytest.args"],
+)
+def test_unmodeled_pytest_selector_forms_fail_closed(tmp_path, selector: str) -> None:
+    write_files(tmp_path, {".github/workflows/ci.yml": workflow(f"pytest {selector}")})
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_SELECTOR_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_tox_default_packaging_phase_invalidates_pytest_inference(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("tox -e py311"),
+            "tox.ini": "[tox]\nenvlist = py311\n[testenv]\ncommands = pytest\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "TOX_PACKAGING_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_pipeline_nested_make_effects_are_composed(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("make prepare | cat\npytest"),
+            "Makefile": "prepare:\n\tcp ci/pytest.ini pytest.ini\n",
+            "ci/pytest.ini": "[pytest]\npython_files = check_*.py\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+def test_bash_command_substitution_inside_double_quotes_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow(
+                'echo "it\'s $(cp ci/pytest.ini pytest.ini)"\npytest'
+            ),
+            "ci/pytest.ini": "[pytest]\npython_files = check_*.py\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "SHELL_COMMAND_SUBSTITUTION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_known_external_actions_default_to_unknown_workspace_effect(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anchore/sbom-action@v0.17.0
+        with:
+          output-file: pytest.ini
+      - run: pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "EXTERNAL_ACTION_WORKSPACE_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete

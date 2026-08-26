@@ -354,7 +354,16 @@ def _contains_runner_hint(value: str) -> bool:
     if first.endswith("pytest") or first.endswith("pytest.exe"):
         return True
     if first.endswith("coverage") or first.endswith("coverage.exe"):
-        return len(tokens) > 1 and tokens[1] == "run"
+        return (
+            len(tokens) > 2
+            and tokens[1] == "run"
+            and any(
+                index + 1 < len(tokens)
+                and token == "-m"
+                and _basename(tokens[index + 1]) == "pytest"
+                for index, token in enumerate(tokens[2:-1], start=2)
+            )
+        )
     if first in {"make", "gmake"}:
         return any(token.lower() in {"test", "tests", "check", "check-all"} for token in tokens[1:])
     if first == "coverage":
@@ -1165,7 +1174,147 @@ def _command_core_tokens(tokens: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(remaining)
 
 
-def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> WorkspaceState:
+def _has_option(tokens: tuple[str, ...], *names: str) -> bool:
+    return any(
+        token == name or token.startswith(name + "=")
+        for token in tokens
+        for name in names
+    )
+
+
+def _pip_requirement_paths(arguments: tuple[str, ...]) -> tuple[str, ...] | None:
+    """Extract static ``pip -r`` paths, rejecting ambiguous option forms."""
+
+    paths: list[str] = []
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token in {"-r", "--requirement"}:
+            if index + 1 >= len(arguments):
+                return None
+            paths.append(arguments[index + 1])
+            index += 2
+            continue
+        if token.startswith("--requirement="):
+            paths.append(token.partition("=")[2])
+            index += 1
+            continue
+        if token.startswith("-r") and len(token) > 2:
+            paths.append(token[2:])
+            index += 1
+            continue
+        if token.startswith("-") and not token.startswith("--") and "r" in token[1:]:
+            option_tail = token[1:]
+            requirement_index = option_tail.find("r")
+            if requirement_index >= 0:
+                suffix = option_tail[requirement_index + 1 :]
+                if suffix:
+                    paths.append(suffix)
+                    index += 1
+                    continue
+                if index + 1 >= len(arguments):
+                    return None
+                paths.append(arguments[index + 1])
+                index += 2
+                continue
+        index += 1
+    return tuple(paths)
+
+
+def _requirements_include_local_project(
+    root: Path, cwd: Path, paths: tuple[str, ...], seen: frozenset[Path] = frozenset(), depth: int = 0
+) -> bool:
+    """Find local project/editable requirements before trusting a pip install."""
+
+    if depth > MAX_DEPTH:
+        return True
+    for raw_path in paths:
+        if not raw_path or any(marker in raw_path for marker in ("$", "{", "}")):
+            return True
+        try:
+            path = safe_resolve(root, raw_path, cwd)
+        except PathSafetyError:
+            return True
+        if path in seen:
+            return True
+        if not path.is_file():
+            # pip cannot install from a missing requirement file, so it cannot
+            # reach a local build through this reference.
+            continue
+        try:
+            lines = read_limited_text(path, MAX_CONFIG_BYTES).splitlines()
+        except (OSError, ValueError, UnicodeError):
+            return True
+        nested: list[str] = []
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            line = line.split(" #", 1)[0].strip()
+            if line in {"-e", "--editable", ".", "./", "..", "../"}:
+                return True
+            if line.startswith(("-e ", "--editable ")):
+                return True
+            if line.startswith("-e") and not line.startswith("--"):
+                return True
+            if line.startswith("--editable="):
+                return True
+            if line.startswith("file:"):
+                return True
+            if line.startswith("-r ") or line.startswith("--requirement "):
+                nested.append(line.split(None, 1)[1])
+                continue
+            if line.startswith("--requirement="):
+                nested.append(line.partition("=")[2])
+                continue
+            if not line.startswith("-") and (
+                line.startswith((".", "/", "\\"))
+                or "/" in line
+                or "\\" in line
+            ):
+                return True
+        if nested and _requirements_include_local_project(
+            root, path.parent, tuple(nested), seen | {path}, depth + 1
+        ):
+            return True
+    return False
+
+
+def _safe_ruff_workspace_command(arguments: tuple[str, ...]) -> bool:
+    return (
+        bool(arguments)
+        and arguments[0] == "check"
+        and not _has_option(arguments, "--fix", "--fix-only", "--output-file")
+    )
+
+
+def _safe_mypy_workspace_command(arguments: tuple[str, ...]) -> bool:
+    return not _has_option(arguments, "--junit-xml", "--cache-dir", "--sqlite-cache")
+
+
+def _safe_pip_audit_workspace_command(arguments: tuple[str, ...]) -> bool:
+    return not _has_option(arguments, "-o", "--output")
+
+
+def _safe_coverage_workspace_command(arguments: tuple[str, ...]) -> bool:
+    if not arguments:
+        return False
+    if arguments[0] != "run":
+        return not _has_option(arguments, "-o", "--output-file")
+    return any(
+        index + 1 < len(arguments)
+        and token == "-m"
+        and _basename(arguments[index + 1]) == "pytest"
+        for index, token in enumerate(arguments[1:-1], start=1)
+    )
+
+
+def _workspace_effect_for_tokens(
+    segment: str,
+    tokens: tuple[str, ...],
+    root: Path | None = None,
+    cwd: Path | None = None,
+) -> WorkspaceState:
     core = _command_core_tokens(tokens)
     if not core:
         return PROVEN_READ_ONLY
@@ -1217,7 +1366,24 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
             for token in arguments
         ):
             return UNKNOWN_SIDE_EFFECT
+        requirement_paths = _pip_requirement_paths(arguments)
+        if requirement_paths is None:
+            return UNKNOWN_SIDE_EFFECT
+        if requirement_paths and (
+            root is None
+            or cwd is None
+            or _requirements_include_local_project(root, cwd, requirement_paths)
+        ):
+            return UNKNOWN_SIDE_EFFECT
         return MODELED_STATE_TRANSITION
+    if first == "ruff":
+        return MODELED_STATE_TRANSITION if _safe_ruff_workspace_command(arguments) else UNKNOWN_SIDE_EFFECT
+    if first == "mypy":
+        return MODELED_STATE_TRANSITION if _safe_mypy_workspace_command(arguments) else UNKNOWN_SIDE_EFFECT
+    if first == "pip-audit":
+        return MODELED_STATE_TRANSITION if _safe_pip_audit_workspace_command(arguments) else UNKNOWN_SIDE_EFFECT
+    if first == "coverage":
+        return MODELED_STATE_TRANSITION if _safe_coverage_workspace_command(arguments) else UNKNOWN_SIDE_EFFECT
     if first.startswith("python") or first == "py":
         if "-c" in core:
             return MODELED_STATE_TRANSITION if _safe_python_code(core) else UNKNOWN_SIDE_EFFECT
@@ -1237,6 +1403,12 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
                 for token in module_args
             ):
                 return UNKNOWN_SIDE_EFFECT
+            if module == "coverage":
+                return (
+                    MODELED_STATE_TRANSITION
+                    if _safe_coverage_workspace_command(module_args)
+                    else UNKNOWN_SIDE_EFFECT
+                )
             if module == "venv":
                 return UNKNOWN_SIDE_EFFECT
             if module in {"pip", "pip_audit"}:
@@ -1249,6 +1421,16 @@ def _workspace_effect_for_tokens(segment: str, tokens: tuple[str, ...]) -> Works
                     for token in module_args
                 ):
                     return UNKNOWN_SIDE_EFFECT
+                if module == "pip":
+                    requirement_paths = _pip_requirement_paths(module_args)
+                    if requirement_paths is None:
+                        return UNKNOWN_SIDE_EFFECT
+                    if requirement_paths and (
+                        root is None
+                        or cwd is None
+                        or _requirements_include_local_project(root, cwd, requirement_paths)
+                    ):
+                        return UNKNOWN_SIDE_EFFECT
                 return MODELED_STATE_TRANSITION
             if module in _SAFE_PYTHON_MODULES:
                 return MODELED_STATE_TRANSITION
@@ -1418,9 +1600,9 @@ def _workspace_effect_for_command(
                 else:
                     effect = UNKNOWN_SIDE_EFFECT
             else:
-                effect = _workspace_effect_for_tokens(segment, tokens)
+                effect = _workspace_effect_for_tokens(segment, tokens, root, cwd)
         else:
-            effect = _workspace_effect_for_tokens(segment, tokens)
+            effect = _workspace_effect_for_tokens(segment, tokens, root, cwd)
         state = _merge_workspace_state(state, effect)
     return state
 
@@ -2104,7 +2286,7 @@ class _Resolver:
                     return None
                 hook_id = _scalar(raw_hook.get("id"))
                 entry = _scalar(raw_hook.get("entry"))
-                if not hook_id or entry is None:
+                if not hook_id or "entry" not in raw_hook or entry is None or not entry:
                     return None
                 raw_stages = raw_hook.get("stages")
                 stages: tuple[str, ...]
@@ -2164,8 +2346,6 @@ class _Resolver:
         selected_hooks: frozenset[str] | None = None,
         selected_stage: str | None = None,
     ) -> WorkspaceState:
-        if self._precommit_config_is_non_test():
-            return MODELED_STATE_TRANSITION
         entries = self._precommit_entries()
         if entries is None:
             self.issue(
@@ -2949,7 +3129,13 @@ class _Resolver:
                             relevant=False,
                         )
                         workspace_state = UNKNOWN_SIDE_EFFECT
-                    if action_name == "pre-commit-ci/lite-action" and self._precommit_config_is_non_test():
+                    if action_name == "pre-commit-ci/lite-action":
+                        workspace_state = _merge_workspace_state(
+                            workspace_state,
+                            self._resolve_precommit(
+                                replace(step_context, workspace_state=workspace_state), 0
+                            ),
+                        )
                         continue
                     if (
                         action_name not in _PROVEN_WORKSPACE_SAFE_ACTIONS
@@ -3011,8 +3197,8 @@ class _Resolver:
             return UNKNOWN_SIDE_EFFECT
 
         action_name = raw_uses.split("@", 1)[0].lower()
-        if action_name == "pre-commit-ci/lite-action" and self._precommit_config_is_non_test():
-            return MODELED_STATE_TRANSITION
+        if action_name == "pre-commit-ci/lite-action":
+            return self._resolve_precommit(replace(context, workspace_state=PROVEN_READ_ONLY), 0)
         if action_name == "actions/checkout":
             self.issue(
                 "CHECKOUT_CONDITION_UNKNOWN",
@@ -3172,6 +3358,69 @@ class _Resolver:
             )
             return None
 
+    def _runner_identity_unknown(self, tokens: tuple[str, ...], context: _Context) -> bool:
+        """Reject test-runner names whose shell resolution is repository-controlled."""
+
+        if not tokens:
+            return False
+        core = _command_core_tokens(tokens)
+        if not core:
+            return False
+        first_raw = core[0]
+        first = _basename(first_raw)
+        runner_names = {
+            "pytest",
+            "py.test",
+            "tox",
+            "nox",
+            "invoke",
+            "pre-commit",
+            "pre_commit",
+            "coverage",
+        }
+        is_runner = first in runner_names or (
+            first.startswith("python")
+            and any(
+                index + 1 < len(core)
+                and token == "-m"
+                and _basename(core[index + 1]) in {"pytest", "pre-commit", "pre_commit"}
+                for index, token in enumerate(core[:-1])
+            )
+        )
+        if not is_runner:
+            return False
+        if "/" in first_raw or "\\" in first_raw:
+            try:
+                resolved = safe_resolve(self.root, first_raw, context.cwd)
+            except PathSafetyError:
+                return True
+            try:
+                resolved.relative_to(self.root)
+            except ValueError:
+                return False
+            return True
+        path_value = context.env.get("PATH")
+        if not path_value:
+            return False
+        separator = ";" if ";" in path_value else ":"
+        for raw_entry in path_value.split(separator):
+            entry = raw_entry.strip().strip("'\"")
+            if not entry or entry in {"$PATH", "${PATH}"}:
+                continue
+            if "$PATH" in entry or "${PATH}" in entry:
+                entry = entry.replace("${PATH}", "").replace("$PATH", "").strip(separator)
+                if not entry:
+                    continue
+            if "${{" in entry or "$GITHUB_WORKSPACE" in entry:
+                return True
+            try:
+                resolved = safe_resolve(self.root, entry, context.cwd)
+                resolved.relative_to(self.root)
+            except (PathSafetyError, ValueError):
+                continue
+            return True
+        return False
+
     def _resolve_command(
         self, command: str, context: _Context, depth: int, shell: str = "bash"
     ) -> WorkspaceState:
@@ -3267,7 +3516,7 @@ class _Resolver:
                 continue
             prior_state = state
             state = _merge_workspace_state(
-                state, _workspace_effect_for_tokens(expanded, tokens)
+                state, _workspace_effect_for_tokens(expanded, tokens, self.root, context.cwd)
             )
             local_env = dict(shell_env)
             had_assignments = False
@@ -3303,6 +3552,14 @@ class _Resolver:
             if not tokens:
                 continue
             first = _basename(tokens[0])
+            if self._runner_identity_unknown(tokens, nested_context):
+                self.issue(
+                    "EXECUTABLE_IDENTITY_UNKNOWN",
+                    "repository-controlled PATH or executable path can shadow the recognized test runner",
+                    context.provenance,
+                )
+                state = UNKNOWN_SIDE_EFFECT
+                continue
             if first == "export":
                 for token in tokens[1:]:
                     if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
@@ -3708,8 +3965,12 @@ class _Resolver:
                     index += 1
                     continue
                 return None, marker, f"pytest option {name} has unmodeled selection semantics"
-            if "$" in token or "{" in token or "}" in token:
-                return None, marker, "pytest path selector is dynamic"
+            if token.startswith("@"):
+                return None, marker, "pytest argument files are not modeled"
+            if "::" in token:
+                return None, marker, "pytest node-id selectors are not modeled"
+            if any(character in token for character in ("$", "{", "}", "*", "?", "[", "]")):
+                return None, marker, "pytest path selector is dynamic or shell-expanded"
             paths.append(normalize_repo_path(self.root, token, cwd))
             index += 1
         if not paths:
@@ -4235,6 +4496,39 @@ class _Resolver:
                     return True
         return False
 
+    def _tox_packaging_unknown(
+        self,
+        config: tuple[list[str], dict[str, dict[str, Any]], dict[str, Any] | None],
+        name: str,
+    ) -> bool:
+        """Require tox packaging to be explicitly disabled before tracing tests.
+
+        Tox normally builds an sdist or wheel through the project's packaging
+        backend before running commands.  Those hooks are executable project
+        code, so only an explicit ``skip_install``/``package = skip`` contract
+        is safe for byte-stable pytest inference.
+        """
+
+        _, envs, tox = config
+        if tox is not None:
+            base = tox.get("env_run_base", {})
+            selected = envs.get(name, {})
+            if not isinstance(base, dict) or not isinstance(selected, dict):
+                return True
+            skip_install = selected.get("skip_install", base.get("skip_install"))
+            package = selected.get("package", base.get("package", tox.get("package")))
+        else:
+            base = envs.get("__base__", {})
+            selected = envs.get(name, {})
+            if not isinstance(base, dict) or not isinstance(selected, dict):
+                return True
+            skip_install = selected.get("skip_install", base.get("skip_install"))
+            package = selected.get("package", base.get("package"))
+        if str(skip_install).strip().lower() in {"1", "true", "yes", "on"}:
+            return False
+        package_name = str(package).strip().lower() if package is not None else ""
+        return package_name not in {"skip", "none"}
+
     def _resolve_tox(
         self, tokens: tuple[str, ...], context: _Context, depth: int
     ) -> WorkspaceState:
@@ -4288,6 +4582,14 @@ class _Resolver:
                 self.issue(
                     "TOX_EXECUTION_CONTEXT_UNKNOWN",
                     f"tox environment {name!r} changes directory or has unresolved lifecycle commands",
+                    context.provenance + (f"tox:{name}",),
+                )
+                state = UNKNOWN_SIDE_EFFECT
+                continue
+            if self._tox_packaging_unknown(config, name):
+                self.issue(
+                    "TOX_PACKAGING_UNKNOWN",
+                    f"tox environment {name!r} may execute the project packaging backend before tests",
                     context.provenance + (f"tox:{name}",),
                 )
                 state = UNKNOWN_SIDE_EFFECT
