@@ -2346,12 +2346,14 @@ class _Resolver:
         selected_hooks: frozenset[str] | None = None,
         selected_stage: str | None = None,
     ) -> WorkspaceState:
+        runner_relevance_proven = self._precommit_config_is_non_test()
         entries = self._precommit_entries()
         if entries is None:
             self.issue(
                 "PRE_COMMIT_HOOKS_UNKNOWN",
                 "pre-commit hooks could not be statically enumerated",
                 context.provenance,
+                relevant=not runner_relevance_proven,
             )
             return UNKNOWN_SIDE_EFFECT
         if not entries:
@@ -2359,6 +2361,7 @@ class _Resolver:
                 "PRE_COMMIT_HOOKS_UNKNOWN",
                 "pre-commit configuration declares no statically visible hooks",
                 context.provenance,
+                relevant=not runner_relevance_proven,
             )
             return UNKNOWN_SIDE_EFFECT
         selected_entries = tuple(

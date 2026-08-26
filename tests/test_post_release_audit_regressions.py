@@ -1847,6 +1847,28 @@ def test_standard_precommit_hooks_are_not_assumed_workspace_safe(tmp_path) -> No
     assert result.relevant_incomplete
 
 
+def test_precommit_only_job_does_not_make_unknown_hook_relevant(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("pre-commit run --all-files"),
+            ".pre-commit-config.yaml": """repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PRE_COMMIT_HOOKS_UNKNOWN" for issue in result.issues)
+    assert not any(issue.relevant for issue in result.issues)
+    assert not result.relevant_incomplete
+
+
 @pytest.mark.parametrize(
     "selector",
     ["tests/test_*.py", "tests/test_mod.py::test_func", "@pytest.args"],

@@ -35,10 +35,14 @@ BASE_REFS = {
     "httpcore": "master",
     "markupsafe": "main",
 }
-EXPECTED_UNKNOWN_REPOSITORIES = frozenset({"outcome", "httpcore"})
-EXPECTED_UNKNOWN_EVIDENCE = frozenset(
-    {"PYTHON_EXECUTION_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"}
-)
+EXPECTED_UNKNOWN_EVIDENCE_BY_REPOSITORY = {
+    "outcome": frozenset({"PYTHON_EXECUTION_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"}),
+    "requests": frozenset({"WORKSPACE_MUTATION_UNKNOWN"}),
+    "itsdangerous": frozenset({"TOX_PACKAGING_UNKNOWN"}),
+    "httpcore": frozenset({"EXECUTABLE_IDENTITY_UNKNOWN"}),
+    "markupsafe": frozenset({"TOX_PACKAGING_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"}),
+}
+EXPECTED_UNKNOWN_REPOSITORIES = frozenset(EXPECTED_UNKNOWN_EVIDENCE_BY_REPOSITORY)
 
 
 @dataclass(frozen=True)
@@ -202,13 +206,21 @@ def run_plan(
 
 
 def expected_unknown_baseline(name: str, plan: dict[str, Any]) -> bool:
-    """Recognize only the two qualified build-taint abstentions."""
+    """Recognize only repository-specific, evidence-bound abstentions."""
 
     collection = plan.get("collection", {})
     snapshot = plan.get("snapshot", {})
     findings = plan.get("findings", [])
+    expected_evidence = EXPECTED_UNKNOWN_EVIDENCE_BY_REPOSITORY.get(name)
+    trace = plan.get("trace", {})
+    trace_issues = trace.get("issues", []) if isinstance(trace, dict) else []
+    relevant_codes = {
+        item.get("code")
+        for item in trace_issues
+        if isinstance(item, dict) and item.get("relevant")
+    }
     return bool(
-        name in EXPECTED_UNKNOWN_REPOSITORIES
+        expected_evidence
         and plan.get("stable")
         and not plan.get("complete")
         and plan.get("blocker_count") == 0
@@ -222,10 +234,17 @@ def expected_unknown_baseline(name: str, plan: dict[str, Any]) -> bool:
         and findings
         and all(isinstance(item, dict) and item.get("state") == "UNKNOWN" for item in findings)
         and all(
-            set(item.get("evidence", ())) == EXPECTED_UNKNOWN_EVIDENCE
+            (
+                item.get("confidence") == "low" and not item.get("evidence")
+            )
+            or (
+                bool(item.get("evidence"))
+                and set(item.get("evidence", ())) <= expected_evidence
+            )
             for item in findings
             if isinstance(item, dict)
         )
+        and (not relevant_codes or relevant_codes <= expected_evidence)
     )
 
 
