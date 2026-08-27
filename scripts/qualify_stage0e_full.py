@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Run the pinned five-checkout Plan-mode qualification without network writes.
+"""Run bounded Plan-mode qualification without network writes.
 
 The script expects already materialized, dependency-ready checkouts under
 --root. It never clones, pushes, publishes, or changes an upstream repository.
-Mutation definitions live here because they are qualification fixtures, not
-product logic.
+The pinned five-checkout set is an abstention-compatibility fixture. Genuine
+mutation certification must use a separate JSON manifest passed with
+``--mutation-manifest``; a baseline that is correctly UNKNOWN is never counted
+as a mutation experiment.
 """
 
 from __future__ import annotations
@@ -52,6 +54,15 @@ class Mutation:
     new: bytes
     expected: str
     count: int = 1
+
+
+@dataclass(frozen=True)
+class MutationCase:
+    name: str
+    path: str
+    expected_head: str
+    base_ref: str
+    mutation: Mutation
 
 
 MUTATIONS = {
@@ -248,15 +259,29 @@ def expected_unknown_baseline(name: str, plan: dict[str, Any]) -> bool:
     )
 
 
-def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]:
-    expected = PINNED[name][1]
+def _safe_mutation_target(root: Path, relative: str) -> Path | None:
+    try:
+        repository = root.resolve()
+        target = (repository / relative).resolve()
+        target.relative_to(repository)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return target
+
+
+def qualify_case(
+    name: str,
+    root: Path,
+    python_executable: str,
+    expected: str,
+    mutation: Mutation,
+    base_ref: str,
+) -> dict[str, Any]:
     valid, reason = validate_checkout(root, expected)
     if not valid:
         return {"repository": name, "status": "ENVIRONMENT_INVALID", "reason": reason}
     before_head = git(root, "rev-parse", "HEAD")
-    mutation = MUTATIONS[name]
     changed_files = (mutation.path,)
-    base_ref = BASE_REFS[name]
     baseline_code, baseline = run_plan(root, python_executable, changed_files, base_ref)
     if baseline_code != 0 or not baseline.get("complete") or baseline.get("blocker_count", 0):
         status = (
@@ -267,8 +292,8 @@ def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]
             else "FALSE_POSITIVE"
         )
         return {"repository": name, "status": status, "baseline": baseline}
-    target = root / mutation.path
-    if not target.exists():
+    target = _safe_mutation_target(root, mutation.path)
+    if target is None or not target.exists():
         return {
             "repository": name,
             "status": "ENVIRONMENT_INVALID",
@@ -308,6 +333,122 @@ def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]
     }
 
 
+def qualify_one(name: str, root: Path, python_executable: str) -> dict[str, Any]:
+    expected = PINNED[name][1]
+    return qualify_case(name, root, python_executable, expected, MUTATIONS[name], BASE_REFS[name])
+
+
+def load_mutation_manifest(path: Path) -> tuple[MutationCase, ...]:
+    """Load a separate, exact-head mutation-certification set."""
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not read mutation manifest: {exc}") from exc
+    if not isinstance(raw, dict) or not isinstance(raw.get("repositories"), list):
+        raise ValueError("mutation manifest must contain a repositories list")
+    cases: list[MutationCase] = []
+    names: set[str] = set()
+    for item in raw["repositories"]:
+        if not isinstance(item, dict):
+            raise ValueError("mutation manifest repository entries must be mappings")
+        name = item.get("name")
+        relative_path = item.get("path")
+        expected_head = item.get("expected_head")
+        base_ref = item.get("base_ref")
+        raw_mutation = item.get("mutation")
+        if (
+            not isinstance(name, str)
+            or not name
+            or not isinstance(relative_path, str)
+            or not relative_path
+            or not isinstance(expected_head, str)
+            or not expected_head
+            or not isinstance(base_ref, str)
+            or not base_ref
+        ):
+            raise ValueError("mutation manifest entries require non-empty name/path/expected_head/base_ref")
+        if name in names:
+            raise ValueError(f"duplicate mutation manifest repository: {name}")
+        if not isinstance(raw_mutation, dict):
+            raise ValueError(f"mutation manifest entry {name!r} has no mutation mapping")
+        mutation_path = raw_mutation.get("path")
+        old = raw_mutation.get("old")
+        new = raw_mutation.get("new")
+        expected = raw_mutation.get("expected")
+        count = raw_mutation.get("count", 1)
+        if (
+            not isinstance(mutation_path, str)
+            or not isinstance(old, str)
+            or not isinstance(new, str)
+            or not isinstance(expected, str)
+        ):
+            raise ValueError(f"mutation manifest entry {name!r} has invalid mutation fields")
+        if not isinstance(count, int) or count < 1:
+            raise ValueError(f"mutation manifest entry {name!r} has invalid mutation count")
+        names.add(name)
+        cases.append(
+            MutationCase(
+                name,
+                relative_path,
+                expected_head,
+                base_ref,
+                Mutation(mutation_path, old.encode(), new.encode(), expected, count),
+            )
+        )
+    if not cases:
+        raise ValueError("mutation manifest must contain at least one repository")
+    return tuple(cases)
+
+
+def abstention_compatibility_report(results: list[dict[str, Any]]) -> dict[str, Any]:
+    expected = {
+        item["repository"]
+        for item in results
+        if item.get("status") == "EXPECTED_UNKNOWN"
+    }
+    compatible = (
+        len(results) == len(EXPECTED_UNKNOWN_REPOSITORIES)
+        and expected == EXPECTED_UNKNOWN_REPOSITORIES
+        and all(item.get("status") in {"PASS", "EXPECTED_UNKNOWN"} for item in results)
+    )
+    return {
+        "gate": "stage0e_abstention_compatibility",
+        "status": "PASS" if compatible else "NOT_PASSED",
+        "attempted": len(results),
+        "expected_unknown": sum(
+            item.get("status") == "EXPECTED_UNKNOWN" for item in results
+        ),
+        "expected_unknown_repositories": sorted(expected),
+    }
+
+
+def mutation_certification_report(results: list[dict[str, Any]]) -> dict[str, Any]:
+    executed = [
+        item
+        for item in results
+        if isinstance(item.get("mutation"), dict) and item.get("restored") is True
+    ]
+    if not results:
+        status = "NOT_CONFIGURED"
+    elif not executed:
+        status = "NOT_RUN"
+    elif len(executed) != len(results):
+        status = "NOT_PASSED"
+    elif all(item.get("status") == "PASS" for item in executed):
+        status = "PASS"
+    else:
+        status = "NOT_PASSED"
+    return {
+        "gate": "stage0e_mutation_certification",
+        "status": status,
+        "attempted": len(results),
+        "mutation_executed": len(executed),
+        "mutation_restored": sum(item.get("restored") is True for item in executed),
+        "results": results,
+    }
+
+
 def interpreter_for(name: str, python_dir: Path) -> str | None:
     """Find the interpreter for one isolated checkout environment."""
 
@@ -332,14 +473,25 @@ def main() -> int:
         type=Path,
         help="directory containing one isolated environment per checkout (name/Scripts/python.exe or name/bin/python)",
     )
+    parser.add_argument(
+        "--gate",
+        choices=("all", "abstention-compatibility", "mutation-certification"),
+        default="all",
+        help="qualification gate to run; all requires a separate mutation manifest",
+    )
+    parser.add_argument(
+        "--mutation-manifest",
+        type=Path,
+        help="JSON manifest describing a separate exact-head mutation-certification set",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     project_root = Path(__file__).resolve().parents[1]
-    results = []
+    compatibility_results = []
     for name in PINNED:
         interpreter = interpreter_for(name, args.python_dir) if args.python_dir else args.python
         if interpreter is None:
-            results.append(
+            compatibility_results.append(
                 {
                     "repository": name,
                     "status": "ENVIRONMENT_INVALID",
@@ -347,38 +499,91 @@ def main() -> int:
                 }
             )
             continue
-        results.append(qualify_one(name, args.root / name, interpreter))
+        compatibility_results.append(qualify_one(name, args.root / name, interpreter))
+    compatibility = abstention_compatibility_report(compatibility_results)
+    mutation_results: list[dict[str, Any]] = []
+    mutation_error: str | None = None
+    if args.gate in {"all", "mutation-certification"} and args.mutation_manifest is not None:
+        try:
+            cases = load_mutation_manifest(args.mutation_manifest)
+            for case in cases:
+                interpreter = (
+                    interpreter_for(case.name, args.python_dir)
+                    if args.python_dir
+                    else args.python
+                )
+                if interpreter is None:
+                    mutation_results.append(
+                        {
+                            "repository": case.name,
+                            "status": "ENVIRONMENT_INVALID",
+                            "reason": f"isolated interpreter is missing under {args.python_dir}",
+                        }
+                    )
+                else:
+                    mutation_results.append(
+                        qualify_case(
+                            case.name,
+                            args.root / case.path,
+                            interpreter,
+                            case.expected_head,
+                            case.mutation,
+                            case.base_ref,
+                        )
+                    )
+        except ValueError as exc:
+            mutation_error = str(exc)
+    mutation = mutation_certification_report(mutation_results)
+    if mutation_error is not None:
+        mutation["status"] = "INVALID_MANIFEST"
+        mutation["error"] = mutation_error
+    if args.gate == "abstention-compatibility":
+        status = (
+            "ABSTENTION_COMPATIBILITY_PASS"
+            if compatibility["status"] == "PASS"
+            else "NOT_PASSED"
+        )
+    elif args.gate == "mutation-certification":
+        status = (
+            "MUTATION_CERTIFICATION_PASS"
+            if mutation["status"] == "PASS"
+            else f"MUTATION_CERTIFICATION_{mutation['status']}"
+        )
+    elif compatibility["status"] != "PASS":
+        status = "NOT_PASSED"
+    elif mutation["status"] == "PASS":
+        status = "PASS"
+    else:
+        status = "NOT_PROMOTABLE"
     payload = {
-        "gate": "stage0e_full_checkout",
+        "gate": "stage0e_qualification",
         "candidate": candidate_identity(project_root),
-        "attempted": len(results),
+        "attempted": len(compatibility_results),
         "environment_valid": sum(
-            item.get("status") not in {"ENVIRONMENT_INVALID", "UPSTREAM_DRIFT"} for item in results
+            item.get("status") not in {"ENVIRONMENT_INVALID", "UPSTREAM_DRIFT"}
+            for item in compatibility_results
         ),
-        "passed": sum(item.get("status") == "PASS" for item in results),
-        "expected_unknown": sum(item.get("status") == "EXPECTED_UNKNOWN" for item in results),
+        "passed": sum(item.get("status") == "PASS" for item in compatibility_results),
+        "expected_unknown": sum(
+            item.get("status") == "EXPECTED_UNKNOWN" for item in compatibility_results
+        ),
         "expected_unknown_repositories": sorted(
-            item["repository"] for item in results if item.get("status") == "EXPECTED_UNKNOWN"
+            item["repository"]
+            for item in compatibility_results
+            if item.get("status") == "EXPECTED_UNKNOWN"
         ),
-        "results": results,
-        "status": "PASS_WITH_EXPECTED_UNKNOWN"
-        if len(results) == 5
-        and {
-            item["repository"] for item in results if item.get("status") == "EXPECTED_UNKNOWN"
-        }
-        == EXPECTED_UNKNOWN_REPOSITORIES
-        and all(item.get("status") in {"PASS", "EXPECTED_UNKNOWN"} for item in results)
-        else "PASS"
-        if len(results) == 5 and all(item.get("status") == "PASS" for item in results)
-        else "NOT_PASSED",
+        "results": compatibility_results,
+        "abstention_compatibility": compatibility,
+        "mutation_certification": mutation,
+        "status": status,
     }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(f"Stage 0E full checkout: {payload['status']}")
-        for item in results:
+        for item in compatibility_results:
             print(f"{item['repository']}: {item['status']}")
-    return 0 if payload["status"] in {"PASS", "PASS_WITH_EXPECTED_UNKNOWN"} else 2
+    return 0 if payload["status"] in {"PASS", "ABSTENTION_COMPATIBILITY_PASS", "MUTATION_CERTIFICATION_PASS"} else 2
 
 
 if __name__ == "__main__":

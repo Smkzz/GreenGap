@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 from scripts.create_release_provenance import create_manifest
 from scripts.qualify_stage0e_full import (
+    abstention_compatibility_report,
     expected_unknown_baseline,
+    mutation_certification_report,
     sparse_checkout_enabled,
     validate_checkout,
 )
@@ -143,6 +145,80 @@ def test_package_install_from_repository_invalidates_later_test_inference(tmp_pa
             ".github/workflows/ci.yml": two_step_workflow(
                 "python -m pip install .", "pytest tests"
             ),
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "command", "issue_code"),
+    [
+        ("BASH_ENV", "scripts/bootstrap.sh", "echo setup", "BASH_STARTUP_ENV_UNKNOWN"),
+        ("PYTHONPATH", "scripts", "python -m pytest", "PYTHON_MODULE_PATH_UNKNOWN"),
+        (
+            "NODE_OPTIONS",
+            "--require ./scripts/preload.js",
+            "npm test",
+            "NODE_STARTUP_OPTIONS_UNKNOWN",
+        ),
+    ],
+)
+def test_startup_environment_can_change_later_test_execution(
+    tmp_path, variable: str, value: str, command: str, issue_code: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+env:
+  {variable}: {value}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: {command}
+      - run: pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == issue_code for issue in result.issues)
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    ("command", "config_name", "config"),
+    [
+        ("ruff check .", "pyproject.toml", "[tool.ruff]\nfix = true\n"),
+        ("python -m ruff check .", "pyproject.toml", "[tool.ruff]\nfix = true\n"),
+        ("mypy src", "mypy.ini", "[mypy]\nplugins = scripts/plugin.py\n"),
+        ("python -m mypy src", "mypy.ini", "[mypy]\nplugins = scripts/plugin.py\n"),
+        ("coverage run -m pytest", ".coveragerc", "[run]\nplugins = scripts/plugin.py\n"),
+        (
+            "python -m coverage run -m pytest",
+            ".coveragerc",
+            "[run]\nplugins = scripts/plugin.py\n",
+        ),
+    ],
+)
+def test_implicit_tool_configuration_invalidates_later_pytest(
+    tmp_path, command: str, config_name: str, config: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(command, "pytest"),
+            config_name: config,
         },
     )
 
@@ -856,6 +932,22 @@ def test_stage0e_does_not_accept_an_unqualified_unknown_repository() -> None:
     }
 
     assert not expected_unknown_baseline("requests", plan)
+
+
+def test_stage0e_separates_abstention_compatibility_from_mutation_certification() -> None:
+    results = [
+        {"repository": name, "status": "EXPECTED_UNKNOWN"}
+        for name in sorted(
+            {"outcome", "requests", "itsdangerous", "httpcore", "markupsafe"}
+        )
+    ]
+
+    compatibility = abstention_compatibility_report(results)
+    mutation = mutation_certification_report(results)
+
+    assert compatibility["status"] == "PASS"
+    assert mutation["status"] == "NOT_RUN"
+    assert mutation["mutation_executed"] == 0
 
 
 @pytest.mark.parametrize(

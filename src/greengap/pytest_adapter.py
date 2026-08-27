@@ -285,7 +285,7 @@ def _explicit_project_plugin_args(root: Path) -> tuple[str, ...]:
     if not marker_names:
         return ()
     try:
-        entry_points = importlib.metadata.entry_points(group="pytest11")
+        entry_points = tuple(importlib.metadata.entry_points(group="pytest11"))
     except (TypeError, ValueError, RuntimeError):
         return ()
     modules: set[str] = set()
@@ -305,6 +305,27 @@ def _explicit_project_plugin_args(root: Path) -> tuple[str, ...]:
     for module in sorted(modules):
         args.extend(("-p", module))
     return tuple(args)
+
+
+def _unbound_pytest_plugins(root: Path) -> tuple[str, ...] | None:
+    """Return installed pytest plugins that collection does not explicitly bind."""
+
+    try:
+        entry_points = tuple(importlib.metadata.entry_points(group="pytest11"))
+    except (TypeError, ValueError, RuntimeError):
+        return None
+    explicit = _explicit_project_plugin_args(root)
+    explicit_modules = {
+        explicit[index + 1]
+        for index, token in enumerate(explicit[:-1])
+        if token == "-p"
+    }
+    unbound = {
+        str(entry_point.value).split(":", 1)[0]
+        for entry_point in entry_points
+        if str(entry_point.value).split(":", 1)[0] not in explicit_modules
+    }
+    return tuple(sorted(module for module in unbound if module))
 
 
 @dataclass(frozen=True)
@@ -541,6 +562,22 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
             complete=False,
             environment_valid=False,
             error="ambient pytest selection/plugin environment is set: " + ", ".join(ambient),
+        )
+    unbound_plugins = _unbound_pytest_plugins(root)
+    if unbound_plugins is None:
+        return CollectionResult(
+            complete=False,
+            environment_valid=False,
+            error="installed pytest plugin entry points could not be inspected safely",
+        )
+    if unbound_plugins:
+        return CollectionResult(
+            complete=False,
+            environment_valid=False,
+            error=(
+                "pytest collection environment contains unbound pytest11 plugins: "
+                + ", ".join(unbound_plugins)
+            ),
         )
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     src = root / "src"

@@ -1174,6 +1174,108 @@ def _command_core_tokens(tokens: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(remaining)
 
 
+def _implicit_tool_config_present(tool: str, root: Path | None, cwd: Path | None) -> bool:
+    """Reject auto-discovered tool configuration unless it is modeled explicitly."""
+
+    if root is None or cwd is None:
+        return True
+    try:
+        repository = root.resolve()
+        current = cwd.resolve()
+        current.relative_to(repository)
+    except (OSError, RuntimeError, ValueError):
+        return True
+    config_names = {
+        "ruff": ("ruff.toml", ".ruff.toml", "pyproject.toml"),
+        "mypy": ("mypy.ini", ".mypy.ini", "pyproject.toml", "setup.cfg"),
+        "coverage": (
+            ".coveragerc",
+            "coverage.ini",
+            "pyproject.toml",
+            "setup.cfg",
+            "tox.ini",
+        ),
+    }.get(tool)
+    if config_names is None:
+        return True
+    while True:
+        for name in config_names:
+            path = current / name
+            if not path.is_file():
+                continue
+            if name in {"ruff.toml", ".ruff.toml", ".coveragerc", "coverage.ini"}:
+                return True
+            try:
+                text = read_limited_text(path, MAX_CONFIG_BYTES)
+            except (OSError, ValueError, UnicodeError):
+                return True
+            lowered = text.lower()
+            if name == "pyproject.toml":
+                section = {
+                    "ruff": "[tool.ruff",
+                    "mypy": "[tool.mypy",
+                    "coverage": "[tool.coverage",
+                }[tool]
+                if section in lowered:
+                    return True
+            elif (
+                tool == "mypy" and re.search(r"(?m)^\s*\[mypy(?:[-\]]|\])", lowered)
+            ) or (tool == "coverage" and re.search(r"(?m)^\s*\[coverage:", lowered)):
+                return True
+        if current == repository:
+            return False
+        parent = current.parent
+        if parent == current:
+            return False
+        try:
+            parent.relative_to(repository)
+        except ValueError:
+            return False
+        current = parent
+
+
+def _startup_environment_unknown(
+    environment: dict[str, str], shell: str, tokens: tuple[str, ...]
+) -> tuple[str, str] | None:
+    """Return a taint reason for startup environment hooks we cannot execute."""
+
+    core = _command_core_tokens(tokens)
+    first = _basename(core[0]) if core else ""
+    bash_shells = {"bash", "sh", "zsh", "dash"}
+    if environment.get("BASH_ENV", "").strip() and (shell in bash_shells or first in bash_shells):
+        return (
+            "BASH_STARTUP_ENV_UNKNOWN",
+            "BASH_ENV executes before the visible shell command and is not statically audited",
+        )
+    python_tools = {
+        "coverage",
+        "mypy",
+        "pip",
+        "pip3",
+        "pre-commit",
+        "pre_commit",
+        "pytest",
+        "ruff",
+        "tox",
+        "tox.exe",
+        "uv",
+    }
+    if environment.get("PYTHONPATH", "").strip() and (
+        first in python_tools or first.startswith("python") or first == "py"
+    ):
+        return (
+            "PYTHON_MODULE_PATH_UNKNOWN",
+            "PYTHONPATH can change Python module and plugin resolution before the command runs",
+        )
+    node_tools = {"node", "npm", "npm.cmd", "npx", "pnpm", "yarn"}
+    if environment.get("NODE_OPTIONS", "").strip() and first in node_tools:
+        return (
+            "NODE_STARTUP_OPTIONS_UNKNOWN",
+            "NODE_OPTIONS can preload executable code before the Node command runs",
+        )
+    return None
+
+
 def _has_option(tokens: tuple[str, ...], *names: str) -> bool:
     return any(
         token == name or token.startswith(name + "=")
@@ -1450,13 +1552,28 @@ def _workspace_effect_for_tokens(
             return UNKNOWN_SIDE_EFFECT
         return MODELED_STATE_TRANSITION
     if first == "ruff":
-        return MODELED_STATE_TRANSITION if _safe_ruff_workspace_command(arguments) else UNKNOWN_SIDE_EFFECT
+        return (
+            MODELED_STATE_TRANSITION
+            if _safe_ruff_workspace_command(arguments)
+            and not _implicit_tool_config_present("ruff", root, cwd)
+            else UNKNOWN_SIDE_EFFECT
+        )
     if first == "mypy":
-        return MODELED_STATE_TRANSITION if _safe_mypy_workspace_command(arguments) else UNKNOWN_SIDE_EFFECT
+        return (
+            MODELED_STATE_TRANSITION
+            if _safe_mypy_workspace_command(arguments)
+            and not _implicit_tool_config_present("mypy", root, cwd)
+            else UNKNOWN_SIDE_EFFECT
+        )
     if first == "pip-audit":
         return MODELED_STATE_TRANSITION if _safe_pip_audit_workspace_command(arguments) else UNKNOWN_SIDE_EFFECT
     if first == "coverage":
-        return MODELED_STATE_TRANSITION if _safe_coverage_workspace_command(arguments) else UNKNOWN_SIDE_EFFECT
+        return (
+            MODELED_STATE_TRANSITION
+            if _safe_coverage_workspace_command(arguments)
+            and not _implicit_tool_config_present("coverage", root, cwd)
+            else UNKNOWN_SIDE_EFFECT
+        )
     if first.startswith("python") or first == "py":
         if "-c" in core:
             return MODELED_STATE_TRANSITION if _safe_python_code(core) else UNKNOWN_SIDE_EFFECT
@@ -1480,18 +1597,21 @@ def _workspace_effect_for_tokens(
                 return (
                     MODELED_STATE_TRANSITION
                     if _safe_coverage_workspace_command(module_args)
+                    and not _implicit_tool_config_present("coverage", root, cwd)
                     else UNKNOWN_SIDE_EFFECT
                 )
             if module == "ruff":
                 return (
                     MODELED_STATE_TRANSITION
                     if _safe_ruff_workspace_command(module_args)
+                    and not _implicit_tool_config_present("ruff", root, cwd)
                     else UNKNOWN_SIDE_EFFECT
                 )
             if module == "mypy":
                 return (
                     MODELED_STATE_TRANSITION
                     if _safe_mypy_workspace_command(module_args)
+                    and not _implicit_tool_config_present("mypy", root, cwd)
                     else UNKNOWN_SIDE_EFFECT
                 )
             if module == "pip_audit":
@@ -3640,8 +3760,8 @@ class _Resolver:
                     key, value = tokens[0].split("=", 1)
                     local_env[key] = value
                     tokens = tokens[1:]
-                if not tokens:
-                    continue
+            if not tokens:
+                continue
             nested_context = replace(context, env=local_env)
             if _basename(tokens[0]) in {"command", "exec", "time"}:
                 tokens = tokens[1:]
@@ -3656,6 +3776,16 @@ class _Resolver:
                 nested_context = replace(nested_context, env=local_env)
             if not tokens:
                 continue
+            startup_unknown = _startup_environment_unknown(local_env, shell, tokens)
+            if startup_unknown is not None:
+                code, message = startup_unknown
+                self.issue(
+                    code,
+                    message,
+                    context.provenance,
+                    relevant=_command_may_run_tests(expanded),
+                )
+                state = UNKNOWN_SIDE_EFFECT
             first = _basename(tokens[0])
             if self._runner_identity_unknown(tokens, nested_context):
                 self.issue(

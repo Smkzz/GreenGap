@@ -105,6 +105,24 @@ def test_declared_marker_plugins_are_loaded_explicitly(monkeypatch, tmp_path) ->
     assert _explicit_project_plugin_args(tmp_path) == ("-p", "pytest_trio.plugin")
 
 
+def test_unbound_installed_pytest_plugins_invalidate_collection(monkeypatch, tmp_path) -> None:
+    entry_point = SimpleNamespace(
+        name="foreign",
+        value="foreign_pytest_plugin.plugin",
+        dist=SimpleNamespace(name="foreign-plugin"),
+    )
+    monkeypatch.setattr(
+        "greengap.pytest_adapter.importlib.metadata.entry_points",
+        lambda **kwargs: (entry_point,),
+    )
+
+    result = collect_pytest(tmp_path)
+
+    assert not result.complete
+    assert not result.environment_valid
+    assert "unbound pytest11 plugins" in (result.error or "")
+
+
 @pytest.mark.parametrize("exit_code", [1, 2, 3, 4])
 def test_nonzero_collection_codes_are_not_complete(exit_code: int, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
