@@ -87,14 +87,12 @@ _SAFE_SETUP_COMMANDS = {
     "export",
     "git",
     "grep",
-    "greengap",
     "ls",
     "mkdir",
     "mv",
     "pip",
     "pip3",
     "pip-audit",
-    "pyright",
     "printf",
     "pwd",
     "rm",
@@ -935,6 +933,8 @@ def _safe_setup_command(tokens: tuple[str, ...]) -> bool:
     first = _basename(tokens[0])
     if first in {"mypy", "ruff", "twine"}:
         return True
+    if first == "pyright":
+        return _safe_pyright_workspace_command(tuple(tokens[1:]))
     if first == "git":
         return _safe_git_command(tokens)
     if first in _SAFE_SETUP_COMMANDS:
@@ -1267,6 +1267,30 @@ def _startup_environment_unknown(
             "PYTHON_MODULE_PATH_UNKNOWN",
             "PYTHONPATH can change Python module and plugin resolution before the command runs",
         )
+    if environment.get("PYTHONHOME", "").strip() and (
+        first in python_tools or first.startswith("python") or first == "py"
+    ):
+        return (
+            "PYTHON_STARTUP_ENV_UNKNOWN",
+            "PYTHONHOME can change the Python runtime and module resolution before the command runs",
+        )
+    coverage_command = first == "coverage" or (
+        (first.startswith("python") or first == "py")
+        and any(
+            index + 1 < len(core)
+            and token == "-m"
+            and _basename(core[index + 1]) == "coverage"
+            for index, token in enumerate(core[:-1])
+        )
+    )
+    if coverage_command and any(
+        environment.get(name, "").strip()
+        for name in ("COVERAGE_FILE", "COVERAGE_RCFILE", "COVERAGE_PROCESS_START")
+    ):
+        return (
+            "COVERAGE_STARTUP_ENV_UNKNOWN",
+            "Coverage startup environment can select executable configuration or repository output paths",
+        )
     node_tools = {"node", "npm", "npm.cmd", "npx", "pnpm", "yarn"}
     if environment.get("NODE_OPTIONS", "").strip() and first in node_tools:
         return (
@@ -1466,6 +1490,15 @@ def _safe_pip_audit_workspace_command(arguments: tuple[str, ...]) -> bool:
     return not _has_option(arguments, "-o", "--output")
 
 
+def _safe_pyright_workspace_command(arguments: tuple[str, ...]) -> bool:
+    """Allow diagnostics but reject Pyright's repository-writing stub mode."""
+
+    return not any(
+        token == "--createstub" or token.startswith("--createstub=")
+        for token in arguments
+    )
+
+
 def _safe_coverage_workspace_command(arguments: tuple[str, ...]) -> bool:
     if not arguments:
         return False
@@ -1567,6 +1600,18 @@ def _workspace_effect_for_tokens(
         )
     if first == "pip-audit":
         return MODELED_STATE_TRANSITION if _safe_pip_audit_workspace_command(arguments) else UNKNOWN_SIDE_EFFECT
+    if first == "pyright":
+        return (
+            MODELED_STATE_TRANSITION
+            if _safe_pyright_workspace_command(arguments)
+            else UNKNOWN_SIDE_EFFECT
+        )
+    if first == "greengap":
+        return (
+            MODELED_STATE_TRANSITION
+            if _safe_setup_command(core)
+            else UNKNOWN_SIDE_EFFECT
+        )
     if first == "coverage":
         return (
             MODELED_STATE_TRANSITION
@@ -4143,7 +4188,6 @@ class _Resolver:
             "--parallel-threads",
             "-W",
             "-n",
-            "-p",
         }
         configuration_options = {
             "-o",
@@ -4151,6 +4195,8 @@ class _Resolver:
             "-c",
             "--rootdir",
             "--confcutdir",
+            "--basetemp",
+            "-p",
         }
         flag_options = {
             "-q",
@@ -4181,12 +4227,26 @@ class _Resolver:
                 continue
             if not end_options and token.startswith("-"):
                 name, _, attached = token.partition("=")
+                if name == "-p" or (token.startswith("-p") and not token.startswith("--")):
+                    return None, marker, "configuration: pytest plugin loading can change collection"
                 if name in unsupported or any(token.startswith(item + "=") for item in unsupported):
                     selectors.append(token)
                     return None, marker, f"pytest selector {name} is not modeled at file level"
                 if name in configuration_options or any(
                     token.startswith(item + "=") for item in configuration_options
                 ):
+                    if name == "--basetemp":
+                        value = attached
+                        if not value:
+                            if index + 1 >= len(tokens):
+                                return None, marker, "configuration: pytest option --basetemp is missing its value"
+                            value = tokens[index + 1]
+                        if not self._pytest_basetemp_is_safe(value, cwd):
+                            return None, marker, "configuration: pytest --basetemp can remove repository test bytes"
+                        if not attached:
+                            index += 1
+                        index += 1
+                        continue
                     return None, marker, f"configuration: pytest option {name} can change collection"
                 if name in value_options:
                     if not attached:
@@ -4215,6 +4275,26 @@ class _Resolver:
         if not paths:
             return PytestInvocation("broad"), marker, None
         return PytestInvocation("paths", tuple(sorted(set(paths)))), marker, None
+
+    def _pytest_basetemp_is_safe(self, value: str, cwd: Path) -> bool:
+        """Allow only disposable tox/nox temp paths for pytest's destructive option."""
+
+        if any(character in value for character in ("$", "{", "}", "*", "?", "[", "]")):
+            return False
+        try:
+            candidate = Path(value)
+            if not candidate.is_absolute():
+                candidate = cwd / candidate
+            candidate = candidate.resolve(strict=False)
+            repository = self.root.resolve()
+            relative = candidate.relative_to(repository)
+        except ValueError:
+            # A statically known path outside the checkout cannot remove test
+            # or pytest-configuration bytes that GreenGap is analyzing.
+            return True
+        except OSError:
+            return False
+        return bool(relative.parts) and relative.parts[0].lower() in {".tox", ".nox"}
 
     def _resolve_shell(
         self, tokens: tuple[str, ...], context: _Context, depth: int

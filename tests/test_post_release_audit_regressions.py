@@ -166,6 +166,14 @@ def test_package_install_from_repository_invalidates_later_test_inference(tmp_pa
             "npm test",
             "NODE_STARTUP_OPTIONS_UNKNOWN",
         ),
+        ("PYTHONHOME", ".venv", "python -m pytest", "PYTHON_STARTUP_ENV_UNKNOWN"),
+        ("COVERAGE_FILE", "pytest.ini", "coverage run -m pytest", "COVERAGE_STARTUP_ENV_UNKNOWN"),
+        (
+            "COVERAGE_RCFILE",
+            "scripts/coverage.ini",
+            "python -m coverage run -m pytest",
+            "COVERAGE_STARTUP_ENV_UNKNOWN",
+        ),
     ],
 )
 def test_startup_environment_can_change_later_test_execution(
@@ -226,6 +234,39 @@ def test_implicit_tool_configuration_invalidates_later_pytest(
 
     assert not result.invocations
     assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize("option", ["-p ci_plugin", "--basetemp=tests", "--basetemp tests"])
+def test_pytest_precollection_options_invalidate_later_inference(tmp_path, option: str) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(f"pytest {option}", "pytest"),
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize("command", ["pyright --createstub package", "greengap plan . || true"])
+def test_modeled_commands_with_execution_or_write_effects_invalidate_later_pytest(
+    tmp_path, command: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(command, "pytest"),
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
     assert result.relevant_incomplete
 
 
