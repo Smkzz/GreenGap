@@ -1221,6 +1221,51 @@ def _pip_requirement_paths(arguments: tuple[str, ...]) -> tuple[str, ...] | None
     return tuple(paths)
 
 
+def _pip_install_has_local_project_input(arguments: tuple[str, ...]) -> bool:
+    """Detect pip install inputs that can execute a local build backend."""
+
+    local_markers = ("./", "../", ".\\", "..\\", "/", "\\")
+    remote_prefixes = (
+        "http://",
+        "https://",
+        "git+http://",
+        "git+https://",
+        "svn+http://",
+        "svn+https://",
+        "hg+http://",
+        "hg+https://",
+        "bzr+http://",
+        "bzr+https://",
+    )
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token in {"-e", "--editable"}:
+            # Editable installs always execute project/VCS setup code.  The
+            # source may be remote, but the command is outside the byte-stable
+            # static subset and must not be trusted before a later pytest.
+            return True
+        if token.startswith("--editable=") or token.startswith("-e="):
+            return True
+        if token in {"-r", "--requirement", "-c", "--constraint"}:
+            index += 2
+            continue
+        if token.startswith(("--requirement=", "--constraint=")):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        lowered = token.lower()
+        if lowered.startswith(remote_prefixes):
+            index += 1
+            continue
+        if token in {".", ".."} or token.startswith(local_markers) or "/" in token or "\\" in token:
+            return True
+        index += 1
+    return False
+
+
 def _requirements_include_local_project(
     root: Path, cwd: Path, paths: tuple[str, ...], seen: frozenset[Path] = frozenset(), depth: int = 0
 ) -> bool:
@@ -1284,12 +1329,21 @@ def _safe_ruff_workspace_command(arguments: tuple[str, ...]) -> bool:
     return (
         bool(arguments)
         and arguments[0] == "check"
-        and not _has_option(arguments, "--fix", "--fix-only", "--output-file")
+        and not _has_option(
+            arguments,
+            "--add-noqa",
+            "--config",
+            "--fix",
+            "--fix-only",
+            "--output-file",
+        )
     )
 
 
 def _safe_mypy_workspace_command(arguments: tuple[str, ...]) -> bool:
-    return not _has_option(arguments, "--junit-xml", "--cache-dir", "--sqlite-cache")
+    return not _has_option(
+        arguments, "--config-file", "--junit-xml", "--cache-dir", "--sqlite-cache"
+    )
 
 
 def _safe_pip_audit_workspace_command(arguments: tuple[str, ...]) -> bool:
@@ -1300,7 +1354,9 @@ def _safe_coverage_workspace_command(arguments: tuple[str, ...]) -> bool:
     if not arguments:
         return False
     if arguments[0] != "run":
-        return not _has_option(arguments, "-o", "--output-file")
+        return not _has_option(arguments, "--rcfile", "-o", "--output-file")
+    if _has_option(arguments, "--rcfile"):
+        return False
     return any(
         index + 1 < len(arguments)
         and token == "-m"
@@ -1318,9 +1374,18 @@ def _workspace_effect_for_tokens(
     core = _command_core_tokens(tokens)
     if not core:
         return PROVEN_READ_ONLY
-    if _contains_runner_hint(shlex.join(core)):
-        return MODELED_STATE_TRANSITION
     first = _basename(core[0]).lower()
+    runs_coverage_module = (
+        (first.startswith("python") or first == "py")
+        and any(
+            index + 1 < len(core)
+            and token == "-m"
+            and _basename(core[index + 1]).lower() == "coverage"
+            for index, token in enumerate(core[:-1])
+        )
+    )
+    if _contains_runner_hint(shlex.join(core)) and first != "coverage" and not runs_coverage_module:
+        return MODELED_STATE_TRANSITION
     if first in {
         "make",
         "gmake",
@@ -1358,13 +1423,7 @@ def _workspace_effect_for_tokens(
             for option in {"--target", "--prefix", "--root", "--src"}
         ):
             return UNKNOWN_SIDE_EFFECT
-        if any(
-            token in {"install", "uninstall", "wheel", "download"}
-            for token in arguments
-        ) and any(
-            token in {".", "./", "-e", "--editable"} or token.startswith(("./", ".\\"))
-            for token in arguments
-        ):
+        if _pip_install_has_local_project_input(arguments):
             return UNKNOWN_SIDE_EFFECT
         requirement_paths = _pip_requirement_paths(arguments)
         if requirement_paths is None:
@@ -1409,28 +1468,38 @@ def _workspace_effect_for_tokens(
                     if _safe_coverage_workspace_command(module_args)
                     else UNKNOWN_SIDE_EFFECT
                 )
+            if module == "ruff":
+                return (
+                    MODELED_STATE_TRANSITION
+                    if _safe_ruff_workspace_command(module_args)
+                    else UNKNOWN_SIDE_EFFECT
+                )
+            if module == "mypy":
+                return (
+                    MODELED_STATE_TRANSITION
+                    if _safe_mypy_workspace_command(module_args)
+                    else UNKNOWN_SIDE_EFFECT
+                )
+            if module == "pip_audit":
+                return (
+                    MODELED_STATE_TRANSITION
+                    if _safe_pip_audit_workspace_command(module_args)
+                    else UNKNOWN_SIDE_EFFECT
+                )
             if module == "venv":
                 return UNKNOWN_SIDE_EFFECT
-            if module in {"pip", "pip_audit"}:
-                if module == "pip" and any(
-                    token in {"install", "uninstall", "wheel", "download"}
-                    for token in module_args
-                ) and any(
-                    token in {".", "./", "-e", "--editable"}
-                    or token.startswith(("./", ".\\"))
-                    for token in module_args
+            if module == "pip":
+                if _pip_install_has_local_project_input(module_args):
+                    return UNKNOWN_SIDE_EFFECT
+                requirement_paths = _pip_requirement_paths(module_args)
+                if requirement_paths is None:
+                    return UNKNOWN_SIDE_EFFECT
+                if requirement_paths and (
+                    root is None
+                    or cwd is None
+                    or _requirements_include_local_project(root, cwd, requirement_paths)
                 ):
                     return UNKNOWN_SIDE_EFFECT
-                if module == "pip":
-                    requirement_paths = _pip_requirement_paths(module_args)
-                    if requirement_paths is None:
-                        return UNKNOWN_SIDE_EFFECT
-                    if requirement_paths and (
-                        root is None
-                        or cwd is None
-                        or _requirements_include_local_project(root, cwd, requirement_paths)
-                    ):
-                        return UNKNOWN_SIDE_EFFECT
                 return MODELED_STATE_TRANSITION
             if module in _SAFE_PYTHON_MODULES:
                 return MODELED_STATE_TRANSITION
@@ -3362,7 +3431,7 @@ class _Resolver:
             return None
 
     def _runner_identity_unknown(self, tokens: tuple[str, ...], context: _Context) -> bool:
-        """Reject test-runner names whose shell resolution is repository-controlled."""
+        """Reject bare executables whose shell resolution is repository-controlled."""
 
         if not tokens:
             return False
@@ -3371,6 +3440,26 @@ class _Resolver:
             return False
         first_raw = core[0]
         first = _basename(first_raw)
+        if "/" not in first_raw and "\\" not in first_raw:
+            path_value = context.env.get("PATH")
+            if path_value:
+                separator = ";" if ";" in path_value else ":"
+                for raw_entry in path_value.split(separator):
+                    entry = raw_entry.strip().strip("'\"")
+                    if not entry or entry in {"$PATH", "${PATH}"}:
+                        continue
+                    if "$PATH" in entry or "${PATH}" in entry:
+                        entry = entry.replace("${PATH}", "").replace("$PATH", "").strip(separator)
+                        if not entry:
+                            continue
+                    if "${{" in entry or "$GITHUB_WORKSPACE" in entry:
+                        return True
+                    try:
+                        resolved = safe_resolve(self.root, entry, context.cwd)
+                        resolved.relative_to(self.root)
+                    except (PathSafetyError, ValueError):
+                        continue
+                    return True
         runner_names = {
             "pytest",
             "py.test",
@@ -3517,7 +3606,6 @@ class _Resolver:
                 continue
             if expanded.strip() in {"|", "||", "&&", ";"}:
                 continue
-            prior_state = state
             state = _merge_workspace_state(
                 state, _workspace_effect_for_tokens(expanded, tokens, self.root, context.cwd)
             )
@@ -3677,7 +3765,7 @@ class _Resolver:
                 state = UNKNOWN_SIDE_EFFECT
                 continue
             if runner_index is not None:
-                if prior_state == UNKNOWN_SIDE_EFFECT:
+                if state == UNKNOWN_SIDE_EFFECT:
                     self.issue(
                         "WORKSPACE_MUTATION_UNKNOWN",
                         "an earlier command in this shell segment may have changed workspace bytes before pytest",
@@ -3704,6 +3792,10 @@ class _Resolver:
                         else "PYTEST_SELECTOR_UNKNOWN"
                     )
                     self.issue(code, scope_error, context.provenance)
+                    # An unmodeled pytest option is not safe to carry across
+                    # the selection graph: it may select a different suite or
+                    # invoke a plugin/output path that changes later state.
+                    state = UNKNOWN_SIDE_EFFECT
                 elif scope is not None:
                     self.invocation(replace(scope, provenance=context.provenance))
                     if _pytest_output_mutates_workspace(tokens):

@@ -1788,13 +1788,65 @@ jobs:
 
 
 @pytest.mark.parametrize(
+    ("command", "shadowed_executable"),
+    [
+        ("ruff check .", "ruff"),
+        ("python -m ruff check .", "python"),
+    ],
+)
+def test_repository_path_in_path_invalidates_bare_tool_identity(
+    tmp_path, command: str, shadowed_executable: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      PATH: scripts:$PATH
+    steps:
+      - run: {command}
+      - run: pytest
+""",
+            f"scripts/{shadowed_executable}": "#!/bin/sh\necho shadowed\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "EXECUTABLE_IDENTITY_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
     "command",
     [
         "ruff check --fix tests",
         "ruff check --output-file pytest.ini tests",
+        "ruff check --add-noqa tests",
+        "ruff check --config lint.fix=true tests",
         "mypy --junit-xml pytest.ini",
+        "mypy --config-file unsafe.ini",
         "pip-audit -o pytest.ini",
+        "python -m ruff check --fix tests",
+        "python -m ruff check --output-file pytest.ini tests",
+        "python -m ruff check --add-noqa tests",
+        "python -m ruff check --config lint.fix=true tests",
+        "python -m mypy --junit-xml pytest.ini",
+        "python -m mypy --config-file unsafe.ini",
+        "python -m pip_audit -o pytest.ini",
+        "pip install --editable=.",
+        "pip install src/",
+        "python -m pip install --editable=.",
+        "python -m pip install src/",
         "python -m coverage run scripts/rewrite.py",
+        "coverage run scripts/rewrite.py",
+        "coverage run --rcfile .coveragerc -m pytest",
+        "python -m coverage run --rcfile .coveragerc -m pytest",
     ],
 )
 def test_tool_output_or_execution_options_invalidate_later_pytest(tmp_path, command: str) -> None:
@@ -1880,6 +1932,24 @@ def test_unmodeled_pytest_selector_forms_fail_closed(tmp_path, selector: str) ->
 
     assert not result.invocations
     assert any(issue.code == "PYTEST_SELECTOR_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_unmodeled_pytest_option_taints_later_selection(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": two_step_workflow(
+                "pytest --log-file pytest.ini", "pytest"
+            )
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_SELECTOR_UNKNOWN" for issue in result.issues)
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
     assert result.relevant_incomplete
 
 
