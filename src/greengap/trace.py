@@ -1342,7 +1342,21 @@ def _safe_ruff_workspace_command(arguments: tuple[str, ...]) -> bool:
 
 def _safe_mypy_workspace_command(arguments: tuple[str, ...]) -> bool:
     return not _has_option(
-        arguments, "--config-file", "--junit-xml", "--cache-dir", "--sqlite-cache"
+        arguments,
+        "--any-exprs-report",
+        "--cobertura-xml-report",
+        "--config-file",
+        "--html-report",
+        "--junit-xml",
+        "--linecount-report",
+        "--linecoverage-report",
+        "--lineprecision-report",
+        "--cache-dir",
+        "--sqlite-cache",
+        "--txt-report",
+        "--xml-report",
+        "--xslt-html-report",
+        "--xslt-txt-report",
     )
 
 
