@@ -514,10 +514,14 @@ def _static_shell(value: Any, context: _Context) -> str | None:
     resolved, known = resolve_expressions(text, context)
     if not known:
         return "unknown"
-    first = resolved.strip().lower().split(maxsplit=1)[0] if resolved.strip() else ""
-    if first in {"bash", "sh"}:
+    # GitHub's custom shell form is ``command [args...] {0}``.  Looking only
+    # at the first word would treat a wrapper/template as the built-in shell,
+    # even though its startup flags or executable can change command
+    # semantics.  Only the exact built-in spellings are in the modeled set.
+    normalized = resolved.strip().lower()
+    if normalized in {"bash", "sh"}:
         return "bash"
-    if first in {"pwsh", "powershell"}:
+    if normalized in {"pwsh", "powershell"}:
         return "powershell"
     return "unknown"
 
@@ -1232,6 +1236,48 @@ def _implicit_tool_config_present(tool: str, root: Path | None, cwd: Path | None
         except ValueError:
             return False
         current = parent
+
+
+def _pytest_config_addopts(path: Path) -> tuple[bool, Any]:
+    """Return whether *path* is a pytest config and expose its implicit addopts."""
+
+    name = path.name.lower()
+    try:
+        if name in {"pytest.toml", ".pytest.toml", "pyproject.toml"}:
+            data = tomllib.loads(read_limited_text(path, MAX_CONFIG_BYTES))
+            if name in {"pytest.toml", ".pytest.toml"}:
+                options = data.get("pytest")
+                if options is None:
+                    return True, ""
+                if not isinstance(options, dict):
+                    return True, None
+                return True, options.get("addopts", "")
+            tool = data.get("tool")
+            if not isinstance(tool, dict):
+                return False, ""
+            options = tool.get("pytest")
+            if not isinstance(options, dict):
+                return False, ""
+            native_options = options.get("ini_options", options)
+            if not isinstance(native_options, dict):
+                return True, None
+            return True, native_options.get("addopts", "")
+
+        section = {
+            "pytest.ini": "pytest",
+            ".pytest.ini": "pytest",
+            "tox.ini": "pytest",
+            "setup.cfg": "tool:pytest",
+        }.get(name)
+        if section is None:
+            return False, ""
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        parser.read_string(read_limited_text(path, MAX_CONFIG_BYTES))
+        if not parser.has_section(section):
+            return name in {"pytest.ini", ".pytest.ini"}, ""
+        return True, parser.get(section, "addopts", fallback="")
+    except (OSError, ValueError, UnicodeError, configparser.Error, tomllib.TOMLDecodeError):
+        return True, None
 
 
 def _startup_environment_unknown(
@@ -3987,6 +4033,11 @@ class _Resolver:
                     state = UNKNOWN_SIDE_EFFECT
                 elif scope is not None:
                     self.invocation(replace(scope, provenance=context.provenance))
+                    # A pytest process executes repository-controlled
+                    # collection, fixture, plugin, and test code. Its effects
+                    # are not byte-proven, so a later pytest in the same job
+                    # must not be analyzed against the old tree.
+                    state = UNKNOWN_SIDE_EFFECT
                     if _pytest_output_mutates_workspace(tokens):
                         self.issue(
                             "PYTEST_WORKSPACE_OUTPUT_UNKNOWN",
@@ -4153,6 +4204,9 @@ class _Resolver:
         if marker is None:
             return None, None, None
 
+        if self._pytest_implicit_addopts_unknown(cwd):
+            return None, marker, "configuration: implicit pytest addopts are not modeled"
+
         unsupported = {
             "-k",
             "--keyword",
@@ -4206,7 +4260,6 @@ class _Resolver:
             "-s",
             "-x",
             "--exitfirst",
-            "--collect-only",
             "--quiet",
             "--verbose",
             "--disable-warnings",
@@ -4227,6 +4280,12 @@ class _Resolver:
                 continue
             if not end_options and token.startswith("-"):
                 name, _, attached = token.partition("=")
+                if name == "--collect-only":
+                    return (
+                        None,
+                        marker,
+                        "configuration: pytest --collect-only executes collection hooks before reporting",
+                    )
                 if name == "-p" or (token.startswith("-p") and not token.startswith("--")):
                     return None, marker, "configuration: pytest plugin loading can change collection"
                 if name in unsupported or any(token.startswith(item + "=") for item in unsupported):
@@ -4275,6 +4334,51 @@ class _Resolver:
         if not paths:
             return PytestInvocation("broad"), marker, None
         return PytestInvocation("paths", tuple(sorted(set(paths)))), marker, None
+
+    def _pytest_implicit_addopts_unknown(self, cwd: Path) -> bool:
+        """Reject implicit pytest options unless their config is provably absent."""
+
+        try:
+            repository = self.root.resolve()
+            current = cwd.resolve()
+            current.relative_to(repository)
+        except (OSError, RuntimeError, ValueError):
+            return True
+
+        config_names = (
+            "pytest.toml",
+            ".pytest.toml",
+            "pytest.ini",
+            ".pytest.ini",
+            "pyproject.toml",
+            "tox.ini",
+            "setup.cfg",
+        )
+        while True:
+            for name in config_names:
+                path = current / name
+                if not path.is_file():
+                    continue
+                recognized, addopts = _pytest_config_addopts(path)
+                if not recognized:
+                    continue
+                if addopts is None:
+                    return True
+                if isinstance(addopts, str):
+                    return bool(addopts.strip())
+                if isinstance(addopts, list | tuple):
+                    return bool(addopts)
+                return True
+            if current == repository:
+                return False
+            parent = current.parent
+            if parent == current:
+                return True
+            try:
+                parent.relative_to(repository)
+            except ValueError:
+                return True
+            current = parent
 
     def _pytest_basetemp_is_safe(self, value: str, cwd: Path) -> bool:
         """Allow only disposable tox/nox temp paths for pytest's destructive option."""

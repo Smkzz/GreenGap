@@ -2165,3 +2165,55 @@ jobs:
     assert not result.invocations
     assert any(issue.code == "EXTERNAL_ACTION_WORKSPACE_UNKNOWN" for issue in result.issues)
     assert result.relevant_incomplete
+
+
+def test_completed_pytest_taints_a_later_pytest_in_same_job(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {".github/workflows/ci.yml": two_step_workflow("pytest tests", "pytest")},
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize("first", ["pytest --collect-only", "pytest"])
+def test_pytest_collection_mode_cannot_be_used_as_a_proven_runner(tmp_path, first: str) -> None:
+    files = {
+        ".github/workflows/ci.yml": two_step_workflow(first, "pytest"),
+    }
+    if first == "pytest":
+        files["pytest.ini"] = "[pytest]\naddopts = --collect-only\n"
+    write_files(tmp_path, files)
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_custom_shell_template_is_not_treated_as_builtin_bash(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: 'bash -e {0}'
+        run: pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "SHELL_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
