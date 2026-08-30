@@ -32,6 +32,18 @@ MAX_YAML_DEPTH = 64
 _EXPRESSION = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 _ASSIGNMENT = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:=)\s*(.*)$")
 _VARIABLE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+_PYTEST_PLUGIN_ASSIGNMENT = re.compile(
+    r"(?m)^\s*pytest_plugins(?:\s*:\s*[^=]+)?\s*\+?="
+)
+_PYTEST_PLUGIN_CONFIG = re.compile(
+    r"(?im)^\s*(?:required_plugins|pytest_plugins)\s*="
+)
+_PYTEST_HOOK_DEFINITION = re.compile(r"(?m)^\s*(?:async\s+)?def\s+pytest_[A-Za-z0-9_]+\s*\(")
+_STATIC_FILE_CONDITION = re.compile(
+    r"(?ms)^(?P<prefix>.*?)^[ \t]*if[ \t]+\[[ \t]+-(?P<kind>[fd])"
+    r"[ \t]+(?P<path>[A-Za-z0-9_./\\-]+)[ \t]*\][ \t]*;[ \t]*then[ \t]+"
+    r"(?P<body>[^;]+?)[ \t]*;[ \t]*fi(?P<suffix>.*)$"
+)
 _KNOWN_EXTERNAL_ACTIONS = {
     "actions/checkout",
     "actions/setup-python",
@@ -517,13 +529,46 @@ def _static_shell(value: Any, context: _Context) -> str | None:
     # GitHub's custom shell form is ``command [args...] {0}``.  Looking only
     # at the first word would treat a wrapper/template as the built-in shell,
     # even though its startup flags or executable can change command
-    # semantics.  Only the exact built-in spellings are in the modeled set.
+    # semantics.  The explicitly enumerated Bash templates below invoke Bash
+    # directly once with the generated script as its only script argument.
+    # Their flags only control Bash startup/error handling; they cannot source
+    # repository code ahead of the generated script.  Every other template,
+    # including a wrapper around ``{0}``, remains unknown.
     normalized = resolved.strip().lower()
-    if normalized in {"bash", "sh"}:
+    if normalized in {
+        "bash",
+        "bash {0}",
+        "bash --noprofile --norc -e -o pipefail {0}",
+        "bash --noprofile --norc -eo pipefail {0}",
+        "sh",
+    }:
         return "bash"
     if normalized in {"pwsh", "powershell"}:
         return "powershell"
     return "unknown"
+
+
+def _static_setup_python_runtime(value: Any, context: _Context) -> bool:
+    """Accept only a directly resolved Python runtime selector.
+
+    ``actions/setup-python`` changes the executable that a later ``python -m
+    pytest`` or ``pytest`` can resolve to. A dynamic version file/range is
+    therefore not merely setup metadata: it is an unmodeled runner-identity
+    boundary. A static minor/patch (including a resolved matrix value) is
+    enough for the v0.1 action subset; wildcards and version files are not.
+    """
+
+    if not isinstance(value, dict) or "python-version-file" in value:
+        return False
+    raw_version = _scalar(value.get("python-version"))
+    if raw_version is None:
+        return False
+    version, known = resolve_expressions(raw_version, context)
+    if not known or not version.strip():
+        return False
+    return not any(marker in version for marker in ("*", "<", ">", "=", "!", "~", "^")) and not (
+        version.strip().lower().endswith((".x", "-x"))
+    )
 
 
 def _default_shell(
@@ -1024,8 +1069,6 @@ def _safe_git_command(tokens: tuple[str, ...]) -> bool:
         "--version",
         "rev-parse",
         "status",
-        "diff",
-        "show",
         "show-ref",
         "ls-files",
         "log",
@@ -1343,7 +1386,57 @@ def _startup_environment_unknown(
             "NODE_STARTUP_OPTIONS_UNKNOWN",
             "NODE_OPTIONS can preload executable code before the Node command runs",
         )
+    pip_command = first in {"pip", "pip3"} or (
+        (first.startswith("python") or first == "py")
+        and any(
+            index + 1 < len(core)
+            and token == "-m"
+            and _basename(core[index + 1]).lower() == "pip"
+            for index, token in enumerate(core[:-1])
+        )
+    )
+    safe_pip_environment = {
+        "PIP_DISABLE_PIP_VERSION_CHECK",
+        "PIP_NO_CACHE_DIR",
+        "PIP_NO_INPUT",
+        "PIP_PROGRESS_BAR",
+        "PIP_QUIET",
+        "PIP_RETRIES",
+        "PIP_TIMEOUT",
+        "PIP_DEFAULT_TIMEOUT",
+        "PIP_ROOT_USER_ACTION",
+        "PIP_USER_AGENT_USER_DATA",
+    }
+    if pip_command and any(
+        name.startswith("PIP_") and name not in safe_pip_environment and value.strip()
+        for name, value in environment.items()
+    ):
+        return (
+            "PIP_STARTUP_ENV_UNKNOWN",
+            "PIP environment can alter the resolved distribution or installation target before pytest",
+        )
     return None
+
+
+def _pytest_environment_unknown(environment: dict[str, str]) -> bool:
+    """Reject pytest environment controls except an explicit autoload disable.
+
+    ``PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`` narrows the runtime surface and is
+    therefore safe to carry through the direct pytest subset.  Every other
+    non-empty pytest control can add arguments, load plugins, or re-enable
+    plugin discovery with semantics outside this resolver.
+    """
+
+    if any(environment.get(name, "").strip() for name in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS")):
+        return True
+    if "PYTEST_DISABLE_PLUGIN_AUTOLOAD" not in environment:
+        return False
+    return environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"].strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _has_option(tokens: tuple[str, ...], *names: str) -> bool:
@@ -1436,6 +1529,51 @@ def _pip_install_has_local_project_input(arguments: tuple[str, ...]) -> bool:
             return True
         index += 1
     return False
+
+
+def _pip_command_preserves_pytest_runtime(arguments: tuple[str, ...]) -> bool:
+    """Accept only explicit core-pytest installs before a later pytest run.
+
+    Installing an arbitrary wheel can register a ``pytest11`` entry point or
+    replace the test executable.  Requirement/constraint indirection and all
+    non-core packages therefore stay outside the predecessor subset.  The
+    small exception preserves the ordinary CI shape that bootstraps only pip
+    and pytest itself.
+    """
+
+    if not arguments:
+        return False
+    command = arguments[0].lower()
+    if command in {"--version", "--help", "help", "list", "show", "check", "freeze", "debug"}:
+        return True
+    if command not in {"install", "i"}:
+        return False
+    packages: list[str] = []
+    safe_flags = {
+        "--disable-pip-version-check",
+        "--no-cache-dir",
+        "--no-deps",
+        "--no-input",
+        "--pre",
+        "--quiet",
+        "--upgrade",
+        "-q",
+        "-u",
+    }
+    for token in arguments[1:]:
+        if token.startswith("-"):
+            if token.lower() in safe_flags or re.fullmatch(r"-q+", token.lower()):
+                continue
+            return False
+        packages.append(token)
+    return bool(packages) and all(
+        re.fullmatch(
+            r"(?:pip|pytest)(?:(?:===|==|!=|<=|>=|<|>|~=)[a-z0-9.*+!_-]+)?",
+            package.lower(),
+        )
+        is not None
+        for package in packages
+    )
 
 
 def _requirements_include_local_project(
@@ -1607,11 +1745,14 @@ def _workspace_effect_for_tokens(
         return UNKNOWN_SIDE_EFFECT
     arguments = tuple(token.lower() for token in core[1:])
     if first == "uv":
-        # ``uv run`` may materialize an isolated environment, but its effect is
-        # modeled and transient for the repository selection graph.  Other uv
-        # commands can rewrite lock/configuration bytes and remain unknown.
-        return MODELED_STATE_TRANSITION if len(core) > 1 and core[1] == "run" else UNKNOWN_SIDE_EFFECT
+        # ``uv run`` can synchronize the active project, resolve extras, and
+        # install arbitrary distribution entry points before it reaches the
+        # apparent pytest command.  Its environment boundary is deliberately
+        # not treated as a transparent wrapper in the v0.1 resolver.
+        return UNKNOWN_SIDE_EFFECT
     if first in {"pip", "pip3"}:
+        if not _pip_command_preserves_pytest_runtime(arguments):
+            return UNKNOWN_SIDE_EFFECT
         if any(
             token == option or token.startswith(option + "=")
             for token in arguments
@@ -1714,6 +1855,8 @@ def _workspace_effect_for_tokens(
             if module == "venv":
                 return UNKNOWN_SIDE_EFFECT
             if module == "pip":
+                if not _pip_command_preserves_pytest_runtime(module_args):
+                    return UNKNOWN_SIDE_EFFECT
                 if _pip_install_has_local_project_input(module_args):
                     return UNKNOWN_SIDE_EFFECT
                 requirement_paths = _pip_requirement_paths(module_args)
@@ -2474,6 +2617,8 @@ class _Resolver:
         self._workflow_events: dict[str, set[str]] = {}
         self._workflow_event_kinds: dict[str, set[str]] = {}
         self._workflow_path_filters: set[str] = set()
+        self._pytest_plugin_declaration_checked = False
+        self._pytest_plugin_declaration_error: str | None = None
 
     def issue(
         self, code: str, message: str, provenance: tuple[str, ...], relevant: bool = True
@@ -3205,6 +3350,10 @@ class _Resolver:
                 self.issue(
                     "STEP_SHAPE_UNKNOWN", f"step {index} is not a mapping", context.provenance
                 )
+                # A malformed step may still be accepted differently by the
+                # runner or a future workflow parser.  It cannot preserve the
+                # byte-stable state required by a later inferred pytest step.
+                workspace_state = UNKNOWN_SIDE_EFFECT
                 continue
             label = str(raw_step.get("name") or raw_step.get("id") or index)
             provenance = context.provenance + (f"step:{label}",)
@@ -3238,6 +3387,11 @@ class _Resolver:
                     effect = _workspace_effect_for_command(
                         raw_run, self.root, context.cwd
                     )
+                    # Either branch of a conditional test command can execute
+                    # arbitrary test, fixture, plugin, or collection code.
+                    # The branch that runs must taint later workspace state.
+                    if _command_may_run_tests(raw_run):
+                        effect = UNKNOWN_SIDE_EFFECT
                     if _command_has_nested_workspace_resolution(raw_run):
                         effect = UNKNOWN_SIDE_EFFECT
                     if any(
@@ -3283,6 +3437,7 @@ class _Resolver:
                         f"run command in step {label} is not static",
                         provenance,
                     )
+                    workspace_state = UNKNOWN_SIDE_EFFECT
                     continue
                 shell = (
                     _static_shell(raw_step.get("shell"), step_context)
@@ -3295,14 +3450,24 @@ class _Resolver:
                         f"step {label} uses an unsupported or unresolved shell",
                         provenance,
                     )
+                    # A custom shell template can wrap, replace, or skip the
+                    # generated script.  Treat it as an execution boundary,
+                    # not merely an unsupported parser choice.
+                    workspace_state = UNKNOWN_SIDE_EFFECT
                     continue
                 command, known = resolve_expressions(command, step_context)
-                if not known and _relevant_text(command):
-                    self.issue(
-                        "RUN_COMMAND_DYNAMIC",
-                        "relevant run command contains an unresolved expression",
-                        provenance,
-                    )
+                if not known:
+                    if _relevant_text(command):
+                        self.issue(
+                            "RUN_COMMAND_DYNAMIC",
+                            "relevant run command contains an unresolved expression",
+                            provenance,
+                        )
+                    # Even an apparently unrelated dynamic run step can
+                    # execute a repository-controlled writer before a later
+                    # test step.  The absence of a recognizable runner token
+                    # is not proof of a harmless effect.
+                    workspace_state = UNKNOWN_SIDE_EFFECT
                     continue
                 cwd: Path | None = default_cwd
                 raw_cwd = (
@@ -3325,6 +3490,7 @@ class _Resolver:
                             "pytest command has an unresolved working directory",
                             provenance,
                         )
+                        workspace_state = UNKNOWN_SIDE_EFFECT
                         continue
                 if cwd is None:
                     self.issue(
@@ -3332,6 +3498,7 @@ class _Resolver:
                         f"working directory for step {label} is not statically known",
                         provenance,
                     )
+                    workspace_state = UNKNOWN_SIDE_EFFECT
                     continue
                 command_context = replace(step_context, cwd=cwd)
                 command_effect = _workspace_effect_for_command(command, self.root, cwd)
@@ -3363,6 +3530,15 @@ class _Resolver:
                         workspace_state = UNKNOWN_SIDE_EFFECT
                 elif isinstance(uses, str):
                     action_name = uses.split("@", 1)[0].lower()
+                    if action_name == "actions/setup-python" and not _static_setup_python_runtime(
+                        raw_step.get("with"), step_context
+                    ):
+                        self.issue(
+                            "PYTHON_RUNTIME_UNKNOWN",
+                            "actions/setup-python has an unresolved runtime selector",
+                            provenance,
+                        )
+                        workspace_state = UNKNOWN_SIDE_EFFECT
                     if action_name == "actions/checkout":
                         raw_with = raw_step.get("with", {})
                         if not isinstance(raw_with, dict):
@@ -3738,6 +3914,67 @@ class _Resolver:
             return True
         return False
 
+    def _resolve_static_file_condition(
+        self, command: str, context: _Context, depth: int, shell: str
+    ) -> WorkspaceState | None:
+        """Resolve one exact ``if [ -f/-d path ]; then command; fi`` boundary.
+
+        GitHub workflows often use this form to install an optional static
+        requirements file.  It is safe to model only when the condition path
+        is repository-relative and the entire branch syntax is exact.  Any
+        dynamic expression, ``else`` branch, chaining, or unsupported shell
+        construct falls through to the ordinary fail-closed control-flow path.
+        """
+
+        match = _STATIC_FILE_CONDITION.match(command.strip())
+        if match is None:
+            return None
+        prefix = match.group("prefix").strip()
+        branch = match.group("body").strip()
+        suffix = match.group("suffix").strip()
+        if not branch or "else" in branch.split():
+            return None
+        try:
+            target = safe_resolve(self.root, match.group("path"), context.cwd)
+        except PathSafetyError:
+            return UNKNOWN_SIDE_EFFECT
+        prefix_state = context.workspace_state
+        if prefix:
+            prefix_state = self._resolve_command(
+                prefix,
+                replace(context, workspace_state=prefix_state),
+                depth + 1,
+                shell=shell,
+            )
+        if prefix_state == UNKNOWN_SIDE_EFFECT:
+            return UNKNOWN_SIDE_EFFECT
+        try:
+            condition = target.is_file() if match.group("kind") == "f" else target.is_dir()
+        except OSError:
+            return UNKNOWN_SIDE_EFFECT
+        state = prefix_state
+        if condition:
+            state = _merge_workspace_state(
+                state,
+                self._resolve_command(
+                    branch,
+                    replace(context, workspace_state=state),
+                    depth + 1,
+                    shell=shell,
+                ),
+            )
+        if suffix:
+            state = _merge_workspace_state(
+                state,
+                self._resolve_command(
+                    suffix,
+                    replace(context, workspace_state=state),
+                    depth + 1,
+                    shell=shell,
+                ),
+            )
+        return state
+
     def _resolve_command(
         self, command: str, context: _Context, depth: int, shell: str = "bash"
     ) -> WorkspaceState:
@@ -3747,6 +3984,9 @@ class _Resolver:
                 "RESOLUTION_DEPTH_EXCEEDED", "command resolution depth exceeded", context.provenance
             )
             return UNKNOWN_SIDE_EFFECT
+        static_condition = self._resolve_static_file_condition(command, context, depth, shell)
+        if static_condition is not None:
+            return static_condition
         if shell == "powershell" and _powershell_control_flow_unknown(command):
             self.issue(
                 "SHELL_CONTROL_FLOW_UNKNOWN",
@@ -3815,8 +4055,13 @@ class _Resolver:
             if prefix_error is not None:
                 if _relevant_text(segment):
                     self.issue("DYNAMIC_EXECUTABLE_PREFIX", prefix_error, context.provenance)
+                # A dynamically selected executable can run arbitrary setup
+                # code even when this segment contains no literal pytest
+                # token.  It cannot leave later test inference byte-stable.
+                state = UNKNOWN_SIDE_EFFECT
                 continue
             if expanded is None:
+                state = UNKNOWN_SIDE_EFFECT
                 continue
             tokens = _tokens(expanded)
             if tokens is None:
@@ -3826,6 +4071,10 @@ class _Resolver:
                         "shell command could not be tokenized safely",
                         context.provenance,
                     )
+                # A shell syntax/parser failure can short-circuit the job or
+                # hide a side effect.  In either case a following pytest is
+                # not proven to execute against the analyzed state.
+                state = UNKNOWN_SIDE_EFFECT
                 continue
             if not tokens:
                 continue
@@ -4007,19 +4256,16 @@ class _Resolver:
                         context.provenance,
                     )
                     continue
-                if any(
-                    nested_context.env.get(name, "").strip()
-                    for name in (
-                        "PYTEST_ADDOPTS",
-                        "PYTEST_PLUGINS",
-                        "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
-                    )
-                ):
+                if _pytest_environment_unknown(nested_context.env):
                     self.issue(
                         "PYTEST_CONFIGURATION_UNKNOWN",
                         "pytest selection can be changed by an environment configuration variable",
                         context.provenance,
                     )
+                    # The unknown invocation may still execute test or plugin
+                    # code.  It must therefore poison successor analysis just
+                    # like an ordinary resolved pytest invocation does.
+                    state = UNKNOWN_SIDE_EFFECT
                 elif scope_error:
                     code = (
                         "PYTEST_CONFIGURATION_UNKNOWN"
@@ -4130,54 +4376,176 @@ class _Resolver:
     def _unwrap_uv(self, tokens: tuple[str, ...]) -> tuple[tuple[str, ...] | None, str | None]:
         if len(tokens) < 2 or tokens[1] != "run":
             return None, "only uv run is supported"
-        value_options = {
-            "--with",
-            "--with-editable",
-            "--with-requirements",
-            "--group",
-            "--project",
-            "--package",
-            "--python",
-            "--directory",
-            "--env-file",
-            "--extra",
-            "--index",
-            "--resolution",
-            "-C",
-            "-p",
+        return None, "uv run may synchronize project-controlled code before the command"
+
+    def _pytest_project_plugin_error(self) -> str | None:
+        """Find repository-declared plugin surfaces that change pytest execution.
+
+        A direct pytest command cannot be a proof when the checkout itself
+        declares a plugin in a conftest/test module or advertises a pytest11
+        entry point.  We deliberately do not emulate that code; presence is
+        enough to make selection UNKNOWN.  The scan is bounded so a very large
+        or unreadable checkout fails closed rather than silently skipping a
+        declaration.
+        """
+
+        if self._pytest_plugin_declaration_checked:
+            return self._pytest_plugin_declaration_error
+        self._pytest_plugin_declaration_checked = True
+        ignored_parts = {
+            ".git",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".tox",
+            ".venv",
+            "build",
+            "dist",
+            "node_modules",
+            "venv",
         }
-        flag_options = {
-            "--locked",
-            "--frozen",
-            "--offline",
-            "--no-default-groups",
-            "--isolated",
-            "--no-project",
-            "--no-sync",
+        for name in (
+            "pytest.toml",
+            ".pytest.toml",
+            "pytest.ini",
+            ".pytest.ini",
+            "pyproject.toml",
+            "tox.ini",
+            "setup.cfg",
+            "setup.py",
+        ):
+            path = self.root / name
+            try:
+                if path.is_symlink():
+                    self._pytest_plugin_declaration_error = (
+                        f"pytest plugin configuration {name!r} is a symlink"
+                    )
+                    return self._pytest_plugin_declaration_error
+                if not path.is_file():
+                    continue
+                text = read_limited_text(path, MAX_CONFIG_BYTES)
+            except (OSError, ValueError, UnicodeError):
+                self._pytest_plugin_declaration_error = (
+                    f"pytest plugin configuration {name!r} could not be read safely"
+                )
+                return self._pytest_plugin_declaration_error
+            lowered = text.lower()
+            if _PYTEST_PLUGIN_CONFIG.search(text) or "pytest11" in lowered:
+                self._pytest_plugin_declaration_error = (
+                    f"pytest plugin configuration is declared by {name!r}"
+                )
+                return self._pytest_plugin_declaration_error
+
+        # A static target can make a nested pytest configuration become the
+        # active root configuration.  Inspect every tracked-looking config
+        # location rather than assuming the shell cwd is the only discovery
+        # starting point.
+        config_names = {
+            "pytest.toml",
+            ".pytest.toml",
+            "pytest.ini",
+            ".pytest.ini",
+            "pyproject.toml",
+            "tox.ini",
+            "setup.cfg",
+            "setup.py",
         }
-        index = 2
-        while index < len(tokens):
-            token = tokens[index]
-            if token == "--":
-                index += 1
-                break
-            if token in value_options:
-                if index + 1 >= len(tokens):
-                    return None, f"uv option {token} is missing its value"
-                index += 2
-                continue
-            if any(token.startswith(option + "=") for option in value_options):
-                index += 1
-                continue
-            if token in flag_options:
-                index += 1
-                continue
-            if token.startswith("-"):
-                return None, f"unknown uv option {token} prevents a safe command boundary"
-            break
-        if index >= len(tokens):
-            return None, "uv run has no statically known command"
-        return tokens[index:], None
+        inspected_configs = 0
+        try:
+            for path in self.root.rglob("*"):
+                if path.name.lower() not in config_names:
+                    continue
+                if path.is_symlink():
+                    self._pytest_plugin_declaration_error = (
+                        "pytest plugin configuration discovery encountered a symlink"
+                    )
+                    return self._pytest_plugin_declaration_error
+                if not path.is_file():
+                    continue
+                relative = path.relative_to(self.root)
+                if len(relative.parts) == 1 or ignored_parts.intersection(relative.parts):
+                    continue
+                inspected_configs += 1
+                if inspected_configs > 4096:
+                    self._pytest_plugin_declaration_error = (
+                        "pytest plugin configuration discovery is not safely bounded"
+                    )
+                    return self._pytest_plugin_declaration_error
+                try:
+                    text = read_limited_text(path, MAX_CONFIG_BYTES)
+                except (OSError, ValueError, UnicodeError):
+                    self._pytest_plugin_declaration_error = (
+                        f"pytest plugin configuration {relative.as_posix()!r} could not be read safely"
+                    )
+                    return self._pytest_plugin_declaration_error
+                if _PYTEST_PLUGIN_CONFIG.search(text) or "pytest11" in text.lower():
+                    self._pytest_plugin_declaration_error = (
+                        f"pytest plugin configuration is declared by {relative.as_posix()!r}"
+                    )
+                    return self._pytest_plugin_declaration_error
+        except OSError:
+            self._pytest_plugin_declaration_error = (
+                "pytest plugin configuration discovery could not be completed safely"
+            )
+            return self._pytest_plugin_declaration_error
+
+        inspected = 0
+        try:
+            for path in self.root.rglob("*.py"):
+                try:
+                    relative = path.relative_to(self.root)
+                except ValueError:
+                    self._pytest_plugin_declaration_error = (
+                        "pytest plugin source discovery escaped the repository"
+                    )
+                    return self._pytest_plugin_declaration_error
+                if ignored_parts.intersection(relative.parts):
+                    continue
+                if path.is_symlink():
+                    self._pytest_plugin_declaration_error = (
+                        f"pytest plugin source {relative.as_posix()!r} is a symlink"
+                    )
+                    return self._pytest_plugin_declaration_error
+                inspected += 1
+                if inspected > 4096:
+                    self._pytest_plugin_declaration_error = (
+                        "pytest plugin source discovery exceeded the bounded file limit"
+                    )
+                    return self._pytest_plugin_declaration_error
+                try:
+                    text = read_limited_text(path, MAX_CONFIG_BYTES)
+                except (OSError, ValueError, UnicodeError):
+                    self._pytest_plugin_declaration_error = (
+                        f"pytest plugin source {relative.as_posix()!r} could not be read safely"
+                    )
+                    return self._pytest_plugin_declaration_error
+                # Pytest imports every applicable conftest module before it
+                # determines the final runnable item set.  Even without a
+                # named hook, import-time code can register hooks/plugins,
+                # rewrite configuration, or deselect items.  Its semantics
+                # are repository-controlled Python, so the direct subset
+                # cannot treat a non-empty conftest as irrelevant.
+                if path.name == "conftest.py" and text.strip():
+                    self._pytest_plugin_declaration_error = (
+                        f"pytest startup module {relative.as_posix()!r} is project-controlled code"
+                    )
+                    return self._pytest_plugin_declaration_error
+                if _PYTEST_PLUGIN_ASSIGNMENT.search(text):
+                    self._pytest_plugin_declaration_error = (
+                        f"pytest_plugins is declared by {relative.as_posix()!r}"
+                    )
+                    return self._pytest_plugin_declaration_error
+                if path.name == "conftest.py" and _PYTEST_HOOK_DEFINITION.search(text):
+                    self._pytest_plugin_declaration_error = (
+                        f"pytest hook is declared by {relative.as_posix()!r}"
+                    )
+                    return self._pytest_plugin_declaration_error
+        except OSError:
+            self._pytest_plugin_declaration_error = (
+                "pytest plugin source discovery could not be completed safely"
+            )
+            return self._pytest_plugin_declaration_error
+        return None
 
     def _pytest_scope(
         self, tokens: tuple[str, ...], cwd: Path
@@ -4204,8 +4572,12 @@ class _Resolver:
         if marker is None:
             return None, None, None
 
-        if self._pytest_implicit_addopts_unknown(cwd):
-            return None, marker, "configuration: implicit pytest addopts are not modeled"
+        implicit_args, implicit_error = self._pytest_implicit_addopts(cwd)
+        if implicit_error is not None:
+            return None, marker, f"configuration: {implicit_error}"
+        plugin_error = self._pytest_project_plugin_error()
+        if plugin_error is not None:
+            return None, marker, f"configuration: {plugin_error}"
 
         unsupported = {
             "-k",
@@ -4221,10 +4593,22 @@ class _Resolver:
             "--ff",
             "--stepwise",
             "--pyargs",
+            "--maxfail",
+            "-x",
+            "--exitfirst",
+            "--pdb",
+            "--pdbcls",
+            "--trace",
+            "--runxfail",
+            "--collect-in-virtualenv",
+            "--import-mode",
+            "--doctest-modules",
+            "--doctest-glob",
+            "--keep-duplicates",
+            "--continue-on-collection-errors",
         }
         value_options = {
             "--junitxml",
-            "--maxfail",
             "--tb",
             "--color",
             "--capture",
@@ -4234,14 +4618,9 @@ class _Resolver:
             "--confcutdir",
             "--basetemp",
             "--override-ini",
-            "--cov",
-            "--cov-report",
-            "--cov-config",
-            "--cov-fail-under",
             "--filterwarnings",
             "--parallel-threads",
             "-W",
-            "-n",
         }
         configuration_options = {
             "-o",
@@ -4258,8 +4637,6 @@ class _Resolver:
             "-vv",
             "-ra",
             "-s",
-            "-x",
-            "--exitfirst",
             "--quiet",
             "--verbose",
             "--disable-warnings",
@@ -4270,24 +4647,40 @@ class _Resolver:
         }
         paths: list[str] = []
         selectors: list[str] = []
-        index = marker + 1
+        arguments = implicit_args + tokens[marker + 1 :]
+        index = 0
         end_options = False
-        while index < len(tokens):
-            token = tokens[index]
+        while index < len(arguments):
+            token = arguments[index]
             if token == "--":
                 end_options = True
                 index += 1
                 continue
             if not end_options and token.startswith("-"):
                 name, _, attached = token.partition("=")
-                if name == "--collect-only":
+                if name in {"--collect-only", "--co", "--setup-only", "--setup-plan"}:
                     return (
                         None,
                         marker,
-                        "configuration: pytest --collect-only executes collection hooks before reporting",
+                        f"configuration: pytest option {name} does not execute test functions",
                     )
                 if name == "-p" or (token.startswith("-p") and not token.startswith("--")):
                     return None, marker, "configuration: pytest plugin loading can change collection"
+                if name in {
+                    "-n",
+                    "--numprocesses",
+                    "--dist",
+                    "--tx",
+                    "--cov",
+                    "--cov-report",
+                    "--cov-config",
+                    "--cov-fail-under",
+                    "--json-report",
+                    "--json-report-file",
+                    "--html",
+                    "--self-contained-html",
+                } or (token.startswith("-n") and not token.startswith("--")):
+                    return None, marker, "configuration: pytest plugin options are not modeled"
                 if name in unsupported or any(token.startswith(item + "=") for item in unsupported):
                     selectors.append(token)
                     return None, marker, f"pytest selector {name} is not modeled at file level"
@@ -4297,9 +4690,9 @@ class _Resolver:
                     if name == "--basetemp":
                         value = attached
                         if not value:
-                            if index + 1 >= len(tokens):
+                            if index + 1 >= len(arguments):
                                 return None, marker, "configuration: pytest option --basetemp is missing its value"
-                            value = tokens[index + 1]
+                            value = arguments[index + 1]
                         if not self._pytest_basetemp_is_safe(value, cwd):
                             return None, marker, "configuration: pytest --basetemp can remove repository test bytes"
                         if not attached:
@@ -4309,16 +4702,14 @@ class _Resolver:
                     return None, marker, f"configuration: pytest option {name} can change collection"
                 if name in value_options:
                     if not attached:
-                        if index + 1 >= len(tokens) and name != "--cov":
+                        if index + 1 >= len(arguments):
                             return None, marker, f"pytest option {name} is missing its value"
-                        if index + 1 < len(tokens) and not (
-                            name == "--cov" and tokens[index + 1].startswith("-")
-                        ):
+                        if index + 1 < len(arguments):
                             index += 1
                     index += 1
                     continue
                 if name in flag_options or (
-                    name.startswith("-") and set(name[1:]).issubset(set("qvxs"))
+                    name.startswith("-") and set(name[1:]).issubset(set("qvras"))
                 ):
                     index += 1
                     continue
@@ -4335,15 +4726,21 @@ class _Resolver:
             return PytestInvocation("broad"), marker, None
         return PytestInvocation("paths", tuple(sorted(set(paths)))), marker, None
 
-    def _pytest_implicit_addopts_unknown(self, cwd: Path) -> bool:
-        """Reject implicit pytest options unless their config is provably absent."""
+    def _pytest_implicit_addopts(self, cwd: Path) -> tuple[tuple[str, ...], str | None]:
+        """Read one deterministically discovered pytest ``addopts`` value.
+
+        The supported subset shares the ordinary argv parser below.  This lets
+        harmless display flags remain usable while retaining fail-closed
+        handling for collection-only, plugin, selector, and configuration
+        options injected through pytest configuration.
+        """
 
         try:
             repository = self.root.resolve()
             current = cwd.resolve()
             current.relative_to(repository)
         except (OSError, RuntimeError, ValueError):
-            return True
+            return (), "pytest configuration discovery is outside the repository"
 
         config_names = (
             "pytest.toml",
@@ -4354,31 +4751,87 @@ class _Resolver:
             "tox.ini",
             "setup.cfg",
         )
+        checked: set[Path] = set()
         while True:
             for name in config_names:
                 path = current / name
-                if not path.is_file():
-                    continue
-                recognized, addopts = _pytest_config_addopts(path)
+                checked.add(path)
+                try:
+                    if path.is_symlink():
+                        return (), f"pytest configuration {name!r} is a symlink"
+                    if not path.is_file():
+                        continue
+                    recognized, addopts = _pytest_config_addopts(path)
+                except OSError:
+                    return (), f"pytest configuration {name!r} could not be read safely"
                 if not recognized:
                     continue
                 if addopts is None:
-                    return True
+                    return (), f"pytest configuration {name!r} could not be read safely"
                 if isinstance(addopts, str):
-                    return bool(addopts.strip())
-                if isinstance(addopts, list | tuple):
-                    return bool(addopts)
-                return True
+                    if not addopts.strip():
+                        return (), None
+                    try:
+                        return tuple(shlex.split(addopts, posix=True)), None
+                    except ValueError:
+                        return (), f"pytest configuration {name!r} has malformed addopts"
+                if isinstance(addopts, list | tuple) and all(
+                    isinstance(item, str) for item in addopts
+                ):
+                    return tuple(addopts), None
+                return (), f"pytest configuration {name!r} has non-string addopts"
             if current == repository:
-                return False
+                break
             parent = current.parent
             if parent == current:
-                return True
+                return (), "pytest configuration discovery escaped the repository"
             try:
                 parent.relative_to(repository)
             except ValueError:
-                return True
+                return (), "pytest configuration discovery escaped the repository"
             current = parent
+
+        # Pytest can choose its root/configuration from a static test target,
+        # not only from the shell working directory.  If no ancestor config
+        # was decisive, any nested config with non-empty addopts might become
+        # active for a selected target.  Refuse that ambiguity rather than
+        # silently reconstructing argv from the wrong rootdir.
+        inspected = 0
+        try:
+            for path in self.root.rglob("*"):
+                if path.name.lower() not in config_names:
+                    continue
+                if path.is_symlink():
+                    return (), "pytest configuration discovery encountered a symlink"
+                if not path.is_file():
+                    continue
+                if path in checked:
+                    continue
+                inspected += 1
+                if inspected > 4096:
+                    return (), "pytest configuration discovery is not safely bounded"
+                recognized, addopts = _pytest_config_addopts(path)
+                if not recognized:
+                    continue
+                try:
+                    relative = path.relative_to(repository).as_posix()
+                except ValueError:
+                    return (), "pytest configuration discovery escaped the repository"
+                if addopts is None:
+                    return (), f"pytest configuration {relative!r} could not be read safely"
+                if isinstance(addopts, str) and addopts.strip():
+                    return (), (
+                        f"pytest configuration {relative!r} may be selected by a test target"
+                    )
+                if isinstance(addopts, list | tuple) and addopts:
+                    return (), (
+                        f"pytest configuration {relative!r} may be selected by a test target"
+                    )
+                if not isinstance(addopts, str | list | tuple):
+                    return (), f"pytest configuration {relative!r} has non-string addopts"
+        except OSError:
+            return (), "pytest configuration discovery could not be completed safely"
+        return (), None
 
     def _pytest_basetemp_is_safe(self, value: str, cwd: Path) -> bool:
         """Allow only disposable tox/nox temp paths for pytest's destructive option."""
@@ -4403,26 +4856,22 @@ class _Resolver:
     def _resolve_shell(
         self, tokens: tuple[str, ...], context: _Context, depth: int
     ) -> WorkspaceState:
-        if len(tokens) < 2:
+        shell_name = _basename(tokens[0]).lower()
+        if shell_name not in {"bash", "sh"}:
             self.issue(
                 "SHELL_SCRIPT_UNKNOWN",
-                "shell wrapper has no statically known script",
+                "shell interpreter is outside the exact script-wrapper subset",
                 context.provenance,
             )
             return UNKNOWN_SIDE_EFFECT
-        if "-c" in tokens[1:]:
+        if len(tokens) != 2 or tokens[1].startswith("-"):
             self.issue(
-                "SHELL_COMMAND_UNKNOWN",
-                "shell -c hides a dynamic command graph",
+                "SHELL_SCRIPT_UNKNOWN",
+                "shell wrapper must have exactly one statically known script path",
                 context.provenance,
             )
             return UNKNOWN_SIDE_EFFECT
-        script = next((token for token in tokens[1:] if not token.startswith("-")), None)
-        if script is None:
-            self.issue(
-                "SHELL_SCRIPT_UNKNOWN", "shell wrapper has no script path", context.provenance
-            )
-            return UNKNOWN_SIDE_EFFECT
+        script = tokens[1]
         if script.startswith("<("):
             self.issue(
                 "DYNAMIC_SHELL_SETUP",
@@ -4587,6 +5036,14 @@ class _Resolver:
                 for name in current:
                     targets[name][1].append(line.strip())
                 continue
+            variable = re.match(
+                r"^(?:export\s+)?([A-Za-z_.][A-Za-z0-9_.]*)\s*(?::=|\+=|\?=|=)\s*(.*)$",
+                line,
+            )
+            if variable:
+                variables[variable.group(1)] = variable.group(2).strip()
+                current = []
+                continue
             match = re.match(
                 r"^([A-Za-z0-9_.%/-]+(?:\s+[A-Za-z0-9_.%/-]+)*)\s*:\s*(.*)$", line
             )
@@ -4597,9 +5054,10 @@ class _Resolver:
                     targets[name] = [list(prerequisites), []]
                 current = names
                 continue
-            variable = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|\+=|\?=|=)\s*(.*)$", line)
-            if variable:
-                variables[variable.group(1)] = variable.group(2).strip()
+            if re.match(r"^(?:-?include|sinclude)\s+", line):
+                variables["__GREENGAP_MAKEFILE_INCLUDE_UNKNOWN__"] = "1"
+                current = []
+                continue
             current = []
         return {
             key: (tuple(value[0]), tuple(value[1])) for key, value in targets.items()
@@ -4631,8 +5089,12 @@ class _Resolver:
                 index += 1
                 continue
             if token.startswith("-"):
-                index += 1
-                continue
+                self.issue(
+                    "MAKE_COMMAND_UNKNOWN",
+                    f"Make option {token!r} is outside the statically supported subset",
+                    context.provenance,
+                )
+                return UNKNOWN_SIDE_EFFECT
             if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
                 key, value = token.split("=", 1)
                 assignments[key] = value
@@ -4650,6 +5112,20 @@ class _Resolver:
         rules, variables = data
         variables.update(context.env)
         variables.update(assignments)
+        if variables.get("__GREENGAP_MAKEFILE_INCLUDE_UNKNOWN__"):
+            self.issue(
+                "MAKEFILE_INCLUDE_UNKNOWN",
+                "Makefile include directives can change shell and recipe semantics",
+                context.provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+        if any(variables.get(name, "").strip() for name in ("SHELL", ".SHELLFLAGS", "SHELLFLAGS")):
+            self.issue(
+                "MAKE_SHELL_UNKNOWN",
+                "Make shell configuration can wrap or replace recipe execution",
+                context.provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
         selected = targets or (
             next((name for name in rules if not name.startswith(".")), ""),
         )
@@ -4983,8 +5459,12 @@ class _Resolver:
                 posargs = tokens[index + 1 :]
                 break
             if token.startswith("-"):
-                index += 1
-                continue
+                self.issue(
+                    "TOX_COMMAND_UNKNOWN",
+                    f"tox option {token!r} is outside the statically supported subset",
+                    context.provenance,
+                )
+                return UNKNOWN_SIDE_EFFECT
             index += 1
         if not selected:
             raw_env = context.env.get("TOX_ENV") or context.env.get("TOXENV")
@@ -5062,6 +5542,42 @@ class _Resolver:
             return None
         return path, {str(key): str(value) for key, value in scripts.items()}
 
+    def _package_execution_context_error(
+        self, manager: str, cwd: Path, environment: dict[str, str]
+    ) -> str | None:
+        """Reject package-manager config that can wrap lifecycle execution.
+
+        npm/pnpm/Yarn discover configuration above the package directory, and
+        that configuration can choose a script shell or load project-owned
+        hooks.  The resolver models only the plain package.json script graph.
+        """
+
+        try:
+            repository = self.root.resolve()
+            current = cwd.resolve()
+            current.relative_to(repository)
+        except (OSError, RuntimeError, ValueError):
+            return "package-manager configuration discovery is outside the repository"
+        config_names = {".npmrc", ".yarnrc", ".yarnrc.yml", ".pnpmfile.cjs"}
+        while True:
+            for name in config_names:
+                path = current / name
+                if path.exists():
+                    return f"{manager} execution configuration {name!r} is project-controlled"
+            if current == repository:
+                break
+            parent = current.parent
+            if parent == current:
+                return "package-manager configuration discovery escaped the repository"
+            current = parent
+        prefixes = ("NPM_CONFIG_", "YARN_", "PNPM_")
+        if any(
+            key.upper().startswith(prefixes) and value.strip()
+            for key, value in environment.items()
+        ):
+            return f"{manager} execution configuration is injected through the environment"
+        return None
+
     def _resolve_package(
         self, tokens: tuple[str, ...], context: _Context, depth: int
     ) -> WorkspaceState:
@@ -5094,6 +5610,10 @@ class _Resolver:
             )
             return UNKNOWN_SIDE_EFFECT
         if cwd is None:
+            return UNKNOWN_SIDE_EFFECT
+        context_error = self._package_execution_context_error(manager, cwd, context.env)
+        if context_error is not None:
+            self.issue("PACKAGE_EXECUTION_CONTEXT_UNKNOWN", context_error, context.provenance)
             return UNKNOWN_SIDE_EFFECT
         package = self._package_json(cwd)
         if package is None or name not in package[1]:

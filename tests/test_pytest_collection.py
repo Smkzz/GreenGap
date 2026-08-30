@@ -31,6 +31,23 @@ def test_real_collection_keeps_pytest_cache_out_of_the_workspace(tmp_path) -> No
     assert not (tmp_path / ".pytest_cache").exists()
 
 
+def test_real_collection_does_not_inherit_parent_pytest_configuration(tmp_path) -> None:
+    checkout = tmp_path / "host-project" / "nested-checkout"
+    write_files(
+        tmp_path,
+        {
+            "host-project/pyproject.toml": "[tool.pytest.ini_options]\naddopts = '--collect-only'\n",
+            "host-project/nested-checkout/tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = collect_pytest(checkout, timeout=30)
+
+    assert result.complete
+    assert result.environment_valid
+    assert result.paths == ("tests/test_a.py",)
+
+
 def test_real_collection_can_collect_zero_tests(tmp_path) -> None:
     write_files(tmp_path, {"README.md": "empty\n"})
     result = collect_pytest(tmp_path, timeout=30)

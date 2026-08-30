@@ -30,8 +30,6 @@ jobs:
         ("python -m pytest", "broad", ()),
         ("coverage run -m pytest tests", "paths", ("tests",)),
         ("python -m coverage run -m pytest tests", "paths", ("tests",)),
-        ("uv run pytest tests", "paths", ("tests",)),
-        ("uv run --with pytest --project . pytest", "broad", ()),
     ],
 )
 def test_direct_runner_shapes_are_traced(
@@ -84,6 +82,9 @@ def test_value_consuming_pytest_options_do_not_become_paths(option: str, tmp_pat
     if option.split()[0] in {"-o", "-c"}:
         assert not result.invocations
         assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+    elif option.split()[0] == "--maxfail":
+        assert not result.invocations
+        assert any(issue.code == "PYTEST_SELECTOR_UNKNOWN" for issue in result.issues)
     else:
         assert result.invocations[0].kind == "broad"
         assert not result.invocations[0].paths
@@ -349,9 +350,9 @@ def test_tox_ini_selection_and_posargs_are_resolved(tmp_path) -> None:
     assert result.invocations[0].paths == ("tests/test_one.py",)
 
 
-def test_unknown_uv_option_does_not_shift_to_pytest(tmp_path) -> None:
+def test_uv_run_does_not_shift_to_pytest(tmp_path) -> None:
     write_files(
-        tmp_path, {".github/workflows/ci.yml": workflow("uv run --mystery value pytest tests")}
+        tmp_path, {".github/workflows/ci.yml": workflow("uv run pytest tests")}
     )
     result = trace_github_actions(tmp_path)
     assert not result.invocations
@@ -408,8 +409,9 @@ commands = [["mypy"]]
         },
     )
     result = trace_github_actions(tmp_path)
-    assert result.invocations[0].kind == "broad"
-    assert not result.issues
+    assert not result.invocations
+    assert any(issue.code == "UV_COMMAND_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
 
 
 def test_unrelated_unresolved_edge_is_kept_as_nonrelevant(tmp_path) -> None:

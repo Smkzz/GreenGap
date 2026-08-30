@@ -9,10 +9,12 @@ import time
 from pathlib import Path
 
 import pytest
+import scripts.qualify_stage0e_full as stage0e
 from scripts.create_release_provenance import create_manifest
 from scripts.qualify_stage0e_full import (
     abstention_compatibility_report,
     expected_unknown_baseline,
+    load_mutation_manifest,
     mutation_certification_report,
     sparse_checkout_enabled,
     validate_checkout,
@@ -914,9 +916,54 @@ def test_stage0e_accepts_a_stable_valid_unknown_as_expected_abstention() -> None
                 "evidence": ["PYTHON_EXECUTION_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"],
             },
         ],
+        "trace": {
+            "issues": [
+                {"code": "PYTHON_EXECUTION_UNKNOWN", "relevant": True},
+                {"code": "WORKSPACE_MUTATION_UNKNOWN", "relevant": True},
+            ]
+        },
     }
 
     assert expected_unknown_baseline("outcome", plan)
+
+
+def test_stage0e_allows_only_the_bound_plugin_autoload_abstention() -> None:
+    plan = {
+        "stable": True,
+        "complete": False,
+        "blocker_count": 0,
+        "snapshot": {"fingerprint": "fixture-fingerprint"},
+        "collection": {
+            "complete": False,
+            "environment_valid": False,
+            "error": "pytest collection environment contains unbound pytest11 plugins: fixture.plugin",
+        },
+        "errors": ["pytest qualification environment is invalid or collection failed"],
+        "findings": [
+            {
+                "state": "UNKNOWN",
+                "confidence": "high",
+                "evidence": [],
+            }
+        ],
+        "trace": {
+            "issues": [
+                {"code": "PYTHON_EXECUTION_UNKNOWN", "relevant": True},
+                {"code": "WORKSPACE_MUTATION_UNKNOWN", "relevant": True},
+            ]
+        },
+    }
+
+    assert expected_unknown_baseline("outcome", plan)
+    bad_plan = {
+        **plan,
+        "collection": {
+            "complete": False,
+            "environment_valid": False,
+            "error": "pytest collection exited with code 2",
+        },
+    }
+    assert not expected_unknown_baseline("outcome", bad_plan)
 
 
 def test_stage0e_requires_exact_expected_unknown_evidence() -> None:
@@ -987,8 +1034,269 @@ def test_stage0e_separates_abstention_compatibility_from_mutation_certification(
     mutation = mutation_certification_report(results)
 
     assert compatibility["status"] == "PASS"
-    assert mutation["status"] == "NOT_RUN"
+    assert mutation["status"] == "NOT_PASSED"
     assert mutation["mutation_executed"] == 0
+
+
+def test_stage0e_mutation_certification_requires_a_clean_exact_candidate_identity() -> None:
+    assert stage0e.candidate_identity_is_exact(
+        {"commit": "a" * 40, "tree": "b" * 40, "clean": True}
+    )
+    assert not stage0e.candidate_identity_is_exact(
+        {"commit": "a" * 40, "tree": "b" * 40, "clean": False}
+    )
+    assert not stage0e.candidate_identity_is_exact(
+        {"commit": "not-a-sha", "tree": "b" * 40, "clean": True}
+    )
+    assert not stage0e.candidate_identity_is_exact(
+        {"commit": "a" * 40, "tree": "b" * 40, "clean": True, "error": "git failed"}
+    )
+
+
+def _mutation_result(
+    *,
+    status: str = "PASS",
+    executed: int = 2,
+    passed: int = 2,
+    restored: int = 2,
+    exact_restored: bool = True,
+    deterministic: bool = True,
+) -> dict[str, object]:
+    return {
+        "repository": "fixture",
+        "status": status,
+        "mutation_executed": executed,
+        "mutation_passed": passed,
+        "mutation_restored": restored,
+        "restored": exact_restored,
+        "deterministic": deterministic,
+    }
+
+
+def test_stage0e_mutation_report_requires_executed_exact_deterministic_cases() -> None:
+    assert mutation_certification_report([])["status"] == "NOT_CONFIGURED"
+    assert mutation_certification_report(
+        [_mutation_result(status="BASELINE_NOT_COMPLETE", executed=0, passed=0, restored=0)]
+    )["status"] == "NOT_PASSED"
+    assert mutation_certification_report(
+        [_mutation_result(status="RESTORATION_FAILED", restored=1, exact_restored=False)]
+    )["status"] == "NOT_PASSED"
+    assert mutation_certification_report(
+        [_mutation_result(), _mutation_result(status="FALSE_NEGATIVE", passed=0)]
+    )["status"] == "NOT_PASSED"
+    assert mutation_certification_report([_mutation_result()])["status"] == "PASS"
+
+
+def test_stage0e_mutation_manifest_rejects_missing_exactness_fields(tmp_path) -> None:
+    manifest = tmp_path / "mutation.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repositories": [
+                    {
+                        "name": "fixture",
+                        "repository": "https://github.com/example/fixture",
+                        "path": "fixture",
+                        "expected_head": "0" * 40,
+                        "base_ref": "main",
+                        "runs": 1,
+                        "mutation": {
+                            "path": "ci.yml",
+                            "old": "pytest tests",
+                            "new": "pytest tests/test_one.py",
+                            "expected": "tests/test_two.py",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="at least twice"):
+        load_mutation_manifest(manifest)
+
+
+def test_stage0e_combined_gate_binds_separate_roots_and_interpreters(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = tmp_path / "mutation.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repositories": [
+                    {
+                        "name": "fixture",
+                        "repository": "https://github.com/example/fixture",
+                        "path": "mutation-clones/fixture",
+                        "expected_head": "a" * 40,
+                        "base_ref": "main",
+                        "runs": 2,
+                        "mutation": {
+                            "path": "ci.yml",
+                            "old": "pytest tests",
+                            "new": "pytest tests/test_kept.py",
+                            "expected": "tests/test_omitted.py",
+                            "original_sha256": "b" * 64,
+                            "mutated_sha256": "c" * 64,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    abstention_root = tmp_path / "abstention"
+    mutation_root = tmp_path / "mutation"
+    calls: list[tuple[str, str, Path]] = []
+
+    def fake_qualify_one(name: str, root: Path, interpreter: str) -> dict[str, object]:
+        calls.append(("abstention", interpreter, root))
+        return {"repository": name, "status": "EXPECTED_UNKNOWN"}
+
+    def fake_qualify_case(
+        name: str, root: Path, interpreter: str, *args: object, **kwargs: object
+    ) -> dict[str, object]:
+        del args, kwargs
+        calls.append(("mutation", interpreter, root))
+        return _mutation_result() | {"repository": name}
+
+    monkeypatch.setattr(stage0e, "qualify_one", fake_qualify_one)
+    monkeypatch.setattr(stage0e, "qualify_case", fake_qualify_case)
+    monkeypatch.setattr(
+        stage0e,
+        "candidate_identity",
+        lambda root: {"commit": "d" * 40, "tree": "e" * 40, "clean": True},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "qualify_stage0e_full.py",
+            str(tmp_path / "unused"),
+            "--gate",
+            "all",
+            "--abstention-root",
+            str(abstention_root),
+            "--mutation-root",
+            str(mutation_root),
+            "--abstention-python",
+            "abstention-python",
+            "--mutation-python",
+            "mutation-python",
+            "--mutation-manifest",
+            str(manifest),
+        ],
+    )
+
+    assert stage0e.main() == 0
+    assert calls[:5] == [
+        ("abstention", "abstention-python", abstention_root / name)
+        for name in stage0e.PINNED
+    ]
+    assert calls[5] == (
+        "mutation",
+        "mutation-python",
+        mutation_root / "mutation-clones" / "fixture",
+    )
+
+
+def test_stage0e_exact_mutation_case_detects_target_and_restores_bytes(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "ci.yml"
+    original = b"run: pytest tests\n"
+    mutated = b"run: pytest tests/test_kept.py\n"
+    target.write_bytes(original)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "add", "ci.yml"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=GreenGap", "-c", "user.email=greengap@example.invalid", "commit", "-qm", "fixture"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", "https://github.com/example/fixture.git"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    expected_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True, capture_output=True, check=True
+    ).stdout.strip()
+    baseline = {
+        "stable": True,
+        "complete": True,
+        "blocker_count": 0,
+        "errors": [],
+        "collection": {"complete": True, "environment_valid": True},
+        "final_fingerprint": "baseline-fingerprint",
+        "findings": [],
+    }
+    mutation_plan = {
+        **baseline,
+        "blocker_count": 1,
+        "final_fingerprint": "mutation-fingerprint",
+        "findings": [
+            {
+                "path": "tests/test_omitted.py",
+                "state": "NOT_PLANNED",
+                "blocking": True,
+            }
+        ],
+    }
+
+    def fake_run_plan(
+        repo: Path,
+        python_executable: str,
+        changed_files: tuple[str, ...],
+        base_ref: str,
+        event: str = "pull_request",
+        ref: str | None = None,
+    ) -> tuple[int, dict[str, object]]:
+        del python_executable, changed_files, base_ref, event, ref
+        if (repo / "ci.yml").read_bytes() == mutated:
+            return 1, mutation_plan
+        return 0, baseline
+
+    monkeypatch.setattr(stage0e, "run_plan", fake_run_plan)
+    result = stage0e.qualify_case(
+        "fixture",
+        tmp_path,
+        sys.executable,
+        expected_head,
+        stage0e.Mutation(
+            "ci.yml",
+            b"pytest tests",
+            b"pytest tests/test_kept.py",
+            "tests/test_omitted.py",
+            original_sha256=stage0e.digest_bytes(original),
+            mutated_sha256=stage0e.digest_bytes(mutated),
+        ),
+        "main",
+        repository="https://github.com/example/fixture",
+        runs=2,
+    )
+
+    assert result["status"] == "PASS"
+    assert result["mutation_executed"] == 2
+    assert result["mutation_passed"] == 2
+    assert result["mutation_restored"] == 2
+    assert target.read_bytes() == original
+    assert stage0e._canonical_repository_url("python-trio/outcome") == (
+        stage0e._canonical_repository_url("https://github.com/python-trio/outcome.git")
+    )
+    valid, reason = validate_checkout(
+        tmp_path, expected_head, "https://github.com/example/different-fixture"
+    )
+    assert not valid
+    assert "origin" in reason
+    assert not subprocess.run(
+        ["git", "status", "--porcelain"], cwd=tmp_path, text=True, capture_output=True, check=True
+    ).stdout
 
 
 @pytest.mark.parametrize(
@@ -1280,7 +1588,7 @@ unit integration:
     assert any(invocation.covers("tests/unit/test_one.py") for invocation in result.invocations)
 
 
-def test_static_make_setup_does_not_poison_a_later_test_command(tmp_path) -> None:
+def test_static_make_requirements_install_taints_a_later_test_command(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -1291,8 +1599,122 @@ def test_static_make_setup_does_not_poison_a_later_test_command(tmp_path) -> Non
 
     result = trace_github_actions(tmp_path)
 
-    assert result.invocations
-    assert not any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    ("makefile", "code"),
+    [
+        ("SHELL := bash scripts/wrapper.sh\ntest:\n\tpytest tests\n", "MAKE_SHELL_UNKNOWN"),
+        ("include ci/runner.mk\ntest:\n\tpytest tests\n", "MAKEFILE_INCLUDE_UNKNOWN"),
+    ],
+)
+def test_make_execution_boundary_configuration_is_not_assumed_safe(
+    tmp_path, makefile: str, code: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("make test"),
+            "Makefile": makefile,
+            "scripts/wrapper.sh": "#!/bin/sh\nexit 0\n",
+            "ci/runner.mk": "SHELL := bash scripts/wrapper.sh\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == code for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_unmodeled_make_option_does_not_select_the_default_makefile(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("make -f ci/Makefile test"),
+            "Makefile": "test:\n\tpytest tests\n",
+            "ci/Makefile": "test:\n\tpytest tests/test_one.py\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "MAKE_COMMAND_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    ("extra_files", "environment"),
+    [
+        ({".npmrc": "script-shell=scripts/wrapper.sh\n"}, ""),
+        ({}, "          NPM_CONFIG_SCRIPT_SHELL: ${{ inputs.shell }}\n"),
+    ],
+)
+def test_package_script_shell_configuration_is_not_assumed_transparent(
+    tmp_path, extra_files: dict[str, str], environment: str
+) -> None:
+    workflow_text = f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+{environment or '          {}'}
+        run: npm test
+"""
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow_text,
+            "package.json": '{"scripts": {"test": "pytest tests"}}',
+            "scripts/wrapper.sh": "#!/bin/sh\nexit 0\n",
+            **extra_files,
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PACKAGE_EXECUTION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_shell_wrapper_flags_are_not_silently_dropped(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("bash --noprofile scripts/test.sh"),
+            "scripts/test.sh": "#!/bin/sh\npytest tests\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "SHELL_SCRIPT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_unmodeled_tox_config_option_is_not_silently_dropped(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("tox -c ci/tox.ini -e py"),
+            "tox.ini": "[tox]\nenvlist = py\n[testenv]\nskip_install = true\ncommands = pytest tests\n",
+            "ci/tox.ini": "[tox]\nenvlist = py\n[testenv]\nskip_install = true\ncommands = pytest tests/test_one.py\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "TOX_COMMAND_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
 
 
 def test_arbitrary_python_c_is_not_assumed_to_be_harmless(tmp_path) -> None:
@@ -2015,6 +2437,56 @@ def test_pip_requirements_recursively_detect_local_project_inputs(tmp_path) -> N
     assert result.relevant_incomplete
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pip install pytest-cov",
+        "python -m pip install pytest-cov",
+        "pip uninstall -y pytest",
+        "pip install -r requirements.txt",
+    ],
+)
+def test_pip_commands_that_can_change_pytest_plugins_or_identity_taint_later_pytest(
+    tmp_path, command: str
+) -> None:
+    write_files(tmp_path, {".github/workflows/ci.yml": two_step_workflow(command, "pytest")})
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+def test_core_pip_and_pytest_bootstrap_remains_supported(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow(
+                "python -m pip install --upgrade pip\npip install pytest\npytest tests"
+            )
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == ("tests",)
+    assert not result.relevant_incomplete
+
+
+@pytest.mark.parametrize("first", ['echo "unterminated', "$PYTHON pytest"])
+def test_unparsed_or_dynamic_predecessor_taints_later_pytest(tmp_path, first: str) -> None:
+    write_files(
+        tmp_path,
+        {".github/workflows/ci.yml": two_step_workflow(first, "pytest tests")},
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
 def test_standard_precommit_hooks_are_not_assumed_workspace_safe(tmp_path) -> None:
     write_files(
         tmp_path,
@@ -2217,3 +2689,528 @@ jobs:
     assert not result.invocations
     assert any(issue.code == "SHELL_UNKNOWN" for issue in result.issues)
     assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    "first",
+    ["pytest tests/test_prepare.py", "pytest tests/test_delete.py"],
+)
+def test_executed_pytest_taints_a_later_selection_even_for_narrow_first_scope(
+    tmp_path, first: str
+) -> None:
+    """Fixtures/tests may rewrite config or delete tests after the first run."""
+
+    write_files(tmp_path, {".github/workflows/ci.yml": two_step_workflow(first, "pytest")})
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == (first.removeprefix("pytest "),)
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+
+
+def test_final_pytest_keeps_its_own_proven_selection(tmp_path) -> None:
+    write_files(tmp_path, {".github/workflows/ci.yml": workflow("pytest tests")})
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == ("tests",)
+    assert not result.relevant_incomplete
+
+
+def test_static_optional_requirements_install_taints_later_pytest(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow(
+                "python -m pip install --upgrade pip\n"
+                "if [ -f requirements.txt ]; then pip install -r requirements.txt; fi\n"
+                "pytest tests"
+            ),
+            "requirements.txt": "pytest\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+def test_static_missing_optional_requirements_branch_is_not_treated_as_execution(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow(
+                "if [ -f requirements.txt ]; then scripts/untrusted-installer; fi\npytest tests"
+            ),
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == ("tests",)
+    assert not result.relevant_incomplete
+
+
+def test_static_file_condition_with_an_else_branch_remains_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow(
+                "if [ -f requirements.txt ]; then pip install -r requirements.txt; else scripts/install; fi\n"
+                "pytest tests"
+            ),
+            "requirements.txt": "pytest\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest --collect-only",
+        "pytest --co",
+        "pytest tests --collect-only",
+        "pytest --setup-only",
+        "pytest --setup-plan",
+        "pytest --maxfail 1",
+        "pytest -x",
+        "pytest -qx",
+        "pytest --cov=src",
+    ],
+)
+def test_nonexecuting_or_execution_interrupting_pytest_modes_do_not_prove_scope(
+    tmp_path, command: str
+) -> None:
+    write_files(tmp_path, {".github/workflows/ci.yml": workflow(command)})
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    ("config_name", "config"),
+    [
+        ("pytest.ini", "[pytest]\naddopts = --collect-only\n"),
+        ("pytest.ini", "[pytest]\naddopts = --co\n"),
+        (
+            "pyproject.toml",
+            "[tool.pytest.ini_options]\naddopts = '--collect-only'\n",
+        ),
+    ],
+)
+def test_implicit_collect_only_addopts_do_not_prove_execution(
+    tmp_path, config_name: str, config: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("pytest tests"),
+            config_name: config,
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+
+
+def test_nested_pytest_config_that_can_be_selected_by_target_is_not_ignored(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("pytest tests/nested"),
+            "tests/nested/pytest.ini": "[pytest]\naddopts = --collect-only\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_safe_implicit_pytest_display_addopts_remain_supported(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("pytest tests"),
+            "pytest.ini": "[pytest]\naddopts = -ra\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == ("tests",)
+
+
+def test_declared_pytest_plugins_do_not_prove_a_direct_pytest_scope(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+    steps:
+      - run: pytest tests
+""",
+            "conftest.py": "pytest_plugins = ('ci_plugin',)\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_conftest_collection_hook_does_not_prove_a_direct_pytest_scope(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("pytest tests"),
+            "conftest.py": """def pytest_collection_modifyitems(config, items):
+    items[:] = []
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_nonempty_conftest_import_does_not_prove_a_direct_pytest_scope(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("pytest tests"),
+            "conftest.py": "from pathlib import Path\nPath('pytest.ini').write_text('[pytest]')\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_pytest11_project_entry_point_does_not_prove_a_direct_pytest_scope(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("pytest tests"),
+            "pyproject.toml": """[project]
+name = "fixture"
+version = "0"
+[project.entry-points.pytest11]
+fixture = "fixture.pytest_plugin"
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+
+
+def test_explicitly_disabled_pytest_plugin_autoload_is_a_supported_environment_control(
+    tmp_path,
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "true"
+    steps:
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == ("tests",)
+    assert not result.relevant_incomplete
+
+
+def test_pytest_addopts_environment_taints_successor_state(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          PYTEST_ADDOPTS: ${{ inputs.pytest_options }}
+        run: pytest tests/test_prepare.py
+      - run: pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+
+
+@pytest.mark.parametrize(
+    ("name", "command", "issue"),
+    [
+        ("PYTHONPATH", "python -m pytest tests", "PYTHON_MODULE_PATH_UNKNOWN"),
+        ("BASH_ENV", "pytest tests", "BASH_STARTUP_ENV_UNKNOWN"),
+        ("PATH", "pytest tests", "EXECUTABLE_IDENTITY_UNKNOWN"),
+        ("PYTEST_PLUGINS", "pytest tests", "PYTEST_CONFIGURATION_UNKNOWN"),
+        ("PIP_CONFIG_FILE", "pip install pytest\npytest tests", "PIP_STARTUP_ENV_UNKNOWN"),
+    ],
+)
+def test_dynamic_startup_environment_never_leaks_a_proven_pytest_scope(
+    tmp_path, name: str, command: str, issue: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          {name}: ${{{{ inputs.dynamic_value }}}}
+        run: |
+          {command.replace(chr(10), chr(10) + '          ')}
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(item.code == issue for item in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_git_diff_is_not_assumed_read_only_before_pytest(tmp_path) -> None:
+    """A Git diff driver/helper can execute code before the visible test command."""
+
+    write_files(
+        tmp_path,
+        {".github/workflows/ci.yml": workflow("git diff\npytest tests")},
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PRETEST_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_dynamic_setup_python_runtime_taints_later_pytest_identity(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+      - run: pytest tests
+"""
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTHON_RUNTIME_UNKNOWN" for issue in result.issues)
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    "shell_block",
+    [
+        "shell: 'bash scripts/wrapper.sh {0}'",
+        "shell: '${{ inputs.shell }}'",
+    ],
+)
+def test_custom_shell_boundary_taints_a_later_pytest(tmp_path, shell_block: str) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - {shell_block}
+        run: echo wrapper-can-rewrite-pytest-ini-or-skip-generated-script
+      - run: pytest
+""",
+            "scripts/wrapper.sh": "#!/bin/sh\nexit 0\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "SHELL_UNKNOWN" for issue in result.issues)
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+
+
+@pytest.mark.parametrize(
+    "defaults",
+    [
+        """defaults:
+  run:
+    shell: 'bash scripts/wrapper.sh {0}'
+""",
+        """jobs:
+  test:
+    defaults:
+      run:
+        shell: 'bash scripts/wrapper.sh {0}'
+""",
+    ],
+)
+def test_default_custom_shell_template_is_not_a_safe_execution_boundary(
+    tmp_path, defaults: str
+) -> None:
+    if defaults.startswith("jobs:"):
+        workflow_text = f"""name: CI
+on: pull_request
+{defaults}    runs-on: ubuntu-latest
+    steps:
+      - run: echo wrapper
+      - run: pytest
+"""
+    else:
+        workflow_text = f"""name: CI
+on: pull_request
+{defaults}jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo wrapper
+      - run: pytest
+"""
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow_text,
+            "scripts/wrapper.sh": "#!/bin/sh\nexit 0\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "SHELL_UNKNOWN" for issue in result.issues)
+
+
+@pytest.mark.parametrize("shell", ["bash {0}", "bash --noprofile --norc -e -o pipefail {0}"])
+def test_explicit_canonical_bash_templates_are_supported(tmp_path, shell: str) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: '{shell}'
+        run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == ("tests",)
+
+
+def test_powershell_wrapper_template_is_not_assumed_to_be_builtin(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - shell: 'pwsh -File {0}'
+        run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "SHELL_UNKNOWN" for issue in result.issues)
+
+
+def test_conditional_pytest_can_taint_successor_state(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - if: github.ref == 'refs/heads/main'
+        run: pytest tests/test_prepare.py
+      - run: pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "CONDITION_UNKNOWN" for issue in result.issues)
+    assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)

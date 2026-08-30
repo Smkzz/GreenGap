@@ -594,6 +594,12 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
             "-m",
             "pytest",
             *_explicit_project_plugin_args(root),
+            # GreenGap's ``root`` is the checkout boundary.  Without this,
+            # pytest can walk above a nested checkout and adopt an analyst
+            # host's pytest configuration, making discovery diverge from the
+            # GitHub Actions workspace we are modeling.
+            "--rootdir",
+            str(root),
             "--collect-only",
             "-q",
             "-o",
