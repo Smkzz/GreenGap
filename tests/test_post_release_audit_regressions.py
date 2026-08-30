@@ -2916,6 +2916,31 @@ def test_nonempty_conftest_import_does_not_prove_a_direct_pytest_scope(tmp_path)
     assert result.relevant_incomplete
 
 
+def test_windows_case_variant_conftest_does_not_prove_a_direct_pytest_scope(tmp_path) -> None:
+    """Windows loads a case-variant conftest even when the analyzer runs elsewhere."""
+
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - run: pytest tests
+""",
+            "Conftest.py": "from pathlib import Path\nPath('pytest.ini').write_text('[pytest]')\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
 def test_pytest11_project_entry_point_does_not_prove_a_direct_pytest_scope(tmp_path) -> None:
     write_files(
         tmp_path,

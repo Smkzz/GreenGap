@@ -4525,7 +4525,12 @@ class _Resolver:
                 # rewrite configuration, or deselect items.  Its semantics
                 # are repository-controlled Python, so the direct subset
                 # cannot treat a non-empty conftest as irrelevant.
-                if path.name == "conftest.py" and text.strip():
+                # Windows resolves ``Conftest.py`` (and other case variants)
+                # when pytest asks for ``conftest.py``.  The resolver may be
+                # running on a case-sensitive host while modeling a Windows
+                # runner, so this must be an explicit case-insensitive check
+                # rather than relying on the host filesystem's behavior.
+                if path.name.casefold() == "conftest.py" and text.strip():
                     self._pytest_plugin_declaration_error = (
                         f"pytest startup module {relative.as_posix()!r} is project-controlled code"
                     )
@@ -4535,7 +4540,7 @@ class _Resolver:
                         f"pytest_plugins is declared by {relative.as_posix()!r}"
                     )
                     return self._pytest_plugin_declaration_error
-                if path.name == "conftest.py" and _PYTEST_HOOK_DEFINITION.search(text):
+                if path.name.casefold() == "conftest.py" and _PYTEST_HOOK_DEFINITION.search(text):
                     self._pytest_plugin_declaration_error = (
                         f"pytest hook is declared by {relative.as_posix()!r}"
                     )
