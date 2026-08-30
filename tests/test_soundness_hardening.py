@@ -259,7 +259,7 @@ def test_pytest_dot_covers_repository(tmp_path) -> None:
     assert result.invocations[0].covers("tests/test_a.py")
 
 
-def test_workflow_and_job_working_directory_defaults_are_preserved(tmp_path) -> None:
+def test_workflow_default_working_directory_does_not_reuse_root_pytest_context(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -277,10 +277,11 @@ jobs:
         },
     )
     result = trace_github_actions(tmp_path)
-    assert result.invocations[0].paths == ("backend/tests",)
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
 
 
-def test_step_working_directory_replaces_default_from_workspace(tmp_path) -> None:
+def test_step_working_directory_override_does_not_reuse_root_pytest_context(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -299,7 +300,8 @@ jobs:
         },
     )
     result = trace_github_actions(tmp_path)
-    assert result.invocations[0].paths == ("frontend/tests",)
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
 
 
 @pytest.mark.parametrize("command", [

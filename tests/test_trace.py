@@ -90,7 +90,7 @@ def test_value_consuming_pytest_options_do_not_become_paths(option: str, tmp_pat
         assert not result.invocations[0].paths
 
 
-def test_make_target_and_make_c_are_resolved(tmp_path) -> None:
+def test_make_c_non_root_pytest_context_is_not_reused_as_root_scope(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -99,7 +99,8 @@ def test_make_target_and_make_c_are_resolved(tmp_path) -> None:
         },
     )
     result = trace_github_actions(tmp_path)
-    assert result.invocations[0].paths == ("backend/tests/unit",)
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
 
 
 def test_make_variable_assignment_is_expanded(tmp_path) -> None:

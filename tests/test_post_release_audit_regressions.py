@@ -3239,3 +3239,278 @@ jobs:
     assert not result.invocations
     assert any(issue.code == "CONDITION_UNKNOWN" for issue in result.issues)
     assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
+
+
+def test_non_root_bare_pytest_is_not_treated_as_repository_wide(tmp_path) -> None:
+    """A nested CI working directory cannot reuse the root denominator as broad scope."""
+
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - working-directory: tests/unit
+        run: pytest
+""",
+            "tests/unit/test_unit.py": "def test_unit():\n    assert True\n",
+            "tests/integration/test_integration.py": "def test_integration():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    ("name", "workflow_text"),
+    [
+        (
+            "workflow_default",
+            """name: CI
+on: pull_request
+defaults:
+  run:
+    working-directory: tests/unit
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest
+""",
+        ),
+        (
+            "job_default",
+            """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests/unit
+    steps:
+      - run: pytest
+""",
+        ),
+        (
+            "step_override",
+            """name: CI
+on: pull_request
+defaults:
+  run:
+    working-directory: tests/integration
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests/integration
+    steps:
+      - working-directory: tests/unit
+        run: pytest
+""",
+        ),
+    ],
+)
+def test_non_root_bare_pytest_defaults_do_not_leak_root_scope(
+    tmp_path, name: str, workflow_text: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow_text,
+            "tests/unit/test_unit.py": "def test_unit():\n    assert True\n",
+            "tests/integration/test_integration.py": "def test_integration():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations, name
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+
+
+@pytest.mark.parametrize(
+    "working_directory, command",
+    [
+        ("tests", "pytest unit"),
+        ("src/project", "pytest ../../tests/unit"),
+    ],
+)
+def test_non_root_pytest_target_requires_a_congruent_context(
+    tmp_path, working_directory: str, command: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - working-directory: {working_directory}
+        run: {command}
+""",
+            "tests/unit/test_unit.py": "def test_unit():\n    assert True\n",
+            "src/project/__init__.py": "",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_root_bare_pytest_retains_the_root_collection_control(tmp_path) -> None:
+    write_files(tmp_path, {".github/workflows/ci.yml": workflow("pytest")})
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].kind == "broad"
+    assert not result.relevant_incomplete
+
+
+def test_root_explicit_directory_without_nested_config_retains_path_scope(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("pytest tests/unit"),
+            "tests/unit/test_unit.py": "def test_unit():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == ("tests/unit",)
+    assert not result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    ("config_name", "config", "target"),
+    [
+        ("pytest.ini", "[pytest]\npython_files = check_*.py\n", "tests/nested"),
+        (".pytest.ini", "[pytest]\npython_files = check_*.py\n", "tests/nested"),
+        ("pytest.toml", "[pytest]\npython_files = [\"check_*.py\"]\n", "tests/nested"),
+        (".pytest.toml", "[pytest]\npython_files = [\"check_*.py\"]\n", "tests/nested"),
+        (
+            "pyproject.toml",
+            "[tool.pytest.ini_options]\npython_files = \"check_*.py\"\n",
+            "tests/nested",
+        ),
+        ("pytest.ini", "[pytest]\npython_files = check_*.py\n", "tests/nested/test_a.py"),
+    ],
+)
+def test_target_selected_nested_pytest_config_cannot_reuse_root_denominator(
+    tmp_path, config_name: str, config: str, target: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow(f"pytest {target}"),
+            f"tests/nested/{config_name}": config,
+            "tests/nested/test_a.py": "def test_a():\n    assert True\n",
+            "tests/nested/check_b.py": "def check_b():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_multiple_pytest_targets_with_nested_config_are_context_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("pytest tests/unit tests/nested"),
+            "tests/unit/test_unit.py": "def test_unit():\n    assert True\n",
+            "tests/nested/pytest.ini": "[pytest]\npython_files = check_*.py\n",
+            "tests/nested/check_nested.py": "def check_nested():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+
+
+def test_working_directory_and_nested_config_compose_to_unknown_context(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - working-directory: tests
+        run: pytest nested
+""",
+            "tests/nested/pytest.ini": "[pytest]\npython_files = check_*.py\n",
+            "tests/nested/check_nested.py": "def check_nested():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+
+
+def test_windows_case_variant_nested_pytest_config_is_context_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - run: pytest tests/Nested
+""",
+            "tests/Nested/Pytest.ini": "[pytest]\npython_files = check_*.py\n",
+            "tests/Nested/check_nested.py": "def check_nested():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+
+
+@pytest.mark.parametrize("directory", [".venv", "venv", ".tox", ".nox", ".git"])
+def test_pytest_target_inside_ignored_subtree_is_context_unknown(tmp_path, directory: str) -> None:
+    """Ignored denominator paths cannot make their own pytest context safe."""
+
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow(f"pytest {directory}/tests"),
+            f"{directory}/tests/pytest.ini": "[pytest]\npython_files = check_*.py\n",
+            f"{directory}/tests/check_nested.py": "def check_nested():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete

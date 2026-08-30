@@ -173,6 +173,17 @@ PROVEN_READ_ONLY: WorkspaceState = "PROVEN_READ_ONLY"
 MODELED_STATE_TRANSITION: WorkspaceState = "MODELED_STATE_TRANSITION"
 UNKNOWN_SIDE_EFFECT: WorkspaceState = "UNKNOWN_SIDE_EFFECT"
 
+_PYTEST_CONFIG_NAMES = (
+    "pytest.toml",
+    ".pytest.toml",
+    "pytest.ini",
+    ".pytest.ini",
+    "pyproject.toml",
+    "tox.ini",
+    "setup.cfg",
+)
+_PYTEST_CONFIG_IGNORED_PARTS = {".git", ".venv", ".tox", ".nox", "venv"}
+
 
 def _merge_workspace_state(left: WorkspaceState, right: WorkspaceState) -> WorkspaceState:
     if UNKNOWN_SIDE_EFFECT in (left, right):
@@ -2619,6 +2630,9 @@ class _Resolver:
         self._workflow_path_filters: set[str] = set()
         self._pytest_plugin_declaration_checked = False
         self._pytest_plugin_declaration_error: str | None = None
+        self._pytest_context_config_checked = False
+        self._pytest_context_config_paths: tuple[Path, ...] = ()
+        self._pytest_context_config_error: str | None = None
 
     def issue(
         self, code: str, message: str, provenance: tuple[str, ...], relevant: bool = True
@@ -4267,11 +4281,12 @@ class _Resolver:
                     # like an ordinary resolved pytest invocation does.
                     state = UNKNOWN_SIDE_EFFECT
                 elif scope_error:
-                    code = (
-                        "PYTEST_CONFIGURATION_UNKNOWN"
-                        if scope_error.startswith("configuration:")
-                        else "PYTEST_SELECTOR_UNKNOWN"
-                    )
+                    if scope_error.startswith("context:"):
+                        code = "PYTEST_INVOCATION_CONTEXT_UNKNOWN"
+                    elif scope_error.startswith("configuration:"):
+                        code = "PYTEST_CONFIGURATION_UNKNOWN"
+                    else:
+                        code = "PYTEST_SELECTOR_UNKNOWN"
                     self.issue(code, scope_error, context.provenance)
                     # An unmodeled pytest option is not safe to carry across
                     # the selection graph: it may select a different suite or
@@ -4552,6 +4567,168 @@ class _Resolver:
             return self._pytest_plugin_declaration_error
         return None
 
+    def _pytest_context_config_candidates(self) -> tuple[Path, ...] | None:
+        """Cache recognized pytest configs that can change invocation root/context."""
+
+        if self._pytest_context_config_checked:
+            if self._pytest_context_config_error is not None:
+                return None
+            return self._pytest_context_config_paths
+
+        self._pytest_context_config_checked = True
+        candidates: list[Path] = []
+        inspected = 0
+        try:
+            for path in self.root.rglob("*"):
+                if path.name.casefold() not in _PYTEST_CONFIG_NAMES:
+                    continue
+                try:
+                    relative = path.relative_to(self.root)
+                except ValueError:
+                    self._pytest_context_config_error = (
+                        "pytest configuration discovery escaped the repository"
+                    )
+                    return None
+                if _PYTEST_CONFIG_IGNORED_PARTS.intersection(relative.parts):
+                    continue
+                if path.is_symlink():
+                    self._pytest_context_config_error = (
+                        f"pytest configuration {relative.as_posix()!r} is a symlink"
+                    )
+                    return None
+                if not path.is_file():
+                    continue
+                inspected += 1
+                if inspected > 4096:
+                    self._pytest_context_config_error = (
+                        "pytest configuration discovery is not safely bounded"
+                    )
+                    return None
+                recognized, _ = _pytest_config_addopts(path)
+                if recognized:
+                    candidates.append(path.resolve())
+        except OSError:
+            self._pytest_context_config_error = (
+                "pytest configuration discovery could not be completed safely"
+            )
+            return None
+
+        self._pytest_context_config_paths = tuple(sorted(set(candidates)))
+        return self._pytest_context_config_paths
+
+    def _pytest_invocation_context_error(self, cwd: Path, targets: tuple[str, ...]) -> str | None:
+        """Prove that a traced pytest command can reuse the root denominator.
+
+        GreenGap deliberately collects one repository-wide denominator from
+        ``root`` with an explicit ``--rootdir``.  It must not use that result
+        for an invocation whose working directory or target can select a
+        different root/configuration context.  This bounded v0.1 rule permits
+        only the repository-root context and static single targets that have
+        no related nested pytest configuration.
+        """
+
+        try:
+            repository = self.root.resolve()
+            current = cwd.resolve()
+            current.relative_to(repository)
+        except (OSError, RuntimeError, ValueError):
+            return "pytest invocation working directory is outside the repository"
+
+        if current != repository:
+            try:
+                relative_cwd = current.relative_to(repository).as_posix()
+            except ValueError:
+                relative_cwd = str(current)
+            return (
+                f"pytest runs from non-root working directory {relative_cwd!r}; "
+                "its root/import/configuration context is not congruent with the repository denominator"
+            )
+
+        if len(targets) > 1:
+            return (
+                "pytest has multiple explicit targets; their common root/configuration context "
+                "is not modeled"
+            )
+        target: Path | None = None
+        is_file = False
+        is_dir = False
+        if targets:
+            try:
+                target = safe_resolve(repository, targets[0])
+                target_relative = target.relative_to(repository)
+                is_file = target.is_file()
+                is_dir = target.is_dir()
+            except (OSError, PathSafetyError, ValueError):
+                return "pytest target could not be inspected safely for configuration discovery"
+            if _PYTEST_CONFIG_IGNORED_PARTS.intersection(
+                part.casefold() for part in target_relative.parts
+            ):
+                return (
+                    f"pytest target {targets[0]!r} is inside a transient directory whose "
+                    "configuration context is not modeled"
+                )
+            if not is_file and not is_dir:
+                # Static CI selectors are legitimately traced before their target
+                # is generated or checked out in lightweight fixtures.  Their
+                # spelling still lets us conservatively decide which config
+                # locations could affect them without pretending the path exists.
+                is_file = target.suffix.casefold() in {".py", ".pyw"}
+                is_dir = not is_file
+
+        candidates = self._pytest_context_config_candidates()
+        if candidates is None:
+            return self._pytest_context_config_error or "pytest configuration discovery failed"
+
+        for config in candidates:
+            try:
+                relative = config.relative_to(repository)
+            except ValueError:
+                return "pytest configuration discovery escaped the repository"
+            if len(relative.parts) != 1:
+                continue
+            # The analyzer may run on a case-sensitive host while modeling a
+            # Windows runner.  A case variant is not the same root config on
+            # both platforms, so it cannot establish denominator identity.
+            if config.name not in _PYTEST_CONFIG_NAMES:
+                return (
+                    f"pytest configuration {relative.as_posix()!r} has platform-dependent case semantics"
+                )
+
+        if target is None:
+            return None
+
+        for config in candidates:
+            try:
+                config_dir = config.parent.resolve()
+                config_relative = config.relative_to(repository).as_posix()
+            except (OSError, RuntimeError, ValueError):
+                return "pytest configuration discovery escaped the repository"
+            if config_dir == repository:
+                continue
+            if is_file:
+                selection_root = target.parent
+                try:
+                    selection_root.relative_to(config_dir)
+                    related = True
+                except ValueError:
+                    related = False
+            else:
+                try:
+                    config_dir.relative_to(target)
+                    related = True
+                except ValueError:
+                    try:
+                        target.relative_to(config_dir)
+                        related = True
+                    except ValueError:
+                        related = False
+            if related:
+                return (
+                    f"pytest target {targets[0]!r} may select nested configuration "
+                    f"{config_relative!r} instead of the repository denominator configuration"
+                )
+        return None
+
     def _pytest_scope(
         self, tokens: tuple[str, ...], cwd: Path
     ) -> tuple[PytestInvocation | None, int | None, str | None]:
@@ -4727,6 +4904,9 @@ class _Resolver:
                 return None, marker, "pytest path selector is dynamic or shell-expanded"
             paths.append(normalize_repo_path(self.root, token, cwd))
             index += 1
+        context_error = self._pytest_invocation_context_error(cwd, tuple(paths))
+        if context_error is not None:
+            return None, marker, f"context: {context_error}"
         if not paths:
             return PytestInvocation("broad"), marker, None
         return PytestInvocation("paths", tuple(sorted(set(paths)))), marker, None
@@ -4747,15 +4927,7 @@ class _Resolver:
         except (OSError, RuntimeError, ValueError):
             return (), "pytest configuration discovery is outside the repository"
 
-        config_names = (
-            "pytest.toml",
-            ".pytest.toml",
-            "pytest.ini",
-            ".pytest.ini",
-            "pyproject.toml",
-            "tox.ini",
-            "setup.cfg",
-        )
+        config_names = _PYTEST_CONFIG_NAMES
         checked: set[Path] = set()
         while True:
             for name in config_names:
