@@ -80,6 +80,10 @@ class PytestInvocation:
     provenance: tuple[str, ...] = ()
     complete: bool = True
     reason: str = ""
+    # This is deliberately internal to the in-memory proof object.  The public
+    # report schema remains unchanged, while Windows invocations can preserve
+    # the runner's case-insensitive path semantics during reconciliation.
+    path_case_sensitive: bool = True
 
     def covers(self, path: str) -> bool:
         if not self.complete:
@@ -88,15 +92,23 @@ class PytestInvocation:
             return True
         if self.kind != "paths":
             return False
-        normalized = posixpath.normpath(path.replace("\\", "/"))
+        if not self.path_case_sensitive:
+            path = path.replace("\\", "/")
+        normalized = posixpath.normpath(path)
         if normalized == ".":
             normalized = ""
+        if not self.path_case_sensitive:
+            normalized = normalized.casefold()
         if normalized == ".." or normalized.startswith("../"):
             return False
         for selected in self.paths:
-            scope = posixpath.normpath(selected.replace("\\", "/"))
+            if not self.path_case_sensitive:
+                selected = selected.replace("\\", "/")
+            scope = posixpath.normpath(selected)
             if scope == ".":
                 scope = ""
+            if not self.path_case_sensitive:
+                scope = scope.casefold()
             if scope == ".." or scope.startswith("../"):
                 continue
             if not scope:

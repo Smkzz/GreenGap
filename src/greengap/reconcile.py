@@ -7,8 +7,12 @@ import posixpath
 from .model import Candidate, CollectionResult, Finding, FindingState, PytestInvocation, TraceResult
 
 
-def _scope_key(value: str) -> str | None:
-    normalized = posixpath.normpath(value.replace("\\", "/"))
+def _scope_key(value: str, *, windows_paths: bool = False) -> str | None:
+    """Normalize a repository path using the invocation runner's separators."""
+
+    if windows_paths:
+        value = value.replace("\\", "/")
+    normalized = posixpath.normpath(value)
     if normalized == ".":
         return ""
     if normalized == ".." or normalized.startswith("../"):
@@ -16,8 +20,8 @@ def _scope_key(value: str) -> str | None:
     return normalized
 
 
-def _path_prefixes(path: str) -> tuple[str, ...]:
-    normalized = _scope_key(path)
+def _path_prefixes(path: str, *, windows_paths: bool = False) -> tuple[str, ...]:
+    normalized = _scope_key(path, windows_paths=windows_paths)
     if normalized is None or not normalized:
         return ("",)
     parts = normalized.split("/")
@@ -50,24 +54,35 @@ def reconcile_plan(
     findings: list[Finding] = []
     all_candidates = _candidate_map(candidates, collection)
     collected_paths = set(collection.paths)
-    coverage_index: dict[str, list[PytestInvocation]] = {}
+    case_sensitive_index: dict[str, list[PytestInvocation]] = {}
+    case_insensitive_index: dict[str, list[PytestInvocation]] = {}
     for invocation in trace.invocations:
         if not invocation.complete:
             continue
         if invocation.kind == "broad":
-            coverage_index.setdefault("", []).append(invocation)
+            case_sensitive_index.setdefault("", []).append(invocation)
             continue
         if invocation.kind != "paths":
             continue
+        index = (
+            case_insensitive_index
+            if not invocation.path_case_sensitive
+            else case_sensitive_index
+        )
         for scope in invocation.paths:
-            key = _scope_key(scope)
+            key = _scope_key(scope, windows_paths=not invocation.path_case_sensitive)
             if key is not None:
-                coverage_index.setdefault(key, []).append(invocation)
+                if not invocation.path_case_sensitive:
+                    key = key.casefold()
+                index.setdefault(key, []).append(invocation)
     covering_by_path: dict[str, tuple[PytestInvocation, ...]] = {}
     for path in collected_paths:
         matches: dict[PytestInvocation, None] = {}
         for prefix in _path_prefixes(path):
-            for invocation in coverage_index.get(prefix, ()):
+            for invocation in case_sensitive_index.get(prefix, ()):
+                matches.setdefault(invocation, None)
+        for prefix in _path_prefixes(path, windows_paths=True):
+            for invocation in case_insensitive_index.get(prefix.casefold(), ()):
                 matches.setdefault(invocation, None)
         covering_by_path[path] = tuple(matches)
     for path in sorted(all_candidates):

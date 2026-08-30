@@ -6,6 +6,7 @@ import ast
 import configparser
 import itertools
 import json
+import os
 import re
 import shlex
 import tomllib
@@ -201,6 +202,7 @@ class _Context:
     event_context: str | None = None
     workspace_state: WorkspaceState = PROVEN_READ_ONLY
     workflow_event_context: str | None = None
+    runner_os: str | None = None
 
 
 def _scalar(value: Any) -> str | None:
@@ -604,7 +606,40 @@ def _default_shell(
         if not known:
             return "unknown"
         return "powershell" if "windows" in resolved.lower() else "bash"
+    runner_os = _runner_platform(runs_on, context)
+    if runner_os == "windows":
+        return "powershell"
+    if runner_os == "linux":
+        return "bash"
     return fallback
+
+
+def _runner_platform(runs_on: Any, context: _Context) -> str:
+    """Resolve the runner filesystem family used by a workflow job.
+
+    The analyzer may run on a different operating system than the GitHub
+    runner.  Keep the platform policy in the execution context instead of
+    allowing ``Path`` and ``shlex`` on the analyst host to decide target
+    identity.  Only the two hosted families whose path semantics are bounded
+    here are considered proven; all other labels remain conservative
+    ``unknown``.
+    """
+
+    values = list(runs_on) if isinstance(runs_on, list | tuple) else [runs_on]
+    platforms: set[str] = set()
+    for value in values:
+        raw = _scalar(value)
+        if raw is None:
+            return "unknown"
+        resolved, known = resolve_expressions(raw, context)
+        if not known:
+            return "unknown"
+        normalized = resolved.strip().lower()
+        if re.fullmatch(r"windows(?:-(?:latest|20\d{2}|10|11))?", normalized):
+            platforms.add("windows")
+        elif re.fullmatch(r"(?:ubuntu(?:-(?:latest|\d{2}\.\d{2}))?|linux(?:-latest)?)", normalized):
+            platforms.add("linux")
+    return next(iter(platforms)) if len(platforms) == 1 else "unknown"
 
 
 def _matrix_rows(spec: Any) -> tuple[list[dict[str, Any]] | None, str | None]:
@@ -884,7 +919,36 @@ def _expand_safe_prefix(command: str, env: dict[str, str]) -> tuple[str | None, 
     return "".join(output), None
 
 
-def _tokens(command: str) -> tuple[str, ...] | None:
+def _tokens(command: str, shell: str = "bash") -> tuple[str, ...] | None:
+    """Tokenize one supported shell command without changing path spelling.
+
+    Bash uses POSIX escaping, while PowerShell treats ``\\`` as a literal
+    Windows path separator.  ``shlex``'s POSIX mode silently removes those
+    separators, so PowerShell gets a deliberately small non-POSIX tokenizer
+    based on ``shlex.split(posix=False)``.  Complex quoting/escaping remains
+    unknown rather than being reinterpreted as a different command.
+    """
+
+    if shell == "powershell":
+        try:
+            raw_tokens = shlex.split(command, posix=False)
+        except ValueError:
+            return None
+        tokens: list[str] = []
+        for token in raw_tokens:
+            if (
+                len(token) >= 2
+                and token[0] == token[-1]
+                and token[0] in {"'", '"'}
+            ):
+                token = token[1:-1]
+            # PowerShell's backtick escapes and embedded quote forms are not
+            # modeled by this bounded parser.  Reject them rather than
+            # allowing a partially reconstructed argument to affect pytest.
+            if any(character in token for character in ("`", "'", '"')):
+                return None
+            tokens.append(token)
+        return tuple(tokens)
     try:
         lexer = shlex.shlex(command, posix=True)
         lexer.whitespace_split = True
@@ -892,6 +956,59 @@ def _tokens(command: str) -> tuple[str, ...] | None:
         return tuple(lexer)
     except ValueError:
         return None
+
+
+def _lexical_repo_path(root: Path, value: str, base: Path | None = None) -> str | None:
+    """Return a normalized repository-relative spelling without resolving it.
+
+    ``Path.resolve`` follows the analyst host's case and separator rules.  A
+    lexical spelling lets a known case-sensitive runner detect when a
+    case-insensitive analyst host silently canonicalized a different target.
+    Safety is still established separately by ``safe_resolve``.
+    """
+
+    root_absolute = Path(os.path.abspath(root))
+    raw = Path(value)
+    if not raw.is_absolute():
+        raw = (base or root_absolute) / raw
+    lexical = Path(os.path.normpath(os.fspath(raw)))
+    try:
+        relative = lexical.relative_to(root_absolute)
+    except ValueError:
+        return None
+    value = relative.as_posix()
+    return "" if value == "." else value
+
+
+def _casefold_repo_matches(root: Path, relative: str) -> tuple[Path, ...] | None:
+    """Find repository paths matching *relative* under case-folding.
+
+    This is used only to detect a case-insensitive analyst host canonicalizing
+    a target that a case-sensitive runner would spell differently.  Directory
+    enumeration is deliberately bounded; inability to establish a unique
+    match is handled as UNKNOWN by the caller.
+    """
+
+    current = [root]
+    parts = Path(relative).parts if relative else ()
+    for part in parts:
+        next_paths: list[Path] = []
+        for parent in current:
+            try:
+                entries = parent.iterdir()
+                for inspected, entry in enumerate(entries, start=1):
+                    if inspected > 4096:
+                        return None
+                    if entry.name.casefold() == part.casefold():
+                        next_paths.append(entry)
+                        if len(next_paths) > 1:
+                            return tuple(next_paths)
+            except OSError:
+                return None
+        current = next_paths
+        if not current:
+            return ()
+    return tuple(current)
 
 
 def _basename(token: str) -> str:
@@ -2880,6 +2997,7 @@ class _Resolver:
             event_context=changes.get("event_context"),
             workspace_state=changes.get("workspace_state", PROVEN_READ_ONLY),
             workflow_event_context=changes.get("workflow_event_context"),
+            runner_os=changes.get("runner_os"),
         )
 
     def trace(self) -> TraceResult:
@@ -3250,6 +3368,7 @@ class _Resolver:
                     effective_event,
                     context.workspace_state,
                     context.workflow_event_context,
+                    context.runner_os,
                 )
                 if defer_job_condition:
                     row_condition = _condition_value(raw_job.get("if"), row_base)
@@ -3279,9 +3398,13 @@ class _Resolver:
                     effective_event,
                     context.workspace_state,
                     context.workflow_event_context,
+                    _runner_platform(raw_job.get("runs-on"), row_base),
                 )
                 workflow_cwd = self._default_working_directory(
-                    data.get("defaults"), row_base, self.root, provenance
+                    data.get("defaults"),
+                    replace(row_base, runner_os=job_context.runner_os),
+                    self.root,
+                    provenance,
                 )
                 job_cwd = self._default_working_directory(
                     raw_job.get("defaults"), job_context, workflow_cwd, provenance
@@ -3492,6 +3615,8 @@ class _Resolver:
                 if raw_cwd is not None:
                     raw_cwd, cwd_known = resolve_expressions(raw_cwd, step_context)
                     if cwd_known:
+                        if step_context.runner_os == "windows":
+                            raw_cwd = raw_cwd.replace("\\", "/")
                         # GitHub resolves a step's explicit working-directory
                         # from GITHUB_WORKSPACE; it replaces, rather than
                         # appends to, workflow/job defaults.
@@ -3830,6 +3955,8 @@ class _Resolver:
                 provenance,
             )
             return None
+        if context.runner_os == "windows":
+            resolved = resolved.replace("\\", "/")
         return self._resolve_path(resolved, self.root, provenance)
 
     def _resolve_path(
@@ -4077,7 +4204,24 @@ class _Resolver:
             if expanded is None:
                 state = UNKNOWN_SIDE_EFFECT
                 continue
-            tokens = _tokens(expanded)
+            # Backslashes are literal path separators for PowerShell on a
+            # Windows runner, but are escape characters for Bash and are not
+            # portable on a non-Windows runner.  Do not let the analyst host's
+            # POSIX lexer turn a runner-specific target into a different safe
+            # path.
+            if (
+                _contains_runner_hint(segment)
+                and "\\" in expanded
+                and not (shell == "powershell" and context.runner_os == "windows")
+            ):
+                self.issue(
+                    "PYTEST_INVOCATION_CONTEXT_UNKNOWN",
+                    "pytest path separators are not modeled for this runner and shell combination",
+                    context.provenance,
+                )
+                state = UNKNOWN_SIDE_EFFECT
+                continue
+            tokens = _tokens(expanded, shell=shell)
             if tokens is None:
                 if _relevant_text(segment):
                     self.issue(
@@ -4253,7 +4397,12 @@ class _Resolver:
                     )
                 continue
             try:
-                scope, runner_index, scope_error = self._pytest_scope(tokens, nested_context.cwd)
+                scope, runner_index, scope_error = self._pytest_scope(
+                    tokens,
+                    nested_context.cwd,
+                    nested_context.runner_os or "unknown",
+                    shell,
+                )
             except PathSafetyError as exc:
                 self.issue(
                     "PATH_OUTSIDE_REPOSITORY",
@@ -4616,7 +4765,56 @@ class _Resolver:
         self._pytest_context_config_paths = tuple(sorted(set(candidates)))
         return self._pytest_context_config_paths
 
-    def _pytest_invocation_context_error(self, cwd: Path, targets: tuple[str, ...]) -> str | None:
+    def _pytest_target_path(
+        self,
+        token: str,
+        cwd: Path,
+        runner_os: str,
+        shell: str,
+    ) -> tuple[str, str | None]:
+        """Normalize one static pytest target using the CI runner's syntax."""
+
+        if re.match(r"^[A-Za-z]:", token):
+            return token, "pytest target uses a drive-qualified Windows path"
+        if runner_os == "windows":
+            if "\\" in token and shell != "powershell":
+                return token, "pytest target uses an unmodeled non-PowerShell backslash separator"
+            token = token.replace("\\", "/")
+        elif "\\" in token:
+            return token, "pytest target uses a runner-incompatible backslash separator"
+        normalized = normalize_repo_path(self.root, token, cwd)
+        if normalized == ".":
+            normalized = ""
+        if runner_os == "linux":
+            lexical = _lexical_repo_path(self.root, token, cwd)
+            if lexical is None:
+                return normalized, "pytest target could not be normalized lexically"
+            if lexical != normalized:
+                return (
+                    normalized,
+                    "pytest target spelling is not congruent with the case-sensitive runner",
+                )
+            matches = _casefold_repo_matches(self.root, lexical)
+            if matches is None or len(matches) > 1:
+                return (
+                    normalized,
+                    "pytest target has ambiguous filesystem case semantics on the runner",
+                )
+            if matches:
+                actual = _lexical_repo_path(self.root, str(matches[0]))
+                if actual != lexical:
+                    return (
+                        normalized,
+                        "pytest target spelling is not congruent with the case-sensitive runner",
+                    )
+        return normalized, None
+
+    def _pytest_invocation_context_error(
+        self,
+        cwd: Path,
+        targets: tuple[str, ...],
+        runner_os: str,
+    ) -> str | None:
         """Prove that a traced pytest command can reuse the root denominator.
 
         GreenGap deliberately collects one repository-wide denominator from
@@ -4644,6 +4842,8 @@ class _Resolver:
                 "its root/import/configuration context is not congruent with the repository denominator"
             )
 
+        if runner_os not in {"linux", "windows"}:
+            return "pytest runner filesystem semantics are not statically known"
         if len(targets) > 1:
             return (
                 "pytest has multiple explicit targets; their common root/configuration context "
@@ -4675,6 +4875,22 @@ class _Resolver:
                 is_file = target.suffix.casefold() in {".py", ".pyw"}
                 is_dir = not is_file
 
+        def runner_path_within(child: Path, parent: Path) -> bool:
+            try:
+                child.relative_to(parent)
+                return True
+            except ValueError:
+                if runner_os != "windows":
+                    return False
+                try:
+                    child_relative = child.relative_to(repository).parts
+                    parent_relative = parent.relative_to(repository).parts
+                except ValueError:
+                    return False
+                child_folded = tuple(part.casefold() for part in child_relative)
+                parent_folded = tuple(part.casefold() for part in parent_relative)
+                return child_folded[: len(parent_folded)] == parent_folded
+
         candidates = self._pytest_context_config_candidates()
         if candidates is None:
             return self._pytest_context_config_error or "pytest configuration discovery failed"
@@ -4689,7 +4905,7 @@ class _Resolver:
             # The analyzer may run on a case-sensitive host while modeling a
             # Windows runner.  A case variant is not the same root config on
             # both platforms, so it cannot establish denominator identity.
-            if config.name not in _PYTEST_CONFIG_NAMES:
+            if runner_os == "linux" and config.name not in _PYTEST_CONFIG_NAMES:
                 return (
                     f"pytest configuration {relative.as_posix()!r} has platform-dependent case semantics"
                 )
@@ -4707,21 +4923,11 @@ class _Resolver:
                 continue
             if is_file:
                 selection_root = target.parent
-                try:
-                    selection_root.relative_to(config_dir)
-                    related = True
-                except ValueError:
-                    related = False
+                related = runner_path_within(selection_root, config_dir)
             else:
-                try:
-                    config_dir.relative_to(target)
-                    related = True
-                except ValueError:
-                    try:
-                        target.relative_to(config_dir)
-                        related = True
-                    except ValueError:
-                        related = False
+                related = runner_path_within(config_dir, target) or runner_path_within(
+                    target, config_dir
+                )
             if related:
                 return (
                     f"pytest target {targets[0]!r} may select nested configuration "
@@ -4730,7 +4936,11 @@ class _Resolver:
         return None
 
     def _pytest_scope(
-        self, tokens: tuple[str, ...], cwd: Path
+        self,
+        tokens: tuple[str, ...],
+        cwd: Path,
+        runner_os: str = "unknown",
+        shell: str = "bash",
     ) -> tuple[PytestInvocation | None, int | None, str | None]:
         marker: int | None = None
         first = _basename(tokens[0])
@@ -4902,14 +5112,25 @@ class _Resolver:
                 return None, marker, "pytest node-id selectors are not modeled"
             if any(character in token for character in ("$", "{", "}", "*", "?", "[", "]")):
                 return None, marker, "pytest path selector is dynamic or shell-expanded"
-            paths.append(normalize_repo_path(self.root, token, cwd))
+            normalized, target_error = self._pytest_target_path(token, cwd, runner_os, shell)
+            if target_error is not None:
+                return None, marker, f"context: {target_error}"
+            paths.append(normalized)
             index += 1
-        context_error = self._pytest_invocation_context_error(cwd, tuple(paths))
+        context_error = self._pytest_invocation_context_error(cwd, tuple(paths), runner_os)
         if context_error is not None:
             return None, marker, f"context: {context_error}"
         if not paths:
             return PytestInvocation("broad"), marker, None
-        return PytestInvocation("paths", tuple(sorted(set(paths)))), marker, None
+        return (
+            PytestInvocation(
+                "paths",
+                tuple(sorted(set(paths))),
+                path_case_sensitive=runner_os != "windows",
+            ),
+            marker,
+            None,
+        )
 
     def _pytest_implicit_addopts(self, cwd: Path) -> tuple[tuple[str, ...], str | None]:
         """Read one deterministically discovered pytest ``addopts`` value.
