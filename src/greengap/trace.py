@@ -609,7 +609,7 @@ def _default_shell(
     runner_os = _runner_platform(runs_on, context)
     if runner_os == "windows":
         return "powershell"
-    if runner_os == "linux":
+    if runner_os in {"linux", "macos"}:
         return "bash"
     return fallback
 
@@ -639,6 +639,10 @@ def _runner_platform(runs_on: Any, context: _Context) -> str:
             platforms.add("windows")
         elif re.fullmatch(r"(?:ubuntu(?:-(?:latest|\d{2}\.\d{2}))?|linux(?:-latest)?)", normalized):
             platforms.add("linux")
+        elif re.fullmatch(r"(?:macos|macos-(?:latest|\d+))", normalized):
+            # GitHub-hosted macOS images use the default case-insensitive APFS
+            # volume; preserve that runner policy for explicit path scopes.
+            platforms.add("macos")
     return next(iter(platforms)) if len(platforms) == 1 else "unknown"
 
 
@@ -4842,7 +4846,7 @@ class _Resolver:
                 "its root/import/configuration context is not congruent with the repository denominator"
             )
 
-        if runner_os not in {"linux", "windows"}:
+        if runner_os not in {"linux", "windows", "macos"}:
             return "pytest runner filesystem semantics are not statically known"
         if len(targets) > 1:
             return (
@@ -4880,7 +4884,7 @@ class _Resolver:
                 child.relative_to(parent)
                 return True
             except ValueError:
-                if runner_os != "windows":
+                if runner_os not in {"windows", "macos"}:
                     return False
                 try:
                     child_relative = child.relative_to(repository).parts
@@ -5126,7 +5130,7 @@ class _Resolver:
             PytestInvocation(
                 "paths",
                 tuple(sorted(set(paths))),
-                path_case_sensitive=runner_os != "windows",
+                path_case_sensitive=runner_os == "linux",
             ),
             marker,
             None,

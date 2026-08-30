@@ -3449,6 +3449,28 @@ jobs:
     assert result.relevant_incomplete is False
 
 
+def test_macos_hosted_runner_has_bounded_path_semantics(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - run: pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].kind == "broad"
+    assert result.relevant_incomplete is False
+
+
 def test_windows_working_directory_preserves_native_separators(tmp_path) -> None:
     write_files(
         tmp_path,
