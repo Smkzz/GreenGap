@@ -3241,20 +3241,21 @@ jobs:
     assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
 
 
-def test_non_root_bare_pytest_is_not_treated_as_repository_wide(tmp_path) -> None:
+@pytest.mark.parametrize("command", ["pytest", "python -m pytest", "coverage run -m pytest"])
+def test_non_root_bare_pytest_is_not_treated_as_repository_wide(tmp_path, command: str) -> None:
     """A nested CI working directory cannot reuse the root denominator as broad scope."""
 
     write_files(
         tmp_path,
         {
-            ".github/workflows/ci.yml": """name: CI
+            ".github/workflows/ci.yml": f"""name: CI
 on: pull_request
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - working-directory: tests/unit
-        run: pytest
+        run: {command}
 """,
             "tests/unit/test_unit.py": "def test_unit():\n    assert True\n",
             "tests/integration/test_integration.py": "def test_integration():\n    assert True\n",
