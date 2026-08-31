@@ -600,18 +600,12 @@ def _default_shell(
                 return fallback
     if fallback is not None:
         return fallback
-    runs_on_text = _scalar(runs_on) if runs_on is not None else None
-    if runs_on_text is not None:
-        resolved, known = resolve_expressions(runs_on_text, context)
-        if not known:
-            return "unknown"
-        return "powershell" if "windows" in resolved.lower() else "bash"
     runner_os = _runner_platform(runs_on, context)
     if runner_os == "windows":
         return "powershell"
     if runner_os in {"linux", "macos"}:
         return "bash"
-    return fallback
+    return "unknown" if runs_on is not None else fallback
 
 
 def _runner_platform(runs_on: Any, context: _Context) -> str:
@@ -620,12 +614,31 @@ def _runner_platform(runs_on: Any, context: _Context) -> str:
     The analyzer may run on a different operating system than the GitHub
     runner.  Keep the platform policy in the execution context instead of
     allowing ``Path`` and ``shlex`` on the analyst host to decide target
-    identity.  Only the two hosted families whose path semantics are bounded
+    identity.  Only exact hosted image labels whose path semantics are bounded
     here are considered proven; all other labels remain conservative
-    ``unknown``.
+    ``unknown``.  In particular, routing labels such as ``self-hosted`` or
+    arbitrary labels containing a platform name are never treated as hosted
+    image identities.
     """
 
     values = list(runs_on) if isinstance(runs_on, list | tuple) else [runs_on]
+    if not values:
+        return "unknown"
+    hosted_platforms = {
+        "ubuntu-latest": "linux",
+        "ubuntu-20.04": "linux",
+        "ubuntu-22.04": "linux",
+        "ubuntu-24.04": "linux",
+        "windows-latest": "windows",
+        "windows-2019": "windows",
+        "windows-2022": "windows",
+        "windows-2025": "windows",
+        "macos-latest": "macos",
+        "macos-12": "macos",
+        "macos-13": "macos",
+        "macos-14": "macos",
+        "macos-15": "macos",
+    }
     platforms: set[str] = set()
     for value in values:
         raw = _scalar(value)
@@ -635,14 +648,10 @@ def _runner_platform(runs_on: Any, context: _Context) -> str:
         if not known:
             return "unknown"
         normalized = resolved.strip().lower()
-        if re.fullmatch(r"windows(?:-(?:latest|20\d{2}|10|11))?", normalized):
-            platforms.add("windows")
-        elif re.fullmatch(r"(?:ubuntu(?:-(?:latest|\d{2}\.\d{2}))?|linux(?:-latest)?)", normalized):
-            platforms.add("linux")
-        elif re.fullmatch(r"(?:macos|macos-(?:latest|\d+))", normalized):
-            # GitHub-hosted macOS images use the default case-insensitive APFS
-            # volume; preserve that runner policy for explicit path scopes.
-            platforms.add("macos")
+        platform = hosted_platforms.get(normalized)
+        if platform is None:
+            return "unknown"
+        platforms.add(platform)
     return next(iter(platforms)) if len(platforms) == 1 else "unknown"
 
 
@@ -3591,6 +3600,12 @@ class _Resolver:
                         f"step {label} uses an unsupported or unresolved shell",
                         provenance,
                     )
+                    if shell == "unknown" and step_context.runner_os in {None, "unknown"}:
+                        self.issue(
+                            "PYTEST_INVOCATION_CONTEXT_UNKNOWN",
+                            "pytest runner filesystem and default-shell semantics are not statically known",
+                            provenance,
+                        )
                     # A custom shell template can wrap, replace, or skip the
                     # generated script.  Treat it as an execution boundary,
                     # not merely an unsupported parser choice.

@@ -3427,7 +3427,10 @@ jobs:
     assert result.relevant_incomplete
 
 
-def test_runner_label_array_with_linux_is_static(tmp_path) -> None:
+@pytest.mark.parametrize("label", ["linux", "windows", "macos"])
+def test_self_hosted_runner_label_array_does_not_prove_hosted_policy(
+    tmp_path, label: str
+) -> None:
     write_files(
         tmp_path,
         {
@@ -3435,9 +3438,78 @@ def test_runner_label_array_with_linux_is_static(tmp_path) -> None:
 on: pull_request
 jobs:
   test:
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, LABEL]
     steps:
       - run: pytest
+""".replace("LABEL", label),
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_self_hosted_windows_case_variant_does_not_use_hosted_casefolding(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: [self-hosted, windows]
+    steps:
+      - shell: pwsh
+        run: pytest Tests
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize("label", ["linux", "windows", "macos"])
+def test_single_bare_platform_label_is_not_a_hosted_identity(tmp_path, label: str) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: LABEL
+    steps:
+      - run: pytest tests
+""".replace("LABEL", label),
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_known_hosted_runner_label_array_remains_supported(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: [ubuntu-latest]
+    steps:
+      - run: pytest tests
 """,
         },
     )
@@ -3445,8 +3517,149 @@ jobs:
     result = trace_github_actions(tmp_path)
 
     assert len(result.invocations) == 1
-    assert result.invocations[0].kind == "broad"
-    assert result.relevant_incomplete is False
+    assert result.invocations[0].kind == "paths"
+    assert result.invocations[0].path_case_sensitive
+    assert not result.relevant_incomplete
+
+
+def test_matrix_hosted_runner_policy_is_retained_per_row(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 2
+    assert {invocation.path_case_sensitive for invocation in result.invocations} == {True, False}
+    assert not result.relevant_incomplete
+
+
+def test_matrix_self_hosted_row_does_not_inherit_hosted_policy(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, self-hosted]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].path_case_sensitive
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_mixed_hosted_and_custom_runner_labels_are_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: [ubuntu-latest, x64]
+    steps:
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_self_hosted_runner_policy_is_inherited_by_local_composite(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: self-hosted
+    steps:
+      - uses: ./.github/actions/test
+""",
+            ".github/actions/test/action.yml": """name: test
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_reusable_workflow_uses_its_own_known_hosted_runner_policy(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: pull_request
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+""",
+            ".github/workflows/reusable.yml": """name: reusable
+on:
+  workflow_call:
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - shell: pwsh
+        run: pytest Tests
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    reusable_invocations = tuple(
+        invocation
+        for invocation in result.invocations
+        if ".github/workflows/reusable.yml" in invocation.provenance
+    )
+    assert reusable_invocations
+    assert any(
+        not invocation.path_case_sensitive and invocation.covers("tests/test_a.py")
+        for invocation in reusable_invocations
+    )
 
 
 def test_macos_hosted_runner_has_bounded_path_semantics(tmp_path) -> None:
