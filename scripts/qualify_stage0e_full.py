@@ -39,12 +39,17 @@ BASE_REFS = {
     "markupsafe": "main",
 }
 EXPECTED_UNKNOWN_EVIDENCE_BY_REPOSITORY = {
-    "outcome": frozenset({"PYTHON_EXECUTION_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"}),
+    # Runner-neutral default-shell parsing exposes the repository's unmodeled
+    # setup pipeline as an additional relevant abstention reason.  Keep the
+    # evidence set exact: any other reason still fails this compatibility gate.
+    "outcome": frozenset(
+        {"PYTHON_EXECUTION_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN", "SHELL_PIPE_UNKNOWN"}
+    ),
     "requests": frozenset({"PYTHON_RUNTIME_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"}),
     "itsdangerous": frozenset(
         {"PYTHON_RUNTIME_UNKNOWN", "UV_COMMAND_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"}
     ),
-    "httpcore": frozenset({"EXECUTABLE_IDENTITY_UNKNOWN"}),
+    "httpcore": frozenset({"PYTEST_INVOCATION_CONTEXT_UNKNOWN"}),
     "markupsafe": frozenset(
         {"PYTHON_RUNTIME_UNKNOWN", "UV_COMMAND_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"}
     ),

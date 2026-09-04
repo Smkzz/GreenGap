@@ -923,6 +923,7 @@ def test_stage0e_accepts_a_stable_valid_unknown_as_expected_abstention() -> None
             "issues": [
                 {"code": "PYTHON_EXECUTION_UNKNOWN", "relevant": True},
                 {"code": "WORKSPACE_MUTATION_UNKNOWN", "relevant": True},
+                {"code": "SHELL_PIPE_UNKNOWN", "relevant": True},
             ]
         },
     }
@@ -953,6 +954,7 @@ def test_stage0e_allows_only_the_bound_plugin_autoload_abstention() -> None:
             "issues": [
                 {"code": "PYTHON_EXECUTION_UNKNOWN", "relevant": True},
                 {"code": "WORKSPACE_MUTATION_UNKNOWN", "relevant": True},
+                {"code": "SHELL_PIPE_UNKNOWN", "relevant": True},
             ]
         },
     }
