@@ -34,7 +34,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - run: |
+      - shell: bash
+        run: |
           {indented}
 """
 
@@ -46,8 +47,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - run: {first}
-      - run: {second}
+      - shell: bash
+        run: {first}
+      - shell: bash
+        run: {second}
 """
 
 
@@ -3382,29 +3385,50 @@ def test_root_bare_pytest_retains_the_root_collection_control(tmp_path) -> None:
     assert not result.relevant_incomplete
 
 
-def test_unknown_runner_platform_does_not_prove_bare_pytest(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "runs_on",
+    [
+        "ubuntu-latest",
+        "windows-latest",
+        "macos-latest",
+        "windows-2025-vs2026",
+        "ubuntu-123.45",
+        "ubuntu-20.04",
+        "windows-2019",
+        "macos-12",
+        "self-hosted",
+        "self-hosted-windows-lab",
+        "gpu",
+        "internal-linux",
+        "[self-hosted, windows]",
+        "[ubuntu-latest, x64]",
+    ],
+)
+def test_runs_on_is_routing_metadata_only(tmp_path, runs_on: str) -> None:
     write_files(
         tmp_path,
         {
-            ".github/workflows/ci.yml": """name: CI
+            ".github/workflows/ci.yml": f"""name: CI
 on: pull_request
 jobs:
   test:
-    runs-on: self-hosted
+    runs-on: {runs_on}
     steps:
-      - run: pytest
+      - run: pytest tests
 """,
+            "tests/test_a.py": "def test_a():\n    assert True\n",
         },
     )
 
     result = trace_github_actions(tmp_path)
 
-    assert not result.invocations
-    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
-    assert result.relevant_incomplete
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == ("tests",)
+    assert result.invocations[0].path_case_sensitive
+    assert not result.relevant_incomplete
 
 
-def test_runner_label_substring_does_not_infer_windows_filesystem(tmp_path) -> None:
+def test_runs_on_matrix_does_not_change_portable_scope(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -3412,9 +3436,50 @@ def test_runner_label_substring_does_not_infer_windows_filesystem(tmp_path) -> N
 on: pull_request
 jobs:
   test:
-    runs-on: self-hosted-windows-lab
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, self-hosted]
+    runs-on: ${{ matrix.os }}
     steps:
-      - run: pytest Tests
+      - run: pytest tests
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 3
+    assert {invocation.paths for invocation in result.invocations} == {("tests",)}
+    assert all(invocation.path_case_sensitive for invocation in result.invocations)
+    assert not result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest tests && echo after",
+        "pytest tests; echo after",
+        "pytest tests/*.py",
+        "PYTEST_ADDOPTS=--collect-only pytest tests",
+        "pytest .\\tests",
+    ],
+)
+def test_runner_neutral_default_shell_rejects_shell_specific_syntax(
+    tmp_path, command: str
+) -> None:
+    """An omitted shell cannot silently acquire Bash or PowerShell semantics."""
+
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: arbitrary-runner
+    steps:
+      - run: {command}
 """,
             "tests/test_a.py": "def test_a():\n    assert True\n",
         },
@@ -3423,14 +3488,50 @@ jobs:
     result = trace_github_actions(tmp_path)
 
     assert not result.invocations
-    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert any(
+        issue.code
+        in {
+            "PYTEST_INVOCATION_CONTEXT_UNKNOWN",
+            "PYTEST_CONFIGURATION_UNKNOWN",
+            "PYTEST_SELECTOR_UNKNOWN",
+            "COMMAND_PARSE_UNKNOWN",
+            "SHELL_CONTROL_FLOW_UNKNOWN",
+        }
+        for issue in result.issues
+    ), sorted(issue.code for issue in result.issues)
     assert result.relevant_incomplete
 
 
-@pytest.mark.parametrize("label", ["linux", "windows", "macos"])
-def test_self_hosted_runner_label_array_does_not_prove_hosted_policy(
-    tmp_path, label: str
+@pytest.mark.parametrize(
+    "command",
+    ["pytest", "pytest tests", "python -m pytest tests", "coverage run -m pytest tests"],
+)
+def test_runner_neutral_default_shell_supports_portable_pytest_commands(
+    tmp_path, command: str
 ) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: arbitrary-runner
+    steps:
+      - run: {command}
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].path_case_sensitive
+    assert not result.relevant_incomplete
+
+
+def test_runner_neutral_empty_assignment_cannot_hide_executable_resolution(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -3438,10 +3539,226 @@ def test_self_hosted_runner_label_array_does_not_prove_hosted_policy(
 on: pull_request
 jobs:
   test:
-    runs-on: [self-hosted, LABEL]
+    runs-on: arbitrary-runner
+    steps:
+      - run: PATH= pytest tests
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+
+
+def test_case_variant_workflow_directory_is_not_discovered(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".GitHub/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest tests
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PATH_PORTABILITY_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize("shell", ["bash", "powershell"])
+def test_static_file_conditions_require_portable_bash_paths(tmp_path, shell: str) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: arbitrary-runner
+    steps:
+      - shell: {shell}
+        run: if [ -f Tests/optional.txt ]; then pytest tests; fi
+""",
+            "tests/optional.txt": "optional\n",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+    assert any(
+        issue.code
+        in {
+            "PATH_PORTABILITY_UNKNOWN",
+            "SHELL_CONTROL_FLOW_UNKNOWN",
+            "PYTEST_INVOCATION_CONTEXT_UNKNOWN",
+        }
+        for issue in result.issues
+    )
+
+
+def test_case_variant_makefile_is_not_selected_by_make(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: arbitrary-runner
+    steps:
+      - run: make test
+""",
+            "MakeFile": "test:\n\tpytest tests\n",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "MAKEFILE_UNRESOLVED" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_exact_lowercase_makefile_remains_supported(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: arbitrary-runner
+    steps:
+      - run: make test
+""",
+            "makefile": "test:\n\tpytest tests\n",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == ("tests",)
+    assert not result.relevant_incomplete
+
+
+def test_case_variant_package_manifest_is_not_selected_by_npm(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: arbitrary-runner
+    steps:
+      - run: npm test
+""",
+            "Package.json": '{"scripts": {"test": "pytest tests"}}\n',
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PACKAGE_SCRIPT_UNRESOLVED" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_shell_directory_change_before_pytest_is_context_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: arbitrary-runner
+    steps:
+      - run: |
+          cd tests
+          pytest
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+            "tests/integration/test_b.py": "def test_b():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(
+        issue.code in {"WORKING_DIRECTORY_UNKNOWN", "SHELL_CONTROL_FLOW_UNKNOWN"}
+        for issue in result.issues
+    )
+    assert result.relevant_incomplete
+
+
+def test_runner_neutral_local_composite_is_label_invariant(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: pull_request
+jobs:
+  test:
+    runs-on: custom-gpu-label
+    steps:
+      - uses: ./.github/actions/test
+""",
+            ".github/actions/test/action.yml": """name: test
+runs:
+  using: composite
+  steps:
+    - run: pytest tests
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == ("tests",)
+    assert result.invocations[0].path_case_sensitive
+    assert not result.relevant_incomplete
+
+
+def test_case_colliding_repository_paths_fail_closed(tmp_path) -> None:
+    """Portable scope cannot be proven when common runners disagree on case."""
+
+    if (tmp_path / "tests").resolve() == (tmp_path / "Tests").resolve():
+        pytest.skip("filesystem cannot represent case-colliding paths")
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
     steps:
       - run: pytest
-""".replace("LABEL", label),
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+            "Tests/test_b.py": "def test_b():\n    assert True\n",
         },
     )
 
@@ -3452,7 +3769,95 @@ jobs:
     assert result.relevant_incomplete
 
 
-def test_self_hosted_windows_case_variant_does_not_use_hosted_casefolding(tmp_path) -> None:
+@pytest.mark.parametrize("command", ["pytest Tests", "pytest tests\\unit"])
+def test_nonportable_pytest_target_fails_closed_independent_of_runs_on(
+    tmp_path, command: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: self-hosted-windows-lab
+    steps:
+      - run: {command}
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+            "tests/unit/test_unit.py": "def test_unit():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        r"pytest .\tests\unit",
+        r"python -m pytest .\tests\unit",
+        r"coverage run -m pytest .\tests\unit",
+    ],
+)
+def test_backslash_pytest_selectors_are_unknown_even_with_explicit_powershell(
+    tmp_path, command: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - shell: pwsh
+        run: {command}
+""",
+            "tests/unit/test_unit.py": "def test_unit():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+@pytest.mark.parametrize("command", ["pytest ~", "pytest ~/tests"])
+def test_shell_expansion_pytest_selectors_are_unknown_even_with_explicit_bash(
+    tmp_path, command: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: {command}
+""",
+            "tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_SELECTOR_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_explicit_shell_parsing_does_not_establish_filesystem_case(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -3460,7 +3865,7 @@ def test_self_hosted_windows_case_variant_does_not_use_hosted_casefolding(tmp_pa
 on: pull_request
 jobs:
   test:
-    runs-on: [self-hosted, windows]
+    runs-on: windows-latest
     steps:
       - shell: pwsh
         run: pytest Tests
@@ -3473,158 +3878,9 @@ jobs:
 
     assert not result.invocations
     assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
-    assert result.relevant_incomplete
 
 
-@pytest.mark.parametrize("label", ["linux", "windows", "macos"])
-def test_single_bare_platform_label_is_not_a_hosted_identity(tmp_path, label: str) -> None:
-    write_files(
-        tmp_path,
-        {
-            ".github/workflows/ci.yml": """name: CI
-on: pull_request
-jobs:
-  test:
-    runs-on: LABEL
-    steps:
-      - run: pytest tests
-""".replace("LABEL", label),
-        },
-    )
-
-    result = trace_github_actions(tmp_path)
-
-    assert not result.invocations
-    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
-    assert result.relevant_incomplete
-
-
-def test_known_hosted_runner_label_array_remains_supported(tmp_path) -> None:
-    write_files(
-        tmp_path,
-        {
-            ".github/workflows/ci.yml": """name: CI
-on: pull_request
-jobs:
-  test:
-    runs-on: [ubuntu-latest]
-    steps:
-      - run: pytest tests
-""",
-        },
-    )
-
-    result = trace_github_actions(tmp_path)
-
-    assert len(result.invocations) == 1
-    assert result.invocations[0].kind == "paths"
-    assert result.invocations[0].path_case_sensitive
-    assert not result.relevant_incomplete
-
-
-def test_matrix_hosted_runner_policy_is_retained_per_row(tmp_path) -> None:
-    write_files(
-        tmp_path,
-        {
-            ".github/workflows/ci.yml": """name: CI
-on: pull_request
-jobs:
-  test:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - run: pytest tests
-""",
-        },
-    )
-
-    result = trace_github_actions(tmp_path)
-
-    assert len(result.invocations) == 2
-    assert {invocation.path_case_sensitive for invocation in result.invocations} == {True, False}
-    assert not result.relevant_incomplete
-
-
-def test_matrix_self_hosted_row_does_not_inherit_hosted_policy(tmp_path) -> None:
-    write_files(
-        tmp_path,
-        {
-            ".github/workflows/ci.yml": """name: CI
-on: pull_request
-jobs:
-  test:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, self-hosted]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - run: pytest tests
-""",
-        },
-    )
-
-    result = trace_github_actions(tmp_path)
-
-    assert len(result.invocations) == 1
-    assert result.invocations[0].path_case_sensitive
-    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
-    assert result.relevant_incomplete
-
-
-def test_mixed_hosted_and_custom_runner_labels_are_unknown(tmp_path) -> None:
-    write_files(
-        tmp_path,
-        {
-            ".github/workflows/ci.yml": """name: CI
-on: pull_request
-jobs:
-  test:
-    runs-on: [ubuntu-latest, x64]
-    steps:
-      - run: pytest tests
-""",
-        },
-    )
-
-    result = trace_github_actions(tmp_path)
-
-    assert not result.invocations
-    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
-    assert result.relevant_incomplete
-
-
-def test_self_hosted_runner_policy_is_inherited_by_local_composite(tmp_path) -> None:
-    write_files(
-        tmp_path,
-        {
-            ".github/workflows/ci.yml": """name: CI
-on: pull_request
-jobs:
-  test:
-    runs-on: self-hosted
-    steps:
-      - uses: ./.github/actions/test
-""",
-            ".github/actions/test/action.yml": """name: test
-runs:
-  using: composite
-  steps:
-    - shell: bash
-      run: pytest tests
-""",
-        },
-    )
-
-    result = trace_github_actions(tmp_path)
-
-    assert not result.invocations
-    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
-    assert result.relevant_incomplete
-
-
-def test_reusable_workflow_uses_its_own_known_hosted_runner_policy(tmp_path) -> None:
+def test_reusable_workflow_keeps_runner_neutral_context(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -3641,8 +3897,7 @@ jobs:
   test:
     runs-on: windows-latest
     steps:
-      - shell: pwsh
-        run: pytest Tests
+      - run: pytest tests
 """,
             "tests/test_a.py": "def test_a():\n    assert True\n",
         },
@@ -3656,13 +3911,10 @@ jobs:
         if ".github/workflows/reusable.yml" in invocation.provenance
     )
     assert reusable_invocations
-    assert any(
-        not invocation.path_case_sensitive and invocation.covers("tests/test_a.py")
-        for invocation in reusable_invocations
-    )
+    assert all(invocation.path_case_sensitive for invocation in reusable_invocations)
 
 
-def test_macos_hosted_runner_has_bounded_path_semantics(tmp_path) -> None:
+def test_root_config_case_variant_is_not_portable(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -3670,53 +3922,7 @@ def test_macos_hosted_runner_has_bounded_path_semantics(tmp_path) -> None:
 on: pull_request
 jobs:
   test:
-    runs-on: macos-latest
-    steps:
-      - run: pytest
-""",
-        },
-    )
-
-    result = trace_github_actions(tmp_path)
-
-    assert len(result.invocations) == 1
-    assert result.invocations[0].kind == "broad"
-    assert result.relevant_incomplete is False
-
-
-def test_windows_working_directory_preserves_native_separators(tmp_path) -> None:
-    write_files(
-        tmp_path,
-        {
-            ".github/workflows/ci.yml": """name: CI
-on: pull_request
-jobs:
-  test:
-    runs-on: windows-latest
-    steps:
-      - working-directory: .\\tests
-        run: pytest unit
-""",
-            "tests/unit/test_unit.py": "def test_unit():\n    assert True\n",
-        },
-    )
-
-    result = trace_github_actions(tmp_path)
-
-    assert not result.invocations
-    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
-    assert result.relevant_incomplete
-
-
-def test_windows_root_config_case_variant_is_recognized(tmp_path) -> None:
-    write_files(
-        tmp_path,
-        {
-            ".github/workflows/ci.yml": """name: CI
-on: pull_request
-jobs:
-  test:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - run: pytest
 """,
@@ -3726,9 +3932,9 @@ jobs:
 
     result = trace_github_actions(tmp_path)
 
-    assert len(result.invocations) == 1
-    assert result.invocations[0].kind == "broad"
-    assert result.relevant_incomplete is False
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
 
 
 def test_root_explicit_directory_without_nested_config_retains_path_scope(tmp_path) -> None:
@@ -3747,7 +3953,7 @@ def test_root_explicit_directory_without_nested_config_retains_path_scope(tmp_pa
     assert not result.relevant_incomplete
 
 
-def test_windows_runner_target_uses_case_insensitive_scope_matching(tmp_path) -> None:
+def test_runner_target_case_variant_is_not_case_folded(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -3765,10 +3971,9 @@ jobs:
 
     result = trace_github_actions(tmp_path)
 
-    assert len(result.invocations) == 1
-    assert not result.invocations[0].path_case_sensitive
-    assert result.invocations[0].covers("tests/test_a.py")
-    assert not result.relevant_incomplete
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
 
 
 def test_linux_runner_case_variant_target_is_not_canonicalized_by_host(tmp_path) -> None:
@@ -3814,10 +4019,9 @@ jobs:
 
     result = trace_github_actions(tmp_path)
 
-    assert len(result.invocations) == 1
-    assert result.invocations[0].paths == ("tests/unit",)
-    assert not result.invocations[0].path_case_sensitive
-    assert not result.relevant_incomplete
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
 
 
 def test_windows_bash_backslash_target_is_not_reinterpreted(tmp_path) -> None:

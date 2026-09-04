@@ -20,7 +20,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - run: |
+      - shell: bash
+        run: |
           {command.replace(chr(10), chr(10) + "          ")}
 """
 

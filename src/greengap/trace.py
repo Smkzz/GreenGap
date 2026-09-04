@@ -30,6 +30,7 @@ from .util import (
 
 MAX_DEPTH = 12
 MAX_YAML_DEPTH = 64
+_NEUTRAL_SHELL = "neutral"
 _EXPRESSION = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 _ASSIGNMENT = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:=)\s*(.*)$")
 _VARIABLE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
@@ -371,6 +372,14 @@ def _contains_runner_hint(value: str) -> bool:
     tokens = _tokens(value)
     if not tokens:
         return False
+    # Environment/prefix wrappers are part of the command spelling, not the
+    # executable identity.  Strip only the statically recognized wrappers so
+    # a default-shell assignment such as ``PYTEST_ADDOPTS=... pytest`` still
+    # counts as a relevant pytest boundary (and cannot hide behind the
+    # neutral-parser rejection).
+    tokens = _command_core_tokens(tokens)
+    if not tokens:
+        return False
     first = _basename(tokens[0])
     if first in {"pytest", "pytest.exe", "tox", "tox.exe", "nox", "invoke", "pre-commit", "pre_commit"}:
         return True
@@ -587,6 +596,15 @@ def _static_setup_python_runtime(value: Any, context: _Context) -> bool:
 def _default_shell(
     defaults: Any, runs_on: Any, context: _Context, fallback: str | None = None
 ) -> str | None:
+    """Resolve an explicit shell or return the runner-neutral default.
+
+    ``runs-on`` is routing metadata, not an attestation of the physical
+    runner.  In particular it cannot select Bash versus PowerShell.  Steps
+    without an explicit shell therefore use the tiny neutral command grammar
+    and reject shell-specific syntax later in the resolver.
+    """
+
+    del runs_on  # retained in the internal signature for call-site stability
     if defaults is not None:
         if not isinstance(defaults, dict):
             return "unknown"
@@ -600,59 +618,22 @@ def _default_shell(
                 return fallback
     if fallback is not None:
         return fallback
-    runner_os = _runner_platform(runs_on, context)
-    if runner_os == "windows":
-        return "powershell"
-    if runner_os in {"linux", "macos"}:
-        return "bash"
-    return "unknown" if runs_on is not None else fallback
+    return _NEUTRAL_SHELL
 
 
 def _runner_platform(runs_on: Any, context: _Context) -> str:
-    """Resolve the runner filesystem family used by a workflow job.
+    """Return no platform identity from workflow routing metadata.
 
-    The analyzer may run on a different operating system than the GitHub
-    runner.  Keep the platform policy in the execution context instead of
-    allowing ``Path`` and ``shlex`` on the analyst host to decide target
-    identity.  Only exact hosted image labels whose path semantics are bounded
-    here are considered proven; all other labels remain conservative
-    ``unknown``.  In particular, routing labels such as ``self-hosted`` or
-    arbitrary labels containing a platform name are never treated as hosted
-    image identities.
+    GitHub permits self-hosted runners to carry arbitrary labels (including
+    hosted-looking labels) and to omit the ``self-hosted`` label.  A static
+    workflow trace therefore has no sound way to derive OS, filesystem case,
+    shell, or executable identity from ``runs-on``.  Keep this compatibility
+    helper, but make its unbound result explicit and load-bearing code must not
+    treat routing labels as platform evidence.
     """
 
-    values = list(runs_on) if isinstance(runs_on, list | tuple) else [runs_on]
-    if not values:
-        return "unknown"
-    hosted_platforms = {
-        "ubuntu-latest": "linux",
-        "ubuntu-20.04": "linux",
-        "ubuntu-22.04": "linux",
-        "ubuntu-24.04": "linux",
-        "windows-latest": "windows",
-        "windows-2019": "windows",
-        "windows-2022": "windows",
-        "windows-2025": "windows",
-        "macos-latest": "macos",
-        "macos-12": "macos",
-        "macos-13": "macos",
-        "macos-14": "macos",
-        "macos-15": "macos",
-    }
-    platforms: set[str] = set()
-    for value in values:
-        raw = _scalar(value)
-        if raw is None:
-            return "unknown"
-        resolved, known = resolve_expressions(raw, context)
-        if not known:
-            return "unknown"
-        normalized = resolved.strip().lower()
-        platform = hosted_platforms.get(normalized)
-        if platform is None:
-            return "unknown"
-        platforms.add(platform)
-    return next(iter(platforms)) if len(platforms) == 1 else "unknown"
+    del runs_on, context
+    return "unknown"
 
 
 def _matrix_rows(spec: Any) -> tuple[list[dict[str, Any]] | None, str | None]:
@@ -932,6 +913,59 @@ def _expand_safe_prefix(command: str, env: dict[str, str]) -> tuple[str | None, 
     return "".join(output), None
 
 
+_NEUTRAL_FORBIDDEN = frozenset("\\'\"`$(){}*?[];|&<>#%!^~")
+
+
+def _neutral_tokens(command: str) -> tuple[str, ...] | None:
+    """Tokenize only shell-neutral whitespace-separated command arguments.
+
+    A workflow step without an explicit ``shell`` inherits a runner-specific
+    default that cannot be established from ``runs-on``.  The neutral subset
+    therefore rejects quoting, escaping, substitutions, operators, globbing,
+    and assignment prefixes instead of choosing Bash or PowerShell on behalf
+    of the physical runner.
+    """
+
+    if any(character in command for character in _NEUTRAL_FORBIDDEN):
+        return None
+    # ``str.split`` accepts Unicode whitespace that is not a command
+    # separator for the supported shells (for example, a non-breaking space),
+    # and silently accepting control characters can change script parsing.
+    # Keep the grammar to ordinary horizontal/line whitespace only.
+    if any(
+        (character.isspace() and character not in " \t\r\n")
+        or (ord(character) < 0x20 and character not in "\t\r\n")
+        for character in command
+    ):
+        return None
+    tokens = tuple(command.split())
+    if not tokens:
+        return ()
+    # A prefix assignment is shell syntax, even when its value is empty.  An
+    # empty PATH/PYTHONPATH (or any other startup variable) can change whether
+    # the following executable resolves at all, so never treat ``NAME=`` as a
+    # portable command token.
+    if any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token) for token in tokens):
+        return None
+    return tokens
+
+
+def _neutral_command_is_portable(command: str) -> bool:
+    """Return whether *command* uses only runner-neutral shell syntax.
+
+    The neutral grammar deliberately does not try to identify which default
+    shell GitHub selected on the physical runner.  It accepts independent
+    whitespace-separated command lines and rejects every syntax whose meaning
+    differs between Bash, PowerShell, and other runner defaults.  Validation is
+    performed on the original command before ``_shell_segments`` can discard
+    separators, so a hidden chain cannot become two apparently safe commands.
+    """
+
+    if any(character in command for character in _NEUTRAL_FORBIDDEN):
+        return False
+    return all(_neutral_tokens(segment) is not None for segment in _shell_segments(command))
+
+
 def _tokens(command: str, shell: str = "bash") -> tuple[str, ...] | None:
     """Tokenize one supported shell command without changing path spelling.
 
@@ -942,6 +976,8 @@ def _tokens(command: str, shell: str = "bash") -> tuple[str, ...] | None:
     unknown rather than being reinterpreted as a different command.
     """
 
+    if shell == _NEUTRAL_SHELL:
+        return _neutral_tokens(command)
     if shell == "powershell":
         try:
             raw_tokens = shlex.split(command, posix=False)
@@ -1022,6 +1058,95 @@ def _casefold_repo_matches(root: Path, relative: str) -> tuple[Path, ...] | None
         if not current:
             return ()
     return tuple(current)
+
+
+def _portable_path_case_error(root: Path, relative: str) -> str | None:
+    """Check exact component spelling without inheriting analyst-host rules.
+
+    A runner-neutral selector must spell every existing component exactly as
+    it appears in the checkout.  Walking directory entries also lets us detect
+    a case-fold collision when the checkout is on a case-sensitive host.  A
+    missing final component is left alone for compatibility with workflows that
+    generate selectors before pytest starts; any existing prefix is still
+    checked strictly.
+    """
+
+    current: list[Path] = [root]
+    for part in Path(relative).parts if relative else ():
+        if part in {"", "."}:
+            continue
+        next_paths: list[Path] = []
+        for parent in current:
+            try:
+                matches = [
+                    entry
+                    for entry in parent.iterdir()
+                    if entry.name.casefold() == part.casefold()
+                ]
+            except OSError:
+                return "pytest path component could not be inspected safely"
+            if len(matches) > 1:
+                return f"pytest path component {part!r} has a case-fold collision"
+            if not matches:
+                # The selector may refer to a generated path.  There is no
+                # existing component whose case can contradict the spelling.
+                return None
+            match = matches[0]
+            if match.name != part:
+                return (
+                    f"pytest path component {part!r} does not match repository spelling "
+                    f"{match.name!r}"
+                )
+            next_paths.append(match)
+        current = next_paths
+    return None
+
+
+def _portable_repo_path(
+    root: Path, value: str, base: Path | None = None
+) -> tuple[str | None, Path | None, str | None]:
+    """Resolve a repository-relative path using portable spelling rules.
+
+    GreenGap runs on an analyst machine that may have different separator and
+    case semantics from CI.  Only forward-slash, relative, statically spelled
+    paths are accepted.  ``safe_resolve`` still enforces symlink and repository
+    boundaries; the lexical and directory-entry checks prevent it from
+    silently canonicalizing a different spelling on the analyst host.
+    """
+
+    if "\\" in value:
+        return None, None, "path uses a runner-specific backslash separator"
+    if re.match(r"^[A-Za-z]:", value):
+        return None, None, "path is drive-qualified"
+    if ":" in value:
+        return None, None, "path contains a non-portable drive or stream separator"
+    try:
+        raw = Path(value)
+    except (OSError, ValueError):
+        return None, None, "path could not be parsed safely"
+    if raw.is_absolute():
+        return None, None, "path is absolute rather than repository-relative"
+    lexical = _lexical_repo_path(root, value, base)
+    if lexical is None:
+        return None, None, "path escapes the repository"
+    case_error = _portable_path_case_error(root, lexical)
+    if case_error is not None:
+        return lexical, None, case_error
+    try:
+        resolved = safe_resolve(root, lexical)
+    except PathSafetyError as exc:
+        return lexical, None, f"path is unsafe: {exc}"
+    try:
+        normalized = normalize_repo_path(root, resolved)
+    except PathSafetyError as exc:
+        return lexical, None, f"path is unsafe: {exc}"
+    if normalized == ".":
+        normalized = ""
+    # ``Path.resolve`` on a case-insensitive analyst host may canonicalize an
+    # existing component.  A mismatch means the selector is not portable.
+    if normalized != lexical:
+        return lexical, None, "path spelling is not exact for the repository"
+    return lexical, resolved, None
 
 
 def _basename(token: str) -> str:
@@ -1349,6 +1474,10 @@ def _command_core_tokens(tokens: tuple[str, ...]) -> tuple[str, ...]:
     remaining = list(tokens)
     while remaining and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", remaining[0]):
         remaining.pop(0)
+    if remaining and _basename(remaining[0]) == "export":
+        remaining.pop(0)
+        while remaining and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", remaining[0]):
+            remaining.pop(0)
     if remaining and _basename(remaining[0]) == "env":
         remaining.pop(0)
         while remaining and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", remaining[0]):
@@ -1472,7 +1601,9 @@ def _startup_environment_unknown(
     core = _command_core_tokens(tokens)
     first = _basename(core[0]) if core else ""
     bash_shells = {"bash", "sh", "zsh", "dash"}
-    if environment.get("BASH_ENV", "").strip() and (shell in bash_shells or first in bash_shells):
+    if environment.get("BASH_ENV", "").strip() and (
+        shell in bash_shells or shell == _NEUTRAL_SHELL or first in bash_shells
+    ):
         return (
             "BASH_STARTUP_ENV_UNKNOWN",
             "BASH_ENV executes before the visible shell command and is not statically audited",
@@ -2763,6 +2894,8 @@ class _Resolver:
         self._pytest_context_config_checked = False
         self._pytest_context_config_paths: tuple[Path, ...] = ()
         self._pytest_context_config_error: str | None = None
+        self._pytest_portable_paths_checked = False
+        self._pytest_portable_paths_issue: str | None = None
 
     def issue(
         self, code: str, message: str, provenance: tuple[str, ...], relevant: bool = True
@@ -2928,6 +3061,7 @@ class _Resolver:
         depth: int,
         selected_hooks: frozenset[str] | None = None,
         selected_stage: str | None = None,
+        shell: str = _NEUTRAL_SHELL,
     ) -> WorkspaceState:
         runner_relevance_proven = self._precommit_config_is_non_test()
         entries = self._precommit_entries()
@@ -2973,6 +3107,7 @@ class _Resolver:
                     entry,
                     hook_context,
                     depth + 1,
+                    shell=shell,
                 ),
             )
         return state
@@ -3014,12 +3149,17 @@ class _Resolver:
         )
 
     def trace(self) -> TraceResult:
-        try:
-            workflow_dir = safe_resolve(self.root, ".github/workflows")
-        except PathSafetyError as exc:
+        _, workflow_dir, workflow_error = _portable_repo_path(self.root, ".github/workflows")
+        if workflow_error is not None or workflow_dir is None:
+            code = (
+                "PATH_OUTSIDE_REPOSITORY"
+                if workflow_error
+                and any(marker in workflow_error for marker in ("escape", "absolute", "unsafe"))
+                else "PATH_PORTABILITY_UNKNOWN"
+            )
             self.issue(
-                "PATH_OUTSIDE_REPOSITORY",
-                f"workflow directory is unsafe: {exc}",
+                code,
+                workflow_error or "workflow directory could not be resolved safely",
                 (".github/workflows",),
             )
             return self._trace_result((), tuple(self.issues), ())
@@ -3150,10 +3290,29 @@ class _Resolver:
 
     def _resolve_workflow(self, path: Path, context: _Context) -> None:
         try:
-            path = safe_resolve(self.root, path)
-        except PathSafetyError as exc:
-            self.issue("PATH_OUTSIDE_REPOSITORY", f"workflow path is unsafe: {exc}", context.provenance)
+            relative_path = path.relative_to(self.root).as_posix()
+        except ValueError:
+            self.issue(
+                "PATH_OUTSIDE_REPOSITORY",
+                f"workflow path is outside the repository: {path}",
+                context.provenance,
+            )
             return
+        _, portable_path, path_error = _portable_repo_path(self.root, relative_path)
+        if path_error is not None or portable_path is None:
+            code = (
+                "PATH_OUTSIDE_REPOSITORY"
+                if path_error
+                and any(marker in path_error for marker in ("escape", "absolute", "unsafe"))
+                else "PATH_PORTABILITY_UNKNOWN"
+            )
+            self.issue(
+                code,
+                path_error or "workflow path could not be resolved safely",
+                context.provenance,
+            )
+            return
+        path = portable_path
         if len(context.provenance) > MAX_DEPTH:
             self.issue(
                 "RESOLUTION_DEPTH_EXCEEDED",
@@ -3451,10 +3610,19 @@ class _Resolver:
                 context.provenance,
             )
             return
-        try:
-            target = safe_resolve(self.root, uses[2:])
-        except PathSafetyError as exc:
-            self.issue("PATH_OUTSIDE_REPOSITORY", f"reusable workflow path is unsafe: {exc}", context.provenance)
+        _, target, target_error = _portable_repo_path(self.root, uses[2:])
+        if target_error is not None or target is None:
+            code = (
+                "PATH_OUTSIDE_REPOSITORY"
+                if target_error
+                and any(marker in target_error for marker in ("escape", "absolute", "unsafe"))
+                else "PATH_PORTABILITY_UNKNOWN"
+            )
+            self.issue(
+                code,
+                target_error or "reusable workflow path could not be resolved safely",
+                context.provenance,
+            )
             return
         inputs: dict[str, Any] = {}
         raw_with = job.get("with", {})
@@ -3486,7 +3654,7 @@ class _Resolver:
         self,
         steps: Any,
         context: _Context,
-        default_shell: str | None = "bash",
+        default_shell: str | None = _NEUTRAL_SHELL,
         default_cwd: Path | None = None,
     ) -> WorkspaceState:
         if not isinstance(steps, list):
@@ -3594,16 +3762,16 @@ class _Resolver:
                     if "shell" in raw_step
                     else default_shell
                 )
-                if shell not in {"bash", "powershell"}:
+                if shell not in {_NEUTRAL_SHELL, "bash", "powershell"}:
                     self.issue(
                         "SHELL_UNKNOWN",
                         f"step {label} uses an unsupported or unresolved shell",
                         provenance,
                     )
-                    if shell == "unknown" and step_context.runner_os in {None, "unknown"}:
+                    if shell == "unknown":
                         self.issue(
                             "PYTEST_INVOCATION_CONTEXT_UNKNOWN",
-                            "pytest runner filesystem and default-shell semantics are not statically known",
+                            "pytest shell semantics are not statically known",
                             provenance,
                         )
                     # A custom shell template can wrap, replace, or skip the
@@ -3634,13 +3802,26 @@ class _Resolver:
                 if raw_cwd is not None:
                     raw_cwd, cwd_known = resolve_expressions(raw_cwd, step_context)
                     if cwd_known:
-                        if step_context.runner_os == "windows":
-                            raw_cwd = raw_cwd.replace("\\", "/")
                         # GitHub resolves a step's explicit working-directory
                         # from GITHUB_WORKSPACE; it replaces, rather than
                         # appends to, workflow/job defaults.
-                        cwd = self._resolve_path(raw_cwd, self.root, provenance)
-                        if cwd is None:
+                        _, cwd, cwd_error = _portable_repo_path(self.root, raw_cwd)
+                        if cwd_error is not None or cwd is None:
+                            code = (
+                                "PATH_OUTSIDE_REPOSITORY"
+                                if cwd_error
+                                and any(
+                                    marker in cwd_error
+                                    for marker in ("escape", "absolute", "unsafe")
+                                )
+                                else "WORKING_DIRECTORY_UNKNOWN"
+                            )
+                            self.issue(
+                                code,
+                                cwd_error or "working directory could not be resolved safely",
+                                provenance,
+                            )
+                            workspace_state = UNKNOWN_SIDE_EFFECT
                             continue
                     elif _relevant_text(command):
                         self.issue(
@@ -3880,14 +4061,23 @@ class _Resolver:
     def _resolve_composite(
         self, action_dir: Path, context: _Context, default_shell: str | None
     ) -> WorkspaceState:
-        action_file = next(
-            (
-                candidate
-                for candidate in (action_dir / "action.yml", action_dir / "action.yaml")
-                if candidate.exists()
-            ),
-            None,
-        )
+        action_relative = normalize_repo_path(self.root, action_dir)
+        action_file: Path | None = None
+        for name in ("action.yml", "action.yaml"):
+            _, candidate, candidate_error = _portable_repo_path(
+                self.root,
+                f"{action_relative}/{name}" if action_relative else name,
+            )
+            if candidate_error is not None:
+                self.issue(
+                    "PATH_PORTABILITY_UNKNOWN",
+                    candidate_error,
+                    context.provenance,
+                )
+                return UNKNOWN_SIDE_EFFECT
+            if candidate is not None and candidate.is_file():
+                action_file = candidate
+                break
         if action_file is None:
             self.issue(
                 "COMPOSITE_ACTION_UNRESOLVED",
@@ -3974,22 +4164,40 @@ class _Resolver:
                 provenance,
             )
             return None
-        if context.runner_os == "windows":
-            resolved = resolved.replace("\\", "/")
-        return self._resolve_path(resolved, self.root, provenance)
+        _, path, path_error = _portable_repo_path(self.root, resolved)
+        if path_error is not None or path is None:
+            code = (
+                "PATH_OUTSIDE_REPOSITORY"
+                if path_error
+                and any(marker in path_error for marker in ("escape", "absolute", "unsafe"))
+                else "WORKING_DIRECTORY_UNKNOWN"
+            )
+            self.issue(
+                code,
+                path_error or "run default working-directory could not be resolved safely",
+                provenance,
+            )
+            return None
+        return path
 
     def _resolve_path(
         self, value: str, base: Path, provenance: tuple[str, ...] = ()
     ) -> Path | None:
-        try:
-            return safe_resolve(self.root, value, base)
-        except PathSafetyError as exc:
-            self.issue(
-                "PATH_OUTSIDE_REPOSITORY",
-                f"path {value!r} is outside the repository or crosses a symlink: {exc}",
-                provenance,
-            )
-            return None
+        _, path, path_error = _portable_repo_path(self.root, value, base)
+        if path_error is None and path is not None:
+            return path
+        code = (
+            "PATH_OUTSIDE_REPOSITORY"
+            if path_error
+            and any(marker in path_error for marker in ("escape", "absolute", "unsafe"))
+            else "PATH_PORTABILITY_UNKNOWN"
+        )
+        self.issue(
+            code,
+            path_error or f"path {value!r} could not be resolved safely",
+            provenance,
+        )
+        return None
 
     def _runner_identity_unknown(self, tokens: tuple[str, ...], context: _Context) -> bool:
         """Reject bare executables whose shell resolution is repository-controlled."""
@@ -4089,14 +4297,25 @@ class _Resolver:
         match = _STATIC_FILE_CONDITION.match(command.strip())
         if match is None:
             return None
+        # The expression is deliberately a tiny Bash-only boundary.  The
+        # bracket/then/fi grammar is not PowerShell syntax, and the neutral
+        # default shell must not infer a shell from the command text.
+        if shell != "bash":
+            return None
         prefix = match.group("prefix").strip()
         branch = match.group("body").strip()
         suffix = match.group("suffix").strip()
         if not branch or "else" in branch.split():
             return None
-        try:
-            target = safe_resolve(self.root, match.group("path"), context.cwd)
-        except PathSafetyError:
+        _, target, target_error = _portable_repo_path(
+            self.root, match.group("path"), context.cwd
+        )
+        if target_error is not None or target is None:
+            self.issue(
+                "PATH_PORTABILITY_UNKNOWN",
+                target_error or "static file condition path could not be resolved safely",
+                context.provenance,
+            )
             return UNKNOWN_SIDE_EFFECT
         prefix_state = context.workspace_state
         if prefix:
@@ -4136,7 +4355,7 @@ class _Resolver:
         return state
 
     def _resolve_command(
-        self, command: str, context: _Context, depth: int, shell: str = "bash"
+        self, command: str, context: _Context, depth: int, shell: str = _NEUTRAL_SHELL
     ) -> WorkspaceState:
         state: WorkspaceState = context.workspace_state
         if depth > MAX_DEPTH:
@@ -4144,7 +4363,16 @@ class _Resolver:
                 "RESOLUTION_DEPTH_EXCEEDED", "command resolution depth exceeded", context.provenance
             )
             return UNKNOWN_SIDE_EFFECT
-        static_condition = self._resolve_static_file_condition(command, context, depth, shell)
+        neutral_unportable = shell == _NEUTRAL_SHELL and not _neutral_command_is_portable(command)
+        # Do not model shell-specific static conditions under the neutral
+        # grammar, but continue through the existing checks below so callers
+        # retain precise diagnostics for substitutions, pipelines, and control
+        # flow instead of receiving a generic parse error.
+        static_condition = (
+            None
+            if neutral_unportable
+            else self._resolve_static_file_condition(command, context, depth, shell)
+        )
         if static_condition is not None:
             return static_condition
         if shell == "powershell" and _powershell_control_flow_unknown(command):
@@ -4209,6 +4437,61 @@ class _Resolver:
                 context.provenance,
             )
             return UNKNOWN_SIDE_EFFECT
+        if neutral_unportable:
+            # For a malformed neutral command, use the established pytest
+            # option classifier only to preserve a useful selector/config
+            # diagnostic.  Never retain the probe's invocation: its POSIX
+            # tokenization is not evidence about the runner's default shell.
+            probe_tokens = _tokens(command, shell="bash")
+            if probe_tokens:
+                probe_scope, probe_index, probe_error = self._pytest_scope(
+                    probe_tokens, context.cwd, "unknown", "bash"
+                )
+                del probe_scope
+                if probe_index is not None and probe_error:
+                    if probe_error.startswith("context:"):
+                        code = "PYTEST_INVOCATION_CONTEXT_UNKNOWN"
+                    elif probe_error.startswith("configuration:"):
+                        code = "PYTEST_CONFIGURATION_UNKNOWN"
+                    else:
+                        code = "PYTEST_SELECTOR_UNKNOWN"
+                    self.issue(code, probe_error, context.provenance)
+                elif probe_index is not None:
+                    self.issue(
+                        "PYTEST_INVOCATION_CONTEXT_UNKNOWN",
+                        "default runner shell syntax is not in the portable command subset",
+                        context.provenance,
+                    )
+                elif any(
+                    re.search(rf"(?:^|\s){re.escape(name)}=", command)
+                    for name in (
+                        "PYTEST_ADDOPTS",
+                        "PYTEST_PLUGINS",
+                        "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+                    )
+                ) and _contains_runner_hint(command):
+                    self.issue(
+                        "PYTEST_CONFIGURATION_UNKNOWN",
+                        "pytest configuration is assigned through runner-specific shell syntax",
+                        context.provenance,
+                    )
+                elif _contains_runner_hint(command):
+                    self.issue(
+                        "PYTEST_INVOCATION_CONTEXT_UNKNOWN",
+                        "default runner shell syntax is not in the portable command subset",
+                        context.provenance,
+                    )
+            elif _relevant_text(command):
+                self.issue(
+                    "COMMAND_PARSE_UNKNOWN",
+                    "default runner shell syntax is not in the portable command subset",
+                    context.provenance,
+                )
+            # Even a non-test command with shell-specific syntax may execute
+            # repository code or alter the working tree before a later pytest
+            # step.  Preserve the taint while avoiding a noisy non-relevant
+            # issue when no test plan depends on this command.
+            return UNKNOWN_SIDE_EFFECT
         shell_env = dict(context.env)
         for segment in _shell_segments(command):
             expanded, prefix_error = _expand_safe_prefix(segment, context.env)
@@ -4223,16 +4506,11 @@ class _Resolver:
             if expanded is None:
                 state = UNKNOWN_SIDE_EFFECT
                 continue
-            # Backslashes are literal path separators for PowerShell on a
-            # Windows runner, but are escape characters for Bash and are not
-            # portable on a non-Windows runner.  Do not let the analyst host's
-            # POSIX lexer turn a runner-specific target into a different safe
-            # path.
-            if (
-                _contains_runner_hint(segment)
-                and "\\" in expanded
-                and not (shell == "powershell" and context.runner_os == "windows")
-            ):
+            # A shell declaration identifies parsing syntax, not the physical
+            # runner's filesystem.  Backslash pytest selectors therefore remain
+            # unknown even under an explicit PowerShell shell; only portable
+            # forward-slash selectors can be reconciled with the denominator.
+            if _contains_runner_hint(segment) and "\\" in expanded:
                 self.issue(
                     "PYTEST_INVOCATION_CONTEXT_UNKNOWN",
                     "pytest path separators are not modeled for this runner and shell combination",
@@ -4312,6 +4590,20 @@ class _Resolver:
                 )
                 state = UNKNOWN_SIDE_EFFECT
                 continue
+            if first in {"cd", "chdir"}:
+                # A shell directory change affects every later command in the
+                # generated script.  The resolver deliberately does not try
+                # to carry mutable shell cwd across segments; doing so would
+                # let a nested pytest reuse the repository-root denominator
+                # after ``cd tests``.  Fail closed for the whole segment.
+                self.issue(
+                    "WORKING_DIRECTORY_UNKNOWN",
+                    "shell directory changes are not modeled before a later command",
+                    context.provenance,
+                    relevant=_command_may_run_tests(command),
+                )
+                state = UNKNOWN_SIDE_EFFECT
+                continue
             if first == "export":
                 for token in tokens[1:]:
                     if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
@@ -4329,7 +4621,7 @@ class _Resolver:
                     state = UNKNOWN_SIDE_EFFECT
                 else:
                     state = _merge_workspace_state(
-                        state, self._resolve_precommit(nested_context, depth, *selection)
+                        state, self._resolve_precommit(nested_context, depth, *selection, shell=shell)
                     )
                 continue
             if first.startswith("python") and "-m" in tokens:
@@ -4345,7 +4637,7 @@ class _Resolver:
                         state = UNKNOWN_SIDE_EFFECT
                     else:
                         state = _merge_workspace_state(
-                            state, self._resolve_precommit(nested_context, depth, *selection)
+                            state, self._resolve_precommit(nested_context, depth, *selection, shell=shell)
                         )
                     continue
             if (first.startswith("python") or first == "py") and "-c" in tokens:
@@ -4477,17 +4769,17 @@ class _Resolver:
                 continue
             if first in {"tox", "tox.exe"}:
                 state = _merge_workspace_state(
-                    state, self._resolve_tox(tokens, nested_context, depth + 1)
+                    state, self._resolve_tox(tokens, nested_context, depth + 1, shell=shell)
                 )
                 continue
             if first in {"make", "gmake"}:
                 state = _merge_workspace_state(
-                    state, self._resolve_make(tokens, nested_context, depth + 1)
+                    state, self._resolve_make(tokens, nested_context, depth + 1, shell=shell)
                 )
                 continue
             if first in {"npm", "pnpm", "yarn"}:
                 state = _merge_workspace_state(
-                    state, self._resolve_package(tokens, nested_context, depth + 1)
+                    state, self._resolve_package(tokens, nested_context, depth + 1, shell=shell)
                 )
                 continue
             if first in {"bash", "sh", "zsh", "dash"}:
@@ -4514,7 +4806,7 @@ class _Resolver:
                     state = UNKNOWN_SIDE_EFFECT
                     continue
                 state = _merge_workspace_state(
-                    state, self._resolve_script(script_path, nested_context, depth + 1)
+                    state, self._resolve_script(script_path, nested_context, depth + 1, shell=shell)
                 )
                 continue
             token_text = tokens[0].replace("\\", "/")
@@ -4525,14 +4817,14 @@ class _Resolver:
                 token_path = self._resolve_path(tokens[0], nested_context.cwd, context.provenance)
                 if shell_script_hint and token_path is not None and token_path.is_file():
                     state = _merge_workspace_state(
-                        state, self._resolve_script(token_path, nested_context, depth + 1)
+                        state, self._resolve_script(token_path, nested_context, depth + 1, shell=shell)
                     )
                     continue
             elif shell_script_hint:
                 token_path = self._resolve_path(tokens[0], nested_context.cwd, context.provenance)
                 if token_path is not None and token_path.is_file():
                     state = _merge_workspace_state(
-                        state, self._resolve_script(token_path, nested_context, depth + 1)
+                        state, self._resolve_script(token_path, nested_context, depth + 1, shell=shell)
                     )
                     continue
             if _safe_setup_command(tokens):
@@ -4750,6 +5042,15 @@ class _Resolver:
             for path in self.root.rglob("*"):
                 if path.name.casefold() not in _PYTEST_CONFIG_NAMES:
                     continue
+                if path.name not in _PYTEST_CONFIG_NAMES:
+                    try:
+                        relative_name = path.relative_to(self.root).as_posix()
+                    except ValueError:
+                        relative_name = path.name
+                    self._pytest_context_config_error = (
+                        f"pytest configuration {relative_name!r} has platform-dependent case semantics"
+                    )
+                    return None
                 try:
                     relative = path.relative_to(self.root)
                 except ValueError:
@@ -4784,6 +5085,55 @@ class _Resolver:
         self._pytest_context_config_paths = tuple(sorted(set(candidates)))
         return self._pytest_context_config_paths
 
+    def _pytest_portable_paths_error(self) -> str | None:
+        """Detect repository-wide path collisions before reusing a denominator.
+
+        A repository-root pytest collection can be replayed on a different
+        runner only when the relevant path namespace has one unambiguous,
+        portable spelling.  Case-fold collisions are especially important:
+        they can coexist on a case-sensitive analyst checkout but alias on a
+        different runner (or vice versa).  The scan is bounded and ignores
+        transient tool directories that are outside the denominator.
+        """
+
+        if self._pytest_portable_paths_checked:
+            return self._pytest_portable_paths_issue
+        self._pytest_portable_paths_checked = True
+        seen: dict[str, str] = {}
+        inspected = 0
+        try:
+            for path in self.root.rglob("*"):
+                try:
+                    relative = path.relative_to(self.root)
+                except ValueError:
+                    self._pytest_portable_paths_issue = (
+                        "pytest path discovery escaped the repository"
+                    )
+                    return self._pytest_portable_paths_issue
+                if any(part.casefold() in _PYTEST_CONFIG_IGNORED_PARTS for part in relative.parts):
+                    continue
+                inspected += 1
+                if inspected > 8192:
+                    self._pytest_portable_paths_issue = (
+                        "pytest path discovery is not safely bounded"
+                    )
+                    return self._pytest_portable_paths_issue
+                spelling = relative.as_posix()
+                folded = spelling.casefold()
+                previous = seen.get(folded)
+                if previous is not None and previous != spelling:
+                    self._pytest_portable_paths_issue = (
+                        f"repository paths {previous!r} and {spelling!r} have a case-fold collision"
+                    )
+                    return self._pytest_portable_paths_issue
+                seen[folded] = spelling
+        except OSError:
+            self._pytest_portable_paths_issue = (
+                "pytest path discovery could not be completed safely"
+            )
+            return self._pytest_portable_paths_issue
+        return None
+
     def _pytest_target_path(
         self,
         token: str,
@@ -4791,42 +5141,18 @@ class _Resolver:
         runner_os: str,
         shell: str,
     ) -> tuple[str, str | None]:
-        """Normalize one static pytest target using the CI runner's syntax."""
+        """Normalize one static pytest target using runner-neutral spelling.
 
-        if re.match(r"^[A-Za-z]:", token):
-            return token, "pytest target uses a drive-qualified Windows path"
-        if runner_os == "windows":
-            if "\\" in token and shell != "powershell":
-                return token, "pytest target uses an unmodeled non-PowerShell backslash separator"
-            token = token.replace("\\", "/")
-        elif "\\" in token:
-            return token, "pytest target uses a runner-incompatible backslash separator"
-        normalized = normalize_repo_path(self.root, token, cwd)
-        if normalized == ".":
-            normalized = ""
-        if runner_os == "linux":
-            lexical = _lexical_repo_path(self.root, token, cwd)
-            if lexical is None:
-                return normalized, "pytest target could not be normalized lexically"
-            if lexical != normalized:
-                return (
-                    normalized,
-                    "pytest target spelling is not congruent with the case-sensitive runner",
-                )
-            matches = _casefold_repo_matches(self.root, lexical)
-            if matches is None or len(matches) > 1:
-                return (
-                    normalized,
-                    "pytest target has ambiguous filesystem case semantics on the runner",
-                )
-            if matches:
-                actual = _lexical_repo_path(self.root, str(matches[0]))
-                if actual != lexical:
-                    return (
-                        normalized,
-                        "pytest target spelling is not congruent with the case-sensitive runner",
-                    )
-        return normalized, None
+        ``runs-on`` and the explicit shell are intentionally ignored here:
+        neither proves the physical filesystem's case or separator semantics.
+        The only accepted target is a repository-relative forward-slash path
+        whose existing components have exact checkout spelling and no
+        case-fold collision.
+        """
+
+        del runner_os, shell
+        normalized, _, error = _portable_repo_path(self.root, token, cwd)
+        return normalized or token, error
 
     def _pytest_invocation_context_error(
         self,
@@ -4861,8 +5187,10 @@ class _Resolver:
                 "its root/import/configuration context is not congruent with the repository denominator"
             )
 
-        if runner_os not in {"linux", "windows", "macos"}:
-            return "pytest runner filesystem semantics are not statically known"
+        del runner_os
+        portable_error = self._pytest_portable_paths_error()
+        if portable_error is not None:
+            return portable_error
         if len(targets) > 1:
             return (
                 "pytest has multiple explicit targets; their common root/configuration context "
@@ -4899,16 +5227,7 @@ class _Resolver:
                 child.relative_to(parent)
                 return True
             except ValueError:
-                if runner_os not in {"windows", "macos"}:
-                    return False
-                try:
-                    child_relative = child.relative_to(repository).parts
-                    parent_relative = parent.relative_to(repository).parts
-                except ValueError:
-                    return False
-                child_folded = tuple(part.casefold() for part in child_relative)
-                parent_folded = tuple(part.casefold() for part in parent_relative)
-                return child_folded[: len(parent_folded)] == parent_folded
+                return False
 
         candidates = self._pytest_context_config_candidates()
         if candidates is None:
@@ -4921,10 +5240,10 @@ class _Resolver:
                 return "pytest configuration discovery escaped the repository"
             if len(relative.parts) != 1:
                 continue
-            # The analyzer may run on a case-sensitive host while modeling a
-            # Windows runner.  A case variant is not the same root config on
-            # both platforms, so it cannot establish denominator identity.
-            if runner_os == "linux" and config.name not in _PYTEST_CONFIG_NAMES:
+            # Configuration identity is part of the collection context.  A
+            # case variant is not interchangeable with the denominator config
+            # when the eventual runner's case semantics are unknown.
+            if config.name not in _PYTEST_CONFIG_NAMES:
                 return (
                     f"pytest configuration {relative.as_posix()!r} has platform-dependent case semantics"
                 )
@@ -4959,7 +5278,7 @@ class _Resolver:
         tokens: tuple[str, ...],
         cwd: Path,
         runner_os: str = "unknown",
-        shell: str = "bash",
+        shell: str = _NEUTRAL_SHELL,
     ) -> tuple[PytestInvocation | None, int | None, str | None]:
         marker: int | None = None
         first = _basename(tokens[0])
@@ -5129,7 +5448,10 @@ class _Resolver:
                 return None, marker, "pytest argument files are not modeled"
             if "::" in token:
                 return None, marker, "pytest node-id selectors are not modeled"
-            if any(character in token for character in ("$", "{", "}", "*", "?", "[", "]")):
+            if any(
+                character in token
+                for character in ("$", "{", "}", "*", "?", "[", "]", "~")
+            ):
                 return None, marker, "pytest path selector is dynamic or shell-expanded"
             normalized, target_error = self._pytest_target_path(token, cwd, runner_os, shell)
             if target_error is not None:
@@ -5145,7 +5467,9 @@ class _Resolver:
             PytestInvocation(
                 "paths",
                 tuple(sorted(set(paths))),
-                path_case_sensitive=runner_os == "linux",
+                # Invocation paths are proven portable, so reconciliation must
+                # never case-fold them based on the analyst or routing label.
+                path_case_sensitive=True,
             ),
             marker,
             None,
@@ -5188,13 +5512,17 @@ class _Resolver:
                 if isinstance(addopts, str):
                     if not addopts.strip():
                         return (), None
-                    try:
-                        return tuple(shlex.split(addopts, posix=True)), None
-                    except ValueError:
+                    parsed = _neutral_tokens(addopts)
+                    if parsed is None:
                         return (), f"pytest configuration {name!r} has malformed addopts"
+                    return parsed, None
                 if isinstance(addopts, list | tuple) and all(
                     isinstance(item, str) for item in addopts
                 ):
+                    for item in addopts:
+                        parsed_item = _neutral_tokens(item)
+                        if parsed_item is None or len(parsed_item) != 1:
+                            return (), f"pytest configuration {name!r} has malformed addopts"
                     return tuple(addopts), None
                 return (), f"pytest configuration {name!r} has non-string addopts"
             if current == repository:
@@ -5299,7 +5627,7 @@ class _Resolver:
             return UNKNOWN_SIDE_EFFECT
         script_path = self._resolve_path(script, context.cwd, context.provenance)
         if script_path is not None:
-            return self._resolve_script(script_path, context, depth)
+            return self._resolve_script(script_path, context, depth, shell="bash")
         return UNKNOWN_SIDE_EFFECT
 
     def _script_assignments(self, content: str) -> dict[str, str | None]:
@@ -5360,7 +5688,7 @@ class _Resolver:
         return "\n".join(output)
 
     def _resolve_script(
-        self, path: Path, context: _Context, depth: int
+        self, path: Path, context: _Context, depth: int, shell: str = _NEUTRAL_SHELL
     ) -> WorkspaceState:
         if depth > MAX_DEPTH:
             self.issue(
@@ -5423,6 +5751,7 @@ class _Resolver:
                         workspace_state=state,
                     ),
                     depth,
+                    shell=shell,
                 ),
             )
         self._script_stack.remove(path)
@@ -5431,14 +5760,19 @@ class _Resolver:
     def _load_makefile(
         self, cwd: Path
     ) -> tuple[dict[str, tuple[tuple[str, ...], tuple[str, ...]]], dict[str, str]] | None:
-        file = next(
-            (
-                candidate
-                for candidate in (cwd / "Makefile", cwd / "makefile", cwd / "GNUmakefile")
-                if candidate.exists()
-            ),
-            None,
-        )
+        file: Path | None = None
+        for name in ("Makefile", "makefile", "GNUmakefile"):
+            _, candidate, path_error = _portable_repo_path(self.root, name, cwd)
+            if path_error is not None:
+                # A case-variant or otherwise non-portable makefile must not
+                # be selected using the analyst host's filesystem behavior.
+                # Continue probing the other canonical GNU Make names: an
+                # exact lowercase ``makefile`` is valid even when the first
+                # (capitalized) spelling has a case-fold collision.
+                continue
+            if candidate is not None and candidate.is_file():
+                file = candidate
+                break
         if file is None:
             return None
         try:
@@ -5481,7 +5815,7 @@ class _Resolver:
         }, variables
 
     def _resolve_make(
-        self, tokens: tuple[str, ...], context: _Context, depth: int
+        self, tokens: tuple[str, ...], context: _Context, depth: int, shell: str = _NEUTRAL_SHELL
     ) -> WorkspaceState:
         cwd: Path | None = context.cwd
         index = 1
@@ -5563,6 +5897,7 @@ class _Resolver:
                     variables,
                     replace(context, cwd=cwd, workspace_state=state),
                     depth,
+                    shell,
                 ),
             )
         return state
@@ -5574,6 +5909,7 @@ class _Resolver:
         variables: dict[str, str],
         context: _Context,
         depth: int,
+        shell: str = _NEUTRAL_SHELL,
     ) -> WorkspaceState:
         key = (context.cwd, target)
         if key in self._make_stack:
@@ -5610,6 +5946,7 @@ class _Resolver:
                         variables,
                         replace(context, workspace_state=state),
                         depth + 1,
+                        shell,
                     ),
                 )
             else:
@@ -5644,6 +5981,7 @@ class _Resolver:
                         workspace_state=state,
                     ),
                     depth,
+                    shell=shell,
                 ),
             )
         self._make_stack.remove(key)
@@ -5846,7 +6184,7 @@ class _Resolver:
         return package_name not in {"skip", "none"}
 
     def _resolve_tox(
-        self, tokens: tuple[str, ...], context: _Context, depth: int
+        self, tokens: tuple[str, ...], context: _Context, depth: int, shell: str = _NEUTRAL_SHELL
     ) -> WorkspaceState:
         config = self._tox_config(context.cwd)
         if config is None:
@@ -5942,13 +6280,17 @@ class _Resolver:
                             workspace_state=state,
                         ),
                         depth,
+                        shell=shell,
                     ),
                 )
         return state
 
     def _package_json(self, cwd: Path) -> tuple[Path, dict[str, str]] | None:
-        path = cwd / "package.json"
-        if not path.exists():
+        _, path, path_error = _portable_repo_path(self.root, "package.json", cwd)
+        if path_error is not None or path is None or not path.is_file():
+            # npm-family discovery is case-sensitive on some CI runners;
+            # never let the analyst host canonicalize Package.json into the
+            # manifest that controls a test script.
             return None
         try:
             data = json.loads(read_limited_text(path, MAX_CONFIG_BYTES))
@@ -5996,7 +6338,7 @@ class _Resolver:
         return None
 
     def _resolve_package(
-        self, tokens: tuple[str, ...], context: _Context, depth: int
+        self, tokens: tuple[str, ...], context: _Context, depth: int, shell: str = _NEUTRAL_SHELL
     ) -> WorkspaceState:
         manager = _basename(tokens[0])
         cwd: Path | None = context.cwd
@@ -6091,6 +6433,7 @@ class _Resolver:
                         workspace_state=state,
                     ),
                     depth,
+                    shell=shell,
                 ),
             )
             self._package_stack.remove(key)

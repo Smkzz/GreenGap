@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
 {extra}    steps:
       - name: tests
+        shell: bash
         run: |
           {command.replace(chr(10), chr(10) + "          ")}
 """

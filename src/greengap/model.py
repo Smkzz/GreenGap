@@ -80,9 +80,10 @@ class PytestInvocation:
     provenance: tuple[str, ...] = ()
     complete: bool = True
     reason: str = ""
-    # This is deliberately internal to the in-memory proof object.  The public
-    # report schema remains unchanged, while Windows invocations can preserve
-    # the runner's case-insensitive path semantics during reconciliation.
+    # This is deliberately internal to the in-memory proof object.  Static
+    # Plan invocations are always exact-case/portable (True); the optional
+    # case-insensitive branch remains reserved for a future runtime-witness
+    # layer and is not populated from workflow routing metadata.
     path_case_sensitive: bool = True
 
     def covers(self, path: str) -> bool:

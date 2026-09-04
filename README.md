@@ -89,11 +89,20 @@ composite actions, local reusable workflows, uv wrappers, tox configurations,
 and static matrix rows. Unsupported selectors, conditions, shell control flow,
 unknown executables, external test actions, or dynamic command boundaries
 become `UNKNOWN`; an unrecognized command is never silently treated as “no
-tests.” The static shell subset is limited to Bash/sh command lines; PowerShell,
-cmd, non-allowlisted pipelines, branching, alternatives, and directory
-transitions are `UNKNOWN`.
+tests.” Commands without an explicit shell are accepted only in a tiny
+runner-neutral grammar (portable whitespace-separated arguments); shell
+operators, quoting, variables, assignments, globbing, substitutions, and
+runner-native separators become `UNKNOWN`. Explicitly declared canonical Bash
+and PowerShell shells have their own bounded parsers, but shell identity never
+establishes filesystem case or path-separator semantics.
 
-Current supported scope is GitHub Actions plus pytest in Plan mode. Go,
+Current supported scope is GitHub Actions plus pytest in Plan mode. `runs-on`
+is treated as routing metadata only: it does not attest runner ownership,
+operating system, filesystem case policy, default shell, or ambient executable
+contents. Static Plan proof is therefore limited to exact, portable
+repository-relative paths and runner-neutral command semantics. A future
+runtime witness may bind runner-specific facts; without one, those paths and
+commands remain `UNKNOWN`. Go,
 Vitest/Jest, Cargo/nextest, Gradle/JUnit, CTest, TAP/prove, and runtime
 capability witnesses are roadmap items, not supported v0.1 adapters.
 
