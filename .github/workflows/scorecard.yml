@@ -31,19 +31,24 @@ jobs:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
-      - name: Upload Scorecard results
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
+      - name: Validate Scorecard output
+        shell: bash
+        run: test -s results.sarif
+      - name: Upload raw Scorecard results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          sarif_file: results.sarif
+          name: scorecard-results
+          path: results.sarif
+          if-no-files-found: error
       - name: Enforce clean Scorecard findings
         shell: bash
         run: |
           set -euo pipefail
           findings="$(jq '[.runs[]?.results[]?] | length' results.sarif)"
           test "${findings}" -eq 0
-      - name: Upload raw Scorecard results
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Upload Scorecard results
+        if: always()
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
         with:
-          name: scorecard-results
-          path: results.sarif
-          if-no-files-found: error
+          sarif_file: results.sarif
