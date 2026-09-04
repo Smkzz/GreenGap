@@ -45,8 +45,14 @@ def test_clusterfuzzlite_python_configuration_is_real() -> None:
     target = read_repository_file("fuzz_targets/trace_fuzzer.py")
 
     assert project.strip() == "language: python"
-    assert dockerfile.startswith("FROM gcr.io/oss-fuzz-base/base-builder-python")
-    assert "pip3 install ." in build
+    assert (
+        "FROM gcr.io/oss-fuzz-base/base-builder-python@sha256:"
+        "6b2b3a7e4a2da50de47f94925cffbe34747e1aae4f33d7f07ba6c681dd648b23"
+    ) in dockerfile
+    assert "pip3 install --require-hashes -r" in build
+    assert "requirements-runtime.txt" in build
+    assert "pip3 install ." not in build
+    assert 'export PYTHONPATH="$SRC/greengap/src' in build
     assert "*_fuzzer.py" in build
     assert "pyinstaller" in build
     assert "$OUT" in build
