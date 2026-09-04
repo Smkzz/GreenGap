@@ -4,7 +4,11 @@ import json
 
 import pytest
 
-from greengap.trace import trace_github_actions
+from greengap.trace import (
+    _github_path_pattern_regex,
+    _path_patterns_match,
+    trace_github_actions,
+)
 
 from .conftest import write_files
 
@@ -436,3 +440,13 @@ jobs:
     result = trace_github_actions(tmp_path)
     assert result.invocations
     assert not result.relevant_incomplete
+
+
+def test_repeated_path_wildcards_do_not_create_a_backtracking_timeout() -> None:
+    """Fuzzed repeated stars must remain bounded during path matching."""
+
+    pattern = "*" * 64 + "\ufffd"
+    regex = _github_path_pattern_regex(pattern)
+
+    assert regex == ".*\ufffd"
+    assert _path_patterns_match(pattern, [pattern]) is True

@@ -2455,8 +2455,11 @@ def _github_path_pattern_regex(pattern: str) -> str | None:
     while index < len(normalized):
         character = normalized[index]
         if character == "*":
-            if index + 1 < len(normalized) and normalized[index + 1] == "*":
-                index += 2
+            star_end = index
+            while star_end < len(normalized) and normalized[star_end] == "*":
+                star_end += 1
+            if star_end - index >= 2:
+                index = star_end
                 if index < len(normalized) and normalized[index] == "/":
                     pieces.append("(?:.*/)?")
                     index += 1
@@ -2464,6 +2467,8 @@ def _github_path_pattern_regex(pattern: str) -> str | None:
                     pieces.append(".*")
                 continue
             pieces.append("[^/]*")
+            index = star_end
+            continue
         elif character in "?[]{}()+":
             return None
         else:
