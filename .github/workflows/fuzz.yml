@@ -5,6 +5,7 @@ on:
     branches: [main]
   schedule:
     - cron: "17 3 * * 6"
+  workflow_dispatch:
 
 permissions: {}
 
@@ -27,7 +28,7 @@ jobs:
         with:
           language: python
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          sanitizer: address
+          sanitizer: ${{ github.event_name == 'pull_request' && 'address' || 'coverage' }}
       - name: Run fuzzers
         id: run
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
@@ -35,8 +36,8 @@ jobs:
           language: python
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fuzz-seconds: ${{ github.event_name == 'schedule' && 300 || 60 }}
-          mode: code-change
-          sanitizer: address
+          mode: ${{ github.event_name == 'pull_request' && 'code-change' || 'coverage' }}
+          sanitizer: ${{ github.event_name == 'pull_request' && 'address' || 'coverage' }}
           output-sarif: true
       - name: Record exact-head fuzz receipt
         if: always()

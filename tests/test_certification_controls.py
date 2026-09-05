@@ -36,6 +36,15 @@ def test_clusterfuzzlite_actions_are_immutable_v1_pins() -> None:
     assert "# v1" in workflow
     assert "pull_request:" in workflow
     assert "schedule:" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert (
+        "mode: ${{ github.event_name == 'pull_request' && 'code-change' || 'coverage' }}"
+        in workflow
+    )
+    assert (
+        "sanitizer: ${{ github.event_name == 'pull_request' && 'address' || 'coverage' }}"
+        in workflow
+    )
 
 
 def test_clusterfuzzlite_python_configuration_is_real() -> None:
