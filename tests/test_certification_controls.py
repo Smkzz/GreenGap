@@ -45,6 +45,7 @@ def test_clusterfuzzlite_actions_are_immutable_v1_pins() -> None:
         "sanitizer: ${{ github.event_name == 'pull_request' && 'address' || 'coverage' }}"
         in workflow
     )
+    assert "keep-unaffected-fuzz-targets: true" in workflow
 
 
 def test_clusterfuzzlite_python_configuration_is_real() -> None:
