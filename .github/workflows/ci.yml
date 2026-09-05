@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONPATH: ${{ github.workspace }}/src
+
 defaults:
   run:
     shell: bash
@@ -54,12 +57,11 @@ jobs:
         if: matrix.dependencies == 'minimum'
         shell: bash
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install --no-deps .
-          python -m pip install "PyYAML>=6.0,<6.1" "build>=1.2,<2" "mypy>=1.10,<2" "pytest>=8.0,<9" "ruff>=0.5,<1" "types-PyYAML>=6.0"
+          python -m pip install --require-hashes -r .github/requirements-ci-minimum.txt
       - name: Install latest dependency lane
         if: matrix.dependencies == 'latest'
-        run: python -m pip install --upgrade pip && python -m pip install ".[dev]"
+        run: |
+          python -m pip install --require-hashes -r .github/requirements-ci-latest.txt
       - name: Run tests
         run: python -m pytest
       - name: Run Ruff
@@ -83,14 +85,38 @@ jobs:
           python-version: "3.11"
       - name: Build distributions
         run: |
-          python -m pip install --upgrade pip build twine
+          python -m pip install --require-hashes -r .github/requirements-package.txt
           python -m build
           python -m twine check dist/*
       - name: Inspect wheel contents and install exact wheel
         run: |
           python -m zipfile -l dist/*.whl | grep -F greengap/__init__.py
-          python -m pip install "PyYAML>=6.0"
+          python -m pip install --require-hashes -r .github/requirements-runtime.txt
           python -m pip install --force-reinstall --no-deps dist/*.whl
+          python -m pip check
+          greengap --version
+      - name: Inspect and install exact sdist
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf sdist-extract
+          mkdir sdist-extract
+          archive="$(find dist -maxdepth 1 -type f -name '*.tar.gz' -print -quit)"
+          test -n "${archive}"
+          tar -xzf "${archive}" -C sdist-extract
+          source_root="$(find sdist-extract -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -f "${source_root}/tests/__init__.py"
+          test -f "${source_root}/tests/conftest.py"
+          test -f "${source_root}/scripts/create_release_provenance.py"
+          (
+            cd "${source_root}"
+            python -m compileall -q src tests scripts
+            python -c "from scripts.create_release_provenance import create_manifest; print(create_manifest.__name__)"
+          )
+          archive_path="$(realpath "${archive}")"
+          archive_hash="$(sha256sum "${archive_path}" | cut -d ' ' -f1)"
+          printf 'greengap @ file://%s --hash=sha256:%s\n' "${archive_path}" "${archive_hash}" > sdist-requirements.txt
+          python -m pip install --force-reinstall --no-deps --no-build-isolation --require-hashes -r sdist-requirements.txt
           python -m pip check
           greengap --version
 
@@ -107,6 +133,5 @@ jobs:
           python-version: "3.13"
       - name: Audit dependencies
         run: |
-          python -m pip install --upgrade pip pip-audit
-          python -m pip install ".[dev]"
+          python -m pip install --require-hashes -r .github/requirements-audit.txt
           python -m pip_audit

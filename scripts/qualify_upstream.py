@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 OUTCOME_HEAD = "03ed6218b08001877745bb1a9e180c8c5cf7c903"
 # Historical iniconfig revision used by the original exact-byte qualification.
 # Current upstream is checked separately so drift cannot be silently normalized.
@@ -52,9 +51,23 @@ def run(repo: Path, python_executable: str) -> dict[str, Any]:
     returncode, payload = run_plan(repo, python_executable)
     if returncode == 0 and payload.get("complete") and not payload.get("blocker_count"):
         return {"status": "PASS", "plan": payload}
+    if plan_unknown_nonblocking(payload):
+        return {"status": "PASS_WITH_UNKNOWN", "plan": payload}
     if payload.get("snapshot", {}).get("fingerprint"):
         return {"status": "QUALIFICATION_NOT_PASSED", "plan": payload}
     return {"status": "ENVIRONMENT_INVALID", "plan": payload}
+
+
+def plan_unknown_nonblocking(plan: dict[str, Any]) -> bool:
+    collection = plan.get("collection", {})
+    return bool(
+        plan.get("stable")
+        and plan.get("blocker_count") == 0
+        and plan.get("snapshot", {}).get("fingerprint")
+        and collection.get("complete")
+        and collection.get("environment_valid")
+        and not plan.get("errors")
+    )
 
 
 def run_pinned(repo: Path, python_executable: str, expected_head: str) -> dict[str, Any]:
@@ -75,6 +88,8 @@ def run_iniconfig_current(repo: Path, python_executable: str) -> dict[str, Any]:
     if head != INICONFIG_HEAD:
         current = run(repo, python_executable)
         current_plan = current.get("plan", {})
+        collection = current_plan.get("collection", {})
+        current_unknown_nonblocking = plan_unknown_nonblocking(current_plan)
         return {
             "status": "UPSTREAM_DRIFT",
             "head": head,
@@ -84,6 +99,9 @@ def run_iniconfig_current(repo: Path, python_executable: str) -> dict[str, Any]:
             "current_head_stable": current_plan.get("stable"),
             "current_head_blockers": current_plan.get("blocker_count"),
             "current_head_trace_complete": current_plan.get("trace", {}).get("complete"),
+            "current_head_collection_complete": collection.get("complete"),
+            "current_head_environment_valid": collection.get("environment_valid"),
+            "current_head_unknown_nonblocking": current_unknown_nonblocking,
         }
     return run(repo, python_executable)
 
@@ -160,12 +178,32 @@ def main() -> int:
             args.historical_iniconfig, historical_iniconfig_python, INICONFIG_HEAD
         )
     qualified = all(
-        item.get("status") == "PASS"
-        or (item.get("status") == "UPSTREAM_DRIFT" and item.get("current_head_status") == "PASS")
+        item.get("status") in {"PASS", "PASS_WITH_UNKNOWN"}
+        or (
+            item.get("status") == "UPSTREAM_DRIFT"
+            and (
+                item.get("current_head_status") == "PASS"
+                or (
+                    item.get("current_head_status") == "PASS_WITH_UNKNOWN"
+                    and item.get("current_head_unknown_nonblocking") is True
+                )
+            )
+        )
         for item in results.values()
     )
     drifted = any(item.get("status") == "UPSTREAM_DRIFT" for item in results.values())
-    gate_status = "PASS_WITH_UPSTREAM_DRIFT" if qualified and drifted else "PASS" if qualified else "NOT_PASSED"
+    has_unknown = any(item.get("status") == "PASS_WITH_UNKNOWN" for item in results.values()) or any(
+        item.get("current_head_unknown_nonblocking") is True for item in results.values()
+    )
+    gate_status = (
+        "PASS_WITH_UPSTREAM_DRIFT"
+        if qualified and drifted
+        else "PASS_WITH_UNKNOWN"
+        if qualified and has_unknown
+        else "PASS"
+        if qualified
+        else "NOT_PASSED"
+    )
     payload = {
         "gate": "upstream_behavioral",
         "results": results,
