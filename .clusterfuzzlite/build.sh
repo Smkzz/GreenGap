@@ -13,6 +13,7 @@ for fuzzer in $(find "$SRC" -name '*_fuzzer.py'); do
   fuzzer_package="${fuzzer_basename}.pkg"
   pyinstaller --distpath "$OUT" --onefile --name "$fuzzer_package" "$fuzzer"
   printf '%s\n' '#!/bin/sh' \
+    '# LLVMFuzzerTestOneInput: CFlite bad-build target marker' \
     'this_dir=$(dirname "$0")' \
     "exec \"\$this_dir/$fuzzer_package\" \"\$@\"" \
     > "$OUT/$fuzzer_basename"

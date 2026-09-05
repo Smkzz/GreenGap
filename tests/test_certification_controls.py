@@ -66,6 +66,7 @@ def test_clusterfuzzlite_python_configuration_is_real() -> None:
     assert "*_fuzzer.py" in build
     assert "pyinstaller" in build
     assert "$OUT" in build
+    assert "LLVMFuzzerTestOneInput" in build
     assert "atheris.Setup" in target
     assert "MAX_INPUT_BYTES = 4096" in target
 
