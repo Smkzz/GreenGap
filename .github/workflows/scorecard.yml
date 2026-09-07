@@ -106,6 +106,10 @@ jobs:
               for run in runs:
                   if not isinstance(run, dict):
                       fail("SARIF run is not an object")
+                  tool = run.get("tool")
+                  driver = tool.get("driver") if isinstance(tool, dict) else None
+                  if not isinstance(driver, dict) or driver.get("name") != "Scorecard":
+                      fail("SARIF run is not produced by Scorecard")
                   run_results = run.get("results", [])
                   if not isinstance(run_results, list):
                       fail("SARIF run results are not a list")
