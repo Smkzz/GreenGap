@@ -66,7 +66,7 @@ jobs:
             --commit "${RELEASE_COMMIT}" \
             --tree "${RELEASE_TREE}"
       - name: Generate SBOM
-        uses: anchore/sbom-action@e11c554f704a0b820cbf8c51673f6945e0731532
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26
         with:
           path: .
           format: spdx-json
