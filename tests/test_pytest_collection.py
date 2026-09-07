@@ -22,6 +22,32 @@ def test_real_collection_returns_node_ids_and_paths(tmp_path) -> None:
     assert result.nodes[0].nodeid.startswith("tests/test_a.py::")
 
 
+def test_real_collection_keeps_pytest_cache_out_of_the_workspace(tmp_path) -> None:
+    write_files(tmp_path, {"tests/test_a.py": "def test_a():\n    assert True\n"})
+
+    result = collect_pytest(tmp_path, timeout=30)
+
+    assert result.complete
+    assert not (tmp_path / ".pytest_cache").exists()
+
+
+def test_real_collection_does_not_inherit_parent_pytest_configuration(tmp_path) -> None:
+    checkout = tmp_path / "host-project" / "nested-checkout"
+    write_files(
+        tmp_path,
+        {
+            "host-project/pyproject.toml": "[tool.pytest.ini_options]\naddopts = '--collect-only'\n",
+            "host-project/nested-checkout/tests/test_a.py": "def test_a():\n    assert True\n",
+        },
+    )
+
+    result = collect_pytest(checkout, timeout=30)
+
+    assert result.complete
+    assert result.environment_valid
+    assert result.paths == ("tests/test_a.py",)
+
+
 def test_real_collection_can_collect_zero_tests(tmp_path) -> None:
     write_files(tmp_path, {"README.md": "empty\n"})
     result = collect_pytest(tmp_path, timeout=30)
@@ -94,6 +120,24 @@ def test_declared_marker_plugins_are_loaded_explicitly(monkeypatch, tmp_path) ->
         lambda **kwargs: (entry_point,),
     )
     assert _explicit_project_plugin_args(tmp_path) == ("-p", "pytest_trio.plugin")
+
+
+def test_unbound_installed_pytest_plugins_invalidate_collection(monkeypatch, tmp_path) -> None:
+    entry_point = SimpleNamespace(
+        name="foreign",
+        value="foreign_pytest_plugin.plugin",
+        dist=SimpleNamespace(name="foreign-plugin"),
+    )
+    monkeypatch.setattr(
+        "greengap.pytest_adapter.importlib.metadata.entry_points",
+        lambda **kwargs: (entry_point,),
+    )
+
+    result = collect_pytest(tmp_path)
+
+    assert not result.complete
+    assert not result.environment_valid
+    assert "unbound pytest11 plugins" in (result.error or "")
 
 
 @pytest.mark.parametrize("exit_code", [1, 2, 3, 4])

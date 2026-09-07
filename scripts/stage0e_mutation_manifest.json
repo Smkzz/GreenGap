@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "repositories": [
+    {
+      "name": "hsf-minimal-pytest",
+      "repository": "https://github.com/hsf-training/hsf-training-minimal-github-actions-pytest",
+      "path": "mutation-clones/hsf-minimal-pytest",
+      "expected_head": "1c65f007110790e861f209b6dabcb445fca24257",
+      "base_ref": "main",
+      "event": "push",
+      "ref": "main",
+      "runs": 2,
+      "mutation": {
+        "path": ".github/workflows/test.yaml",
+        "old": "on: [push]\n",
+        "new": "on:\n  push:\n    paths:\n      - \"src/**\"\n",
+        "expected": "test_main.py",
+        "count": 1,
+        "original_sha256": "2306e3c70a615284dac5e2db4e43d5120786e4845cc86ff3409b88fe969b301b",
+        "mutated_sha256": "b6051a480b6aab9f83379a635e2db507195937ad0064c4902f6321079f96a66f"
+      }
+    },
+    {
+      "name": "python-pytest-wci",
+      "repository": "https://github.com/Zorya49/python_pytest_wCI",
+      "path": "mutation-clones/python-pytest-wci",
+      "expected_head": "10198285735f4cc3a136344e5f6f431a41698b47",
+      "base_ref": "main",
+      "event": "pull_request",
+      "runs": 2,
+      "mutation": {
+        "path": ".github/workflows/ci.yaml",
+        "old": "  pull_request:\n",
+        "new": "  pull_request:\n    paths:\n      - \"src/**\"\n",
+        "expected": "tests/test_employee.py",
+        "count": 1,
+        "original_sha256": "86eee1d57c29585b3f5f369e3bc9ebb54bbefb2e56c4ed145248d17e77ac069e",
+        "mutated_sha256": "1b71abd885d1bcbfe1969d787af67bf7eb2e23e62ea0fba8c91091e9c4652390"
+      }
+    },
+    {
+      "name": "python-unit-testing-lab",
+      "repository": "https://github.com/smrkzx/python-unit-testing-lab",
+      "path": "mutation-clones/python-unit-testing-lab",
+      "expected_head": "7786f698c72d76ce33fd57db9edfaf17a5f07d67",
+      "base_ref": "main",
+      "event": "push",
+      "ref": "main",
+      "runs": 2,
+      "mutation": {
+        "path": ".github/workflows/main.yml",
+        "old": "      run: pytest\n",
+        "new": "      run: pytest Lab/test_1.py\n",
+        "expected": "Lab/test_2.py",
+        "count": 1,
+        "original_sha256": "39f7cd8a776dd6cabef545c432cdb12c33b609b440dcaa6b841a6b890002eb53",
+        "mutated_sha256": "0f80b92164522ca099c343ea8286c01269b5b26f84124cb9dd01bca45fbdfae3"
+      }
+    }
+  ]
+}

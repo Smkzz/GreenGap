@@ -1,0 +1,80 @@
+name: ClusterFuzzLite fuzzing
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 6"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  fuzz:
+    name: fuzz / python / address
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Build fuzzers
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: python
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: ${{ github.event_name == 'pull_request' && 'address' || 'coverage' }}
+          keep-unaffected-fuzz-targets: true
+      - name: Run fuzzers
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: python
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: ${{ github.event_name == 'schedule' && 300 || 60 }}
+          mode: ${{ github.event_name == 'pull_request' && 'code-change' || 'coverage' }}
+          sanitizer: ${{ github.event_name == 'pull_request' && 'address' || 'coverage' }}
+          output-sarif: true
+      - name: Record exact-head fuzz receipt
+        if: always()
+        shell: bash
+        env:
+          FUZZ_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          FUZZ_WORKFLOW_SHA: ${{ github.sha }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          RUN_OUTCOME: ${{ steps.run.outcome }}
+        run: |
+          set -euo pipefail
+          {
+            printf 'FUZZ_HEAD_SHA=%s\n' "${FUZZ_SOURCE_SHA}"
+            printf 'FUZZ_WORKFLOW_SHA=%s\n' "${FUZZ_WORKFLOW_SHA}"
+            printf 'FUZZ_TARGETS=trace_fuzzer\n'
+            printf 'FUZZ_BUILD=%s\n' "${BUILD_OUTCOME}"
+            printf 'FUZZ_RESULT=%s\n' "${RUN_OUTCOME}"
+          } | tee fuzz-receipt.txt
+          test "${BUILD_OUTCOME}" = success
+          test "${RUN_OUTCOME}" = success
+      - name: Upload fuzz receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fuzz-receipt
+          path: fuzz-receipt.txt
+          if-no-files-found: error
+      - name: Upload fuzz crashes
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fuzz-artifacts
+          path: out/artifacts
+          if-no-files-found: ignore
+      - name: Upload fuzz SARIF
+        if: always() && steps.run.outcome == 'success' && hashFiles('cifuzz-sarif/results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
+        with:
+          sarif_file: cifuzz-sarif/results.sarif

@@ -4,7 +4,11 @@ import json
 
 import pytest
 
-from greengap.trace import trace_github_actions
+from greengap.trace import (
+    _github_path_pattern_regex,
+    _path_patterns_match,
+    trace_github_actions,
+)
 
 from .conftest import write_files
 
@@ -16,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
 {extra}    steps:
       - name: tests
+        shell: bash
         run: |
           {command.replace(chr(10), chr(10) + "          ")}
 """
@@ -30,8 +35,6 @@ jobs:
         ("python -m pytest", "broad", ()),
         ("coverage run -m pytest tests", "paths", ("tests",)),
         ("python -m coverage run -m pytest tests", "paths", ("tests",)),
-        ("uv run pytest tests", "paths", ("tests",)),
-        ("uv run --with pytest --project . pytest", "broad", ()),
     ],
 )
 def test_direct_runner_shapes_are_traced(
@@ -84,12 +87,15 @@ def test_value_consuming_pytest_options_do_not_become_paths(option: str, tmp_pat
     if option.split()[0] in {"-o", "-c"}:
         assert not result.invocations
         assert any(issue.code == "PYTEST_CONFIGURATION_UNKNOWN" for issue in result.issues)
+    elif option.split()[0] == "--maxfail":
+        assert not result.invocations
+        assert any(issue.code == "PYTEST_SELECTOR_UNKNOWN" for issue in result.issues)
     else:
         assert result.invocations[0].kind == "broad"
         assert not result.invocations[0].paths
 
 
-def test_make_target_and_make_c_are_resolved(tmp_path) -> None:
+def test_make_c_non_root_pytest_context_is_not_reused_as_root_scope(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -98,7 +104,8 @@ def test_make_target_and_make_c_are_resolved(tmp_path) -> None:
         },
     )
     result = trace_github_actions(tmp_path)
-    assert result.invocations[0].paths == ("backend/tests/unit",)
+    assert not result.invocations
+    assert any(issue.code == "PYTEST_INVOCATION_CONTEXT_UNKNOWN" for issue in result.issues)
 
 
 def test_make_variable_assignment_is_expanded(tmp_path) -> None:
@@ -113,7 +120,40 @@ def test_make_variable_assignment_is_expanded(tmp_path) -> None:
     assert result.invocations[0].paths == ("tests/unit",)
 
 
-def test_shell_script_with_static_prefix_branch_is_resolved(tmp_path) -> None:
+def test_make_special_declarations_do_not_become_the_default_target(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("make"),
+            "Makefile": ".PHONY: docs\ninit:\n\tpytest tests/unit\ndocs:\n\tmake html\n",
+        },
+    )
+    result = trace_github_actions(tmp_path)
+    assert result.invocations[0].paths == ("tests/unit",)
+    assert not result.relevant_incomplete
+
+
+def test_bound_event_name_resolves_event_guard(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - if: ${{ github.event_name == 'pull_request' }}
+        run: pytest tests
+""",
+        },
+    )
+    result = trace_github_actions(tmp_path, event="pull_request")
+    assert result.invocations[0].paths == ("tests",)
+    assert not result.relevant_incomplete
+
+
+def test_shell_script_with_static_prefix_branch_has_unproven_runner_identity(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -122,9 +162,9 @@ def test_shell_script_with_static_prefix_branch_is_resolved(tmp_path) -> None:
         },
     )
     result = trace_github_actions(tmp_path)
-    assert result.invocations
-    assert result.invocations[0].paths == ("tests/_sync",)
-    assert not result.issues
+    assert not result.invocations
+    assert any(issue.code == "EXECUTABLE_IDENTITY_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
 
 
 @pytest.mark.parametrize(
@@ -170,6 +210,29 @@ def test_package_manager_equivalents_are_supported(manager: str, tmp_path) -> No
     )
     result = trace_github_actions(tmp_path)
     assert result.invocations[0].paths == ("tests",)
+
+
+@pytest.mark.parametrize("manager", ["pnpm", "yarn"])
+def test_non_npm_lifecycle_hooks_are_not_invented(manager: str, tmp_path) -> None:
+    command = f"{manager} run test" if manager == "pnpm" else f"{manager} test"
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow(command),
+            "package.json": json.dumps(
+                {
+                    "scripts": {
+                        "pretest": "pytest tests/preflight",
+                        "test": "echo test",
+                    }
+                }
+            ),
+        },
+    )
+    result = trace_github_actions(tmp_path)
+    assert not result.invocations
+    assert any(issue.code == "PACKAGE_LIFECYCLE_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
 
 
 def test_local_composite_action_is_resolved(tmp_path) -> None:
@@ -272,6 +335,7 @@ jobs:
             "pyproject.toml": """[tool.tox]
 env_list = ["py311"]
 [tool.tox.env_run_base]
+skip_install = true
 commands = ["pytest tests"]
 """,
         },
@@ -285,16 +349,16 @@ def test_tox_ini_selection_and_posargs_are_resolved(tmp_path) -> None:
         tmp_path,
         {
             ".github/workflows/ci.yml": workflow("tox -e py311 -- tests/test_one.py"),
-            "tox.ini": "[tox]\nenvlist = py311\n[testenv]\ncommands = pytest {posargs}\n",
+            "tox.ini": "[tox]\nenvlist = py311\n[testenv]\nskip_install = true\ncommands = pytest {posargs}\n",
         },
     )
     result = trace_github_actions(tmp_path)
     assert result.invocations[0].paths == ("tests/test_one.py",)
 
 
-def test_unknown_uv_option_does_not_shift_to_pytest(tmp_path) -> None:
+def test_uv_run_does_not_shift_to_pytest(tmp_path) -> None:
     write_files(
-        tmp_path, {".github/workflows/ci.yml": workflow("uv run --mystery value pytest tests")}
+        tmp_path, {".github/workflows/ci.yml": workflow("uv run pytest tests")}
     )
     result = trace_github_actions(tmp_path)
     assert not result.invocations
@@ -343,6 +407,7 @@ def test_modern_tox_nested_argv_and_nonpytest_lane(tmp_path) -> None:
             "pyproject.toml": """[tool.tox]
 env_list = ["py311", "typing"]
 [tool.tox.env_run_base]
+skip_install = true
 commands = [["pytest", "-v", "--basetemp={env_tmp_dir}", {replace = "posargs", default = [], extend = true}]]
 [tool.tox.env.typing]
 commands = [["mypy"]]
@@ -350,8 +415,9 @@ commands = [["mypy"]]
         },
     )
     result = trace_github_actions(tmp_path)
-    assert result.invocations[0].kind == "broad"
-    assert not result.issues
+    assert not result.invocations
+    assert any(issue.code == "UV_COMMAND_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
 
 
 def test_unrelated_unresolved_edge_is_kept_as_nonrelevant(tmp_path) -> None:
@@ -374,3 +440,13 @@ jobs:
     result = trace_github_actions(tmp_path)
     assert result.invocations
     assert not result.relevant_incomplete
+
+
+def test_repeated_path_wildcards_do_not_create_a_backtracking_timeout() -> None:
+    """Fuzzed repeated stars must remain bounded during path matching."""
+
+    pattern = "*" * 64 + "\ufffd"
+    regex = _github_path_pattern_regex(pattern)
+
+    assert regex == ".*\ufffd"
+    assert _path_patterns_match(pattern, [pattern]) is True

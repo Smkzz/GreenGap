@@ -39,6 +39,55 @@ def test_broad_invocation_serializes_provenance() -> None:
     assert item.to_dict()["provenance"] == ["ci.yml", "run: pytest"]
 
 
+def test_windows_invocation_covers_case_variant_path() -> None:
+    item = PytestInvocation("paths", ("Tests",), path_case_sensitive=False)
+
+    assert item.covers("tests/test_a.py")
+    assert not PytestInvocation("paths", ("Tests",)).covers("tests/test_a.py")
+
+
+def test_reconcile_honors_windows_case_insensitive_scope() -> None:
+    trace = TraceResult(
+        (PytestInvocation("paths", ("Tests",), path_case_sensitive=False),), ()
+    )
+    findings = reconcile_plan(
+        (Candidate("tests/test_a.py", "high"),),
+        collection("tests/test_a.py"),
+        trace,
+    )
+
+    assert findings[0].state == FindingState.PLANNED
+
+
+def test_reconcile_does_not_fold_case_for_linux_invocation() -> None:
+    trace = TraceResult((PytestInvocation("paths", ("tests",)),), ())
+    findings = reconcile_plan(
+        (Candidate("Tests/test_a.py", "high"),),
+        collection("Tests/test_a.py"),
+        trace,
+    )
+
+    assert findings[0].state == FindingState.NOT_PLANNED
+
+
+def test_linux_invocation_preserves_literal_backslash_paths() -> None:
+    invocation = PytestInvocation("paths", (r"foo\bar",))
+
+    assert invocation.covers(r"foo\bar/test_a.py")
+    assert not invocation.covers("foo/bar/test_a.py")
+
+
+def test_reconcile_does_not_convert_linux_backslash_paths() -> None:
+    trace = TraceResult((PytestInvocation("paths", (r"foo\bar",)),), ())
+    findings = reconcile_plan(
+        (Candidate("foo/bar/test_a.py", "high"),),
+        collection("foo/bar/test_a.py"),
+        trace,
+    )
+
+    assert findings[0].state == FindingState.NOT_PLANNED
+
+
 def test_planned_when_broad_scope_covers_collected_file() -> None:
     candidate = (Candidate("tests/test_a.py", "high", ("test_a",)),)
     trace = TraceResult((PytestInvocation("broad", provenance=("ci.yml",)),), ())

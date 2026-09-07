@@ -38,7 +38,19 @@ python -m pip install .
 greengap scan .
 greengap plan .
 greengap plan . --json
+greengap plan . --changed-file src/greengap/trace.py
+greengap plan . --event pull_request --base-ref main --changed-file src/greengap/trace.py
 ```
+
+When a workflow uses `paths` or `paths-ignore`, supply the actual changed-file
+set with one or more `--changed-file` options. Without that binding GreenGap
+records the workflow scope as `UNKNOWN`; it never infers a change set and never
+turns incomplete evidence into `NOT_PLANNED`.
+
+When a workflow uses event, branch, tag, or path filters, bind the actual event
+context as well. Use `--event push --ref main` for a push, or
+`--event pull_request --base-ref main` for a pull request. GreenGap records
+`UNKNOWN` when a filtered workflow cannot be evaluated without that context.
 
 `greengap plan` exits with:
 
@@ -77,11 +89,20 @@ composite actions, local reusable workflows, uv wrappers, tox configurations,
 and static matrix rows. Unsupported selectors, conditions, shell control flow,
 unknown executables, external test actions, or dynamic command boundaries
 become `UNKNOWN`; an unrecognized command is never silently treated as “no
-tests.” The static shell subset is limited to Bash/sh command lines; PowerShell,
-cmd, non-allowlisted pipelines, branching, alternatives, and directory
-transitions are `UNKNOWN`.
+tests.” Commands without an explicit shell are accepted only in a tiny
+runner-neutral grammar (portable whitespace-separated arguments); shell
+operators, quoting, variables, assignments, globbing, substitutions, and
+runner-native separators become `UNKNOWN`. Explicitly declared canonical Bash
+and PowerShell shells have their own bounded parsers, but shell identity never
+establishes filesystem case or path-separator semantics.
 
-Current supported scope is GitHub Actions plus pytest in Plan mode. Go,
+Current supported scope is GitHub Actions plus pytest in Plan mode. `runs-on`
+is treated as routing metadata only: it does not attest runner ownership,
+operating system, filesystem case policy, default shell, or ambient executable
+contents. Static Plan proof is therefore limited to exact, portable
+repository-relative paths and runner-neutral command semantics. A future
+runtime witness may bind runner-specific facts; without one, those paths and
+commands remain `UNKNOWN`. Go,
 Vitest/Jest, Cargo/nextest, Gradle/JUnit, CTest, TAP/prove, and runtime
 capability witnesses are roadmap items, not supported v0.1 adapters.
 

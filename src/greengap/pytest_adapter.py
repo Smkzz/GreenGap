@@ -9,8 +9,10 @@ import fnmatch
 import importlib.metadata
 import os
 import re
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import tomllib
 from collections.abc import Iterator
@@ -93,16 +95,25 @@ def _read_ini(path: Path, section: str) -> dict[str, str]:
 def pytest_config(root: Path) -> tuple[dict[str, Any], str | None]:
     """Read the first pytest configuration file pytest would normally honor."""
 
-    ini = root / "pytest.ini"
-    if ini.exists():
-        return _read_ini(ini, "pytest"), ini.as_posix()
+    for pytest_toml in (root / "pytest.toml", root / ".pytest.toml"):
+        if pytest_toml.exists():
+            data = _read_toml(pytest_toml)
+            options = data.get("pytest", {})
+            return (options if isinstance(options, dict) else {}), pytest_toml.as_posix()
+
+    for ini in (root / "pytest.ini", root / ".pytest.ini"):
+        if ini.exists():
+            return _read_ini(ini, "pytest"), ini.as_posix()
 
     pyproject = root / "pyproject.toml"
     if pyproject.exists():
         data = _read_toml(pyproject)
-        options = data.get("tool", {}).get("pytest", {}).get("ini_options", {})
-        if isinstance(options, dict):
-            return options, pyproject.as_posix()
+        tool = data.get("tool", {})
+        pytest_options = tool.get("pytest") if isinstance(tool, dict) and "pytest" in tool else None
+        if isinstance(pytest_options, dict):
+            native_options = pytest_options.get("ini_options", pytest_options)
+            if isinstance(native_options, dict):
+                return native_options, pyproject.as_posix()
 
     tox_ini = root / "tox.ini"
     if tox_ini.exists():
@@ -274,7 +285,7 @@ def _explicit_project_plugin_args(root: Path) -> tuple[str, ...]:
     if not marker_names:
         return ()
     try:
-        entry_points = importlib.metadata.entry_points(group="pytest11")
+        entry_points = tuple(importlib.metadata.entry_points(group="pytest11"))
     except (TypeError, ValueError, RuntimeError):
         return ()
     modules: set[str] = set()
@@ -296,6 +307,27 @@ def _explicit_project_plugin_args(root: Path) -> tuple[str, ...]:
     return tuple(args)
 
 
+def _unbound_pytest_plugins(root: Path) -> tuple[str, ...] | None:
+    """Return installed pytest plugins that collection does not explicitly bind."""
+
+    try:
+        entry_points = tuple(importlib.metadata.entry_points(group="pytest11"))
+    except (TypeError, ValueError, RuntimeError):
+        return None
+    explicit = _explicit_project_plugin_args(root)
+    explicit_modules = {
+        explicit[index + 1]
+        for index, token in enumerate(explicit[:-1])
+        if token == "-p"
+    }
+    unbound = {
+        str(entry_point.value).split(":", 1)[0]
+        for entry_point in entry_points
+        if str(entry_point.value).split(":", 1)[0] not in explicit_modules
+    }
+    return tuple(sorted(module for module in unbound if module))
+
+
 @dataclass(frozen=True)
 class _BoundedProcessResult:
     returncode: int | None
@@ -303,6 +335,143 @@ class _BoundedProcessResult:
     stderr: str
     timed_out: bool = False
     output_limited: bool = False
+
+
+def _process_group_options() -> dict[str, Any]:
+    """Start collection in an isolated process group/session."""
+
+    if os.name == "nt":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _create_windows_job(process: subprocess.Popen[Any]) -> Any | None:
+    """Put a collection process in a kill-on-close Windows Job Object."""
+
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [("value", ctypes.c_ulonglong)] * 6
+
+        class _BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("per_process_user_time_limit", ctypes.c_longlong),
+                ("per_job_user_time_limit", ctypes.c_longlong),
+                ("limit_flags", wintypes.DWORD),
+                ("minimum_working_set_size", ctypes.c_size_t),
+                ("maximum_working_set_size", ctypes.c_size_t),
+                ("active_process_limit", wintypes.DWORD),
+                ("affinity", ctypes.c_size_t),
+                ("priority_class", wintypes.DWORD),
+                ("scheduling_class", wintypes.DWORD),
+            ]
+
+        class _ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("basic_limit_information", _BasicLimitInformation),
+                ("io_info", _IoCounters),
+                ("process_memory_limit", ctypes.c_size_t),
+                ("job_memory_limit", ctypes.c_size_t),
+                ("peak_process_memory_used", ctypes.c_size_t),
+                ("peak_job_memory_used", ctypes.c_size_t),
+            ]
+
+        win_dll = getattr(ctypes, "WinDLL", None)
+        if win_dll is None:
+            return None
+        kernel32 = win_dll("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.INT,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        information = _ExtendedLimitInformation()
+        information.basic_limit_information.limit_flags = 0x2000
+        configured = kernel32.SetInformationJobObject(
+            job,
+            9,
+            ctypes.byref(information),
+            ctypes.sizeof(information),
+        )
+        if not configured:
+            kernel32.CloseHandle(job)
+            return None
+        process_handle = kernel32.OpenProcess(0x0001 | 0x0100, False, process.pid)
+        if not process_handle:
+            kernel32.CloseHandle(job)
+            return None
+        assigned = kernel32.AssignProcessToJobObject(job, process_handle)
+        kernel32.CloseHandle(process_handle)
+        if not assigned:
+            kernel32.CloseHandle(job)
+            return None
+        return (kernel32, job)
+    except (AttributeError, OSError, TypeError):
+        return None
+
+
+def _close_windows_job(job: Any | None) -> None:
+    if job is None:
+        return
+    kernel32, handle = job
+    with contextlib.suppress(OSError):
+        kernel32.CloseHandle(handle)
+
+
+def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
+    """Terminate a bounded collection process and every descendant it owns."""
+
+    if os.name == "nt":
+        if process.poll() is not None:
+            return
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+    else:
+        killpg = getattr(os, "killpg", None)
+        sigterm = getattr(signal, "SIGTERM", 15)
+        sigkill = getattr(signal, "SIGKILL", 9)
+        if callable(killpg):
+            try:
+                killpg(process.pid, sigterm)
+            except (OSError, ProcessLookupError):
+                with contextlib.suppress(OSError):
+                    process.terminate()
+        else:
+            with contextlib.suppress(OSError):
+                process.terminate()
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            if callable(killpg):
+                try:
+                    killpg(process.pid, sigkill)
+                except (OSError, ProcessLookupError):
+                    with contextlib.suppress(OSError):
+                        process.kill()
+            else:
+                with contextlib.suppress(OSError):
+                    process.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=2.0)
 
 
 def _drain_pipe(
@@ -333,6 +502,7 @@ def _run_pytest_bounded(
         env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        **_process_group_options(),
     )
     stdout_buffer = bytearray()
     stderr_buffer = bytearray()
@@ -351,6 +521,7 @@ def _run_pytest_bounded(
     )
     for reader in readers:
         reader.start()
+    windows_job = _create_windows_job(process)
 
     deadline = monotonic() + min(max(timeout, 0.01), MAX_COLLECTION_SECONDS)
     timed_out = False
@@ -363,18 +534,11 @@ def _run_pytest_bounded(
             break
         overflow.wait(min(0.05, remaining))
 
-    if process.poll() is None:
-        with contextlib.suppress(OSError):
-            process.terminate()
-        try:
-            process.wait(timeout=1.0)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(OSError):
-                process.kill()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=1.0)
+    if process.poll() is None or os.name != "nt":
+        _terminate_process_tree(process)
     for reader in readers:
         reader.join(timeout=2.0)
+    _close_windows_job(windows_job)
     return _BoundedProcessResult(
         process.returncode,
         as_text(bytes(stdout_buffer)),
@@ -399,6 +563,22 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
             environment_valid=False,
             error="ambient pytest selection/plugin environment is set: " + ", ".join(ambient),
         )
+    unbound_plugins = _unbound_pytest_plugins(root)
+    if unbound_plugins is None:
+        return CollectionResult(
+            complete=False,
+            environment_valid=False,
+            error="installed pytest plugin entry points could not be inspected safely",
+        )
+    if unbound_plugins:
+        return CollectionResult(
+            complete=False,
+            environment_valid=False,
+            error=(
+                "pytest collection environment contains unbound pytest11 plugins: "
+                + ", ".join(unbound_plugins)
+            ),
+        )
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     src = root / "src"
     if src.is_dir():
@@ -408,22 +588,31 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
         environment["PYTHONPATH"] = str(src)
     else:
         environment.pop("PYTHONPATH", None)
-    args = [
-        sys.executable,
-        "-m",
-        "pytest",
-        *_explicit_project_plugin_args(root),
-        "--collect-only",
-        "-q",
-    ]
-    try:
-        completed = _run_pytest_bounded(args, root, environment, timeout)
-    except OSError as exc:
-        return CollectionResult(
-            complete=False,
-            environment_valid=False,
-            error=f"could not start pytest: {exc}",
-        )
+    with tempfile.TemporaryDirectory(prefix="greengap-pytest-cache-") as cache_dir:
+        args = [
+            sys.executable,
+            "-m",
+            "pytest",
+            *_explicit_project_plugin_args(root),
+            # GreenGap's ``root`` is the checkout boundary.  Without this,
+            # pytest can walk above a nested checkout and adopt an analyst
+            # host's pytest configuration, making discovery diverge from the
+            # GitHub Actions workspace we are modeling.
+            "--rootdir",
+            str(root),
+            "--collect-only",
+            "-q",
+            "-o",
+            f"cache_dir={cache_dir}",
+        ]
+        try:
+            completed = _run_pytest_bounded(args, root, environment, timeout)
+        except OSError as exc:
+            return CollectionResult(
+                complete=False,
+                environment_valid=False,
+                error=f"could not start pytest: {exc}",
+            )
 
     stdout = completed.stdout
     stderr = completed.stderr
