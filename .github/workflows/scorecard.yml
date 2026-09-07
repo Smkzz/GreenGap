@@ -1,19 +1,18 @@
 name: OpenSSF Scorecard
 
 on:
-  branch_protection_rule:
-  schedule:
-    - cron: "41 4 * * 1"
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "41 4 * * 1"
 
 permissions: {}
 
 jobs:
-  scorecard-gate:
-    name: scorecard-gate
+  scorecard-analysis:
+    name: Scorecard analysis
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -25,30 +24,190 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Run Scorecard analysis
-        uses: ossf/scorecard-action@f49aabe0b5af0936a0987cfb85d86b75731b0186 # v2.4.1
+      - uses: ossf/scorecard-action@f49aabe0b5af0936a0987cfb85d86b75731b0186 # v2.4.1
         with:
           results_file: results.sarif
           results_format: sarif
-          publish_results: true
-      - name: Validate Scorecard output
-        shell: bash
-        run: test -s results.sarif
+          publish_results: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
       - name: Upload raw Scorecard results
-        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
           name: scorecard-results
           path: results.sarif
           if-no-files-found: error
-      - name: Enforce clean Scorecard findings
-        shell: bash
-        run: |
-          set -euo pipefail
-          findings="$(jq '[.runs[]?.results[]?] | length' results.sarif)"
-          test "${findings}" -eq 0
-      - name: Upload Scorecard results
+      - uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
         if: always()
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
         with:
           sarif_file: results.sarif
+
+  scorecard-gate:
+    name: scorecard-gate
+    needs: scorecard-analysis
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Require Scorecard producer success
+        if: ${{ needs.scorecard-analysis.result != 'success' }}
+        run: |
+          set -euo pipefail
+          echo "Scorecard producer result was ${{ needs.scorecard-analysis.result }}" >&2
+          exit 1
+
+      - name: Download raw Scorecard results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: scorecard-results
+          path: scorecard-artifact
+
+      - name: Enforce clean Scorecard findings
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCORECARD_EVENT: ${{ github.event_name }}
+          SCORECARD_REF: ${{ github.ref }}
+          SCORECARD_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sarif="${GITHUB_WORKSPACE}/scorecard-artifact/results.sarif"
+          test -s "${sarif}"
+          repository_created_at="$(gh api "repos/${SCORECARD_REPOSITORY}" --jq '.created_at')"
+          export SCORECARD_SARIF="${sarif}"
+          export SCORECARD_REPOSITORY_CREATED_AT="${repository_created_at}"
+          if [[ "${SCORECARD_EVENT}" == "pull_request" ]]; then
+            findings="$(jq '[.runs[]?.results[]?] | length' "${sarif}")"
+            test "${findings}" -eq 0
+          fi
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from datetime import datetime, timedelta, timezone
+          from pathlib import Path
+
+
+          def fail(message: str) -> None:
+              raise SystemExit(f"Scorecard policy failure: {message}")
+
+
+          try:
+              sarif_path = Path(os.environ["SCORECARD_SARIF"])
+              document = json.loads(sarif_path.read_text(encoding="utf-8"))
+              if document.get("version") != "2.1.0":
+                  fail("SARIF version is not 2.1.0")
+              runs = document.get("runs")
+              if not isinstance(runs, list) or not runs:
+                  fail("SARIF contains no runs")
+
+              results: list[tuple[str, str]] = []
+              for run in runs:
+                  if not isinstance(run, dict):
+                      fail("SARIF run is not an object")
+                  tool = run.get("tool")
+                  driver = tool.get("driver") if isinstance(tool, dict) else None
+                  if not isinstance(driver, dict) or driver.get("name") != "Scorecard":
+                      fail("SARIF run is not produced by Scorecard")
+                  run_results = run.get("results", [])
+                  if not isinstance(run_results, list):
+                      fail("SARIF run results are not a list")
+                  for result in run_results:
+                      if not isinstance(result, dict):
+                          fail("SARIF result is not an object")
+                      rule_id = result.get("ruleId")
+                      message = result.get("message")
+                      if not isinstance(rule_id, str) or not rule_id:
+                          fail("SARIF result has no ruleId")
+                      if (
+                          not isinstance(message, dict)
+                          or not isinstance(message.get("text"), str)
+                      ):
+                          fail(f"{rule_id} has no textual message")
+                      results.append((rule_id, message["text"]))
+          except SystemExit:
+              raise
+          except Exception as exc:
+              fail(f"could not parse SARIF: {exc}")
+
+          result_ids = [rule_id for rule_id, _ in results]
+          if len(result_ids) != len(set(result_ids)):
+              fail("duplicate result IDs")
+
+          event = os.environ["SCORECARD_EVENT"]
+          ref = os.environ["SCORECARD_REF"]
+          if event == "pull_request":
+              if results:
+                  fail("pull_request Scorecard results must be empty")
+              print("SCORECARD_POLICY=PASS event=pull_request results=0")
+              raise SystemExit(0)
+
+          if event not in {"push", "schedule"} or ref != "refs/heads/main":
+              fail(f"unsupported Scorecard event/ref: {event} {ref}")
+
+          allowed_ids = {
+              "BranchProtectionID",
+              "MaintainedID",
+              "CIIBestPracticesID",
+          }
+          if any(rule_id not in allowed_ids for rule_id in result_ids):
+              unexpected = sorted(set(result_ids) - allowed_ids)
+              fail(f"unexpected result IDs: {unexpected}")
+
+          def warning_lines(text: str) -> list[str]:
+              return [
+                  line.strip()
+                  for line in text.splitlines()
+                  if re.match(r"(?i)^warn(?:ing)?:", line.strip())
+              ]
+
+
+          for rule_id, text in results:
+              warnings = warning_lines(text)
+              first_line = text.splitlines()[0] if text.splitlines() else ""
+
+              if rule_id == "BranchProtectionID":
+                  if first_line != (
+                      "score is 8: branch protection is not maximal on development "
+                      "and all release branches:"
+                  ):
+                      fail("BranchProtectionID score/reason changed")
+                  if warnings != [
+                      "Warn: required approving review count is 1 on branch 'main'",
+                      "Warn: codeowners review is not required on branch 'main'",
+                  ]:
+                      fail("BranchProtectionID warning set changed")
+              elif rule_id == "MaintainedID":
+                  if first_line != (
+                      "score is 0: project was created in last 90 days. "
+                      "please review its contents carefully:"
+                  ):
+                      fail("MaintainedID reason changed")
+                  if warnings != ["Warn: Repository was created in last 90 days."]:
+                      fail("MaintainedID warning changed")
+                  try:
+                      created_at = datetime.fromisoformat(
+                          os.environ["SCORECARD_REPOSITORY_CREATED_AT"].replace(
+                              "Z", "+00:00"
+                          )
+                      )
+                  except Exception as exc:
+                      fail(f"invalid repository created_at: {exc}")
+                  if created_at.tzinfo is None:
+                      fail("repository created_at has no timezone")
+                  if datetime.now(timezone.utc) >= created_at + timedelta(days=90):
+                      fail("MaintainedID allowance expired")
+              elif rule_id == "CIIBestPracticesID":
+                  if first_line != (
+                      "score is 0: no effort to earn an OpenSSF best practices badge detected"
+                  ):
+                      fail("CIIBestPracticesID reason changed")
+                  if warnings:
+                      fail("CIIBestPracticesID unexpectedly contains warnings")
+
+          print(
+              "SCORECARD_POLICY=PASS "
+              f"event={event} runs={len(runs)} results={len(results)}"
+          )
+          PY
