@@ -196,6 +196,7 @@ class Finding:
     confidence: str
     reason: str
     evidence: tuple[str, ...] = ()
+    reason_code: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -205,6 +206,7 @@ class Finding:
             "confidence": self.confidence,
             "reason": self.reason,
             "evidence": list(self.evidence),
+            "reason_code": self.reason_code or self.state.value,
         }
 
 

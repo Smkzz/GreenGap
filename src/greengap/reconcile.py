@@ -95,6 +95,7 @@ def reconcile_plan(
                     False,
                     candidate.confidence,
                     "low-confidence source candidate is not eligible for a blocking claim",
+                    reason_code="LOW_CONFIDENCE_CANDIDATE",
                 )
             )
             continue
@@ -106,6 +107,7 @@ def reconcile_plan(
                     False,
                     candidate.confidence,
                     "workspace bytes changed during analysis",
+                    reason_code="WORKSPACE_CHANGED",
                 )
             )
             continue
@@ -117,6 +119,7 @@ def reconcile_plan(
                     False,
                     candidate.confidence,
                     "pytest collection was incomplete; the collected subset cannot establish absence",
+                    reason_code="COLLECTION_INCOMPLETE",
                 )
             )
             continue
@@ -128,6 +131,7 @@ def reconcile_plan(
                     False,
                     candidate.confidence,
                     "high-confidence repository candidate was absent from completed pytest collection",
+                    reason_code="CANDIDATE_NOT_COLLECTED",
                 )
             )
             continue
@@ -141,6 +145,7 @@ def reconcile_plan(
                     candidate.confidence,
                     "the relevant CI command graph or selector semantics are incomplete",
                     tuple(issue.code for issue in trace.issues if issue.relevant),
+                    reason_code="TRACE_INCOMPLETE",
                 )
             )
             continue
@@ -156,6 +161,7 @@ def reconcile_plan(
                     candidate.confidence,
                     "collected file is covered by a proven pytest CI scope",
                     evidence,
+                    reason_code="PROVEN_SCOPE",
                 )
             )
         else:
@@ -166,15 +172,22 @@ def reconcile_plan(
                     True,
                     candidate.confidence,
                     "collected file is absent from the union of proven CI pytest scopes",
+                    reason_code="COLLECTED_FILE_NOT_PLANNED",
                 )
             )
     return tuple(findings)
 
 
 def plan_is_complete(
-    findings: tuple[Finding, ...], collection: CollectionResult, stable: bool
+    findings: tuple[Finding, ...],
+    collection: CollectionResult,
+    stable: bool,
+    *,
+    trace: TraceResult | None = None,
 ) -> bool:
     if not stable or not collection.complete:
+        return False
+    if trace is not None and trace.relevant_incomplete:
         return False
     return not any(
         finding.state == FindingState.UNKNOWN and finding.confidence != "low"

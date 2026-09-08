@@ -1,0 +1,16 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-08",
+  "consumer": "Node.js JSON.parse structural smoke consumer",
+  "reports_checked": 5,
+  "representative_examples_checked": 4,
+  "live_json_checked": true,
+  "live_sarif_checked": true,
+  "absolute_finding_paths_detected": 0,
+  "errors": [],
+  "status": "PARTIAL_PASS",
+  "limitations": [
+    "This consumer smoke is independent of GreenGap imports but is not a full JSON-Schema or SARIF validator.",
+    "A full external validator and end-to-end ingestion path remain launch evidence requirements."
+  ]
+}

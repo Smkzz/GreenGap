@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Smkzz/GreenGap/blob/main/schemas/greengap-report-v1.json",
+  "title": "GreenGap report v1",
+  "description": "A deterministic, fail-closed Plan-mode GreenGap report.",
+  "type": "object",
+  "required": [
+    "report_version",
+    "mode",
+    "repository",
+    "tool",
+    "source",
+    "environment",
+    "completeness",
+    "outcome",
+    "stable",
+    "findings"
+  ],
+  "properties": {
+    "report_version": { "const": "1.0" },
+    "mode": { "enum": ["scan", "plan"] },
+    "repository": { "const": "." },
+    "outcome": { "enum": ["COMPLETE", "BLOCKED", "INCOMPLETE"] },
+    "stable": { "type": "boolean" },
+    "complete": { "type": "boolean" },
+    "blocker_count": { "type": "integer", "minimum": 0 },
+    "tool": {
+      "type": "object",
+      "required": ["name", "version", "runtime_proof"],
+      "properties": {
+        "name": { "const": "greengap" },
+        "version": { "type": "string", "minLength": 1 },
+        "runtime_proof": { "const": false }
+      },
+      "additionalProperties": true
+    },
+    "source": {
+      "type": "object",
+      "required": ["repository", "workspace_fingerprint", "snapshot_method", "file_count"],
+      "properties": {
+        "repository": { "const": "." },
+        "workspace_fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "snapshot_method": { "enum": ["git", "filesystem"] },
+        "file_count": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "environment": {
+      "type": "object",
+      "required": ["collection_mode", "execution_consent", "network_access"],
+      "properties": {
+        "collection_mode": { "enum": ["non_executing", "trusted_checkout"] },
+        "execution_consent": { "type": "boolean" },
+        "network_access": { "const": "not requested by the analyzer" }
+      },
+      "additionalProperties": true
+    },
+    "completeness": {
+      "type": "object",
+      "required": [
+        "analysis",
+        "workspace_stable",
+        "collection_complete",
+        "environment_valid",
+        "runtime_execution_identity",
+        "reason_codes"
+      ],
+      "properties": {
+        "analysis": { "type": "boolean" },
+        "workspace_stable": { "type": "boolean" },
+        "collection_complete": { "type": "boolean" },
+        "environment_valid": { "type": "boolean" },
+        "ci_trace_complete": { "type": ["boolean", "null"] },
+        "runtime_execution_identity": { "const": "NOT_CERTIFIED" },
+        "reason_codes": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "state", "blocking", "confidence", "reason", "reason_code", "evidence"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^(?!/)(?![A-Za-z]:)[^\\r\\n]+$" },
+          "state": {
+            "enum": [
+              "UNREGISTERED",
+              "NOT_PLANNED",
+              "NOT_SEEN",
+              "SKIPPED",
+              "EXECUTED_PASS",
+              "EXECUTED_FAIL",
+              "UNKNOWN",
+              "PLANNED"
+            ]
+          },
+          "blocking": { "type": "boolean" },
+          "confidence": { "type": "string" },
+          "reason": { "type": "string" },
+          "reason_code": { "type": "string", "minLength": 1 },
+          "evidence": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

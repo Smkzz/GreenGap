@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -15,7 +15,7 @@ keywords = ["ci", "github-actions", "pytest", "testing"]
 urls = { Homepage = "https://github.com/Smkzz/GreenGap", Repository = "https://github.com/Smkzz/GreenGap", Issues = "https://github.com/Smkzz/GreenGap/issues", Changelog = "https://github.com/Smkzz/GreenGap/blob/main/CHANGELOG.md" }
 dependencies = ["PyYAML>=6.0"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",

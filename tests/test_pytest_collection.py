@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
 
+from greengap.environment import collection_environment
 from greengap.pytest_adapter import (
     _BoundedProcessResult,
     _explicit_project_plugin_args,
@@ -11,6 +13,18 @@ from greengap.pytest_adapter import (
 )
 
 from .conftest import write_files
+
+
+def test_collection_environment_is_allowlisted(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "must-not-cross-the-boundary")
+    monkeypatch.setenv("PIP_INDEX_URL", "https://example.invalid/simple")
+
+    environment = collection_environment({"PYTHONPATH": "target-src", "PIP_NO_INDEX": "1"})
+
+    assert environment["PYTHONPATH"] == "target-src"
+    assert environment["PIP_NO_INDEX"] == "1"
+    assert "GITHUB_TOKEN" not in environment
+    assert "PIP_INDEX_URL" not in environment
 
 
 def test_real_collection_returns_node_ids_and_paths(tmp_path) -> None:
@@ -46,6 +60,30 @@ def test_real_collection_does_not_inherit_parent_pytest_configuration(tmp_path) 
     assert result.complete
     assert result.environment_valid
     assert result.paths == ("tests/test_a.py",)
+
+
+def test_real_collection_does_not_inherit_ambient_secret_environment(monkeypatch, tmp_path) -> None:
+    secret_name = "GREENGAP_TEST_SENTINEL_SECRET"
+    monkeypatch.setenv(secret_name, "must-not-cross-the-boundary")
+    observed = tmp_path / "observed-secret.txt"
+    write_files(
+        tmp_path,
+        {
+            "tests/test_environment.py": (
+                "import os\n"
+                "from pathlib import Path\n"
+                f"Path({str(observed)!r}).write_text(os.getenv({secret_name!r}, 'MISSING'))\n"
+                "def test_environment():\n"
+                "    pass\n"
+            )
+        },
+    )
+
+    result = collect_pytest(tmp_path, timeout=30)
+
+    assert result.complete
+    assert observed.read_text(encoding="utf-8") == "MISSING"
+    assert os.environ[secret_name] == "must-not-cross-the-boundary"
 
 
 def test_real_collection_can_collect_zero_tests(tmp_path) -> None:
@@ -120,6 +158,27 @@ def test_declared_marker_plugins_are_loaded_explicitly(monkeypatch, tmp_path) ->
         lambda **kwargs: (entry_point,),
     )
     assert _explicit_project_plugin_args(tmp_path) == ("-p", "pytest_trio.plugin")
+
+
+def test_unrelated_manifest_text_does_not_bind_a_pytest_plugin(monkeypatch, tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            "pyproject.toml": '[project]\ndependencies = []\n# pytest-trio is not installed by this project\n',
+            "tests/test_a.py": "import pytest\n@pytest.mark.trio\ndef test_a():\n    pass\n",
+        },
+    )
+    entry_point = SimpleNamespace(
+        name="trio",
+        value="pytest_trio.plugin",
+        dist=SimpleNamespace(name="pytest-trio"),
+    )
+    monkeypatch.setattr(
+        "greengap.pytest_adapter.importlib.metadata.entry_points",
+        lambda **kwargs: (entry_point,),
+    )
+
+    assert _explicit_project_plugin_args(tmp_path) == ()
 
 
 def test_unbound_installed_pytest_plugins_invalidate_collection(monkeypatch, tmp_path) -> None:

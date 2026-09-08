@@ -1,0 +1,89 @@
+{
+  "STATUS": "PARTIAL_TELEMETRY",
+  "SCOPE": "Available task telemetry only; this is not an account billing or weekly-limit report.",
+  "SECURITY_SCAN": {
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "max",
+    "thread_count": 1,
+    "input_tokens_raw": 1216294,
+    "cached_input_tokens": 1186816,
+    "uncached_input_tokens": 29478,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 5175,
+    "reasoning_output_tokens": 2204,
+    "total_tokens": 1221469,
+    "source": "Codex Security final source-only scan completion telemetry",
+    "scan_id": "a801fffc-1cac-4ff9-a273-b5e3db11313b",
+    "snapshot_digest": "codex-security-snapshot/v1:sha256:2e203a125ad6d4922d2ef593959df44e52d37bb38f03b8ef7cc231461f48e77f",
+    "finding_count": 0
+  },
+  "SECURITY_SCANS": [
+    {
+      "scan_id": "299864e6-f17b-4677-9ca8-90a3c54e179e",
+      "snapshot_digest": "codex-security-snapshot/v1:sha256:af066e31b86c654c146c7dfd009dc64547d3d1be7d111e044251aa367a5e5f38",
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "max",
+      "thread_count": 3,
+      "input_tokens_raw": 33089950,
+      "cached_input_tokens": 32485632,
+      "uncached_input_tokens": 604318,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 77582,
+      "reasoning_output_tokens": 41381,
+      "total_tokens": 33167532,
+      "finding_count": 1,
+      "severity_counts": {"medium": 1},
+      "status": "COMPLETE_PRE_REMEDIATION_SNAPSHOT"
+    },
+    {
+      "scan_id": "24d617fc-6d37-4d00-b298-536a59ed4bc7",
+      "snapshot_digest": "codex-security-snapshot/v1:sha256:da95d4913b60fbcd0664e392e481b15ab18efc6b21954856d6a607774dd612e8",
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "max",
+      "thread_count": 1,
+      "input_tokens_raw": 1298783,
+      "cached_input_tokens": 1284608,
+      "uncached_input_tokens": 14175,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 3575,
+      "reasoning_output_tokens": 908,
+      "total_tokens": 1302358,
+      "finding_count": 0,
+      "severity_counts": {},
+      "status": "COMPLETE_POST_REMEDIATION_NO_REPORTABLE_FINDINGS"
+    },
+    {
+      "scan_id": "a801fffc-1cac-4ff9-a273-b5e3db11313b",
+      "snapshot_digest": "codex-security-snapshot/v1:sha256:2e203a125ad6d4922d2ef593959df44e52d37bb38f03b8ef7cc231461f48e77f",
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "max",
+      "thread_count": 1,
+      "input_tokens_raw": 1216294,
+      "cached_input_tokens": 1186816,
+      "uncached_input_tokens": 29478,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 5175,
+      "reasoning_output_tokens": 2204,
+      "total_tokens": 1221469,
+      "finding_count": 0,
+      "severity_counts": {},
+      "status": "COMPLETE_NO_REPORTABLE_FINDINGS_PARTIAL_COVERAGE"
+    }
+  ],
+  "PRIMARY_IMPLEMENTATION": {
+    "model": "HOST_SELECTED",
+    "input_tokens_raw": null,
+    "cached_input_tokens": null,
+    "uncached_input_tokens": null,
+    "cache_write_input_tokens": null,
+    "output_tokens": null,
+    "reasoning_output_tokens": null,
+    "total_tokens": null,
+    "source": "Per-operation primary-agent telemetry was not available in the handoff surface"
+  },
+  "UNKNOWN_ACCOUNTING": [
+    "No account-wide billing, quota, or weekly-limit usage is inferred from these values.",
+    "Primary implementation raw, cached, uncached, and output counters were unavailable.",
+    "The security-scan counters cover the completed scan operation, not the entire task."
+  ]
+}

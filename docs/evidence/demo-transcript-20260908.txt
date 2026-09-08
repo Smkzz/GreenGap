@@ -1,0 +1,31 @@
+GreenGap 1.0.0rc1 packaged-wheel demo
+Fixture: examples/demo-fixture
+Fixture contents: tests/test_fast.py, tests/test_database.py, .github/workflows/ci.yml
+
+Install
+-------
+PASS: greengap-1.0.0rc1-py3-none-any.whl installed into a disposable target
+
+Safe first run
+--------------
+$ python -m greengap plan . --no-collect --json
+exit=2
+outcome=INCOMPLETE
+collection.error=pytest collection is disabled; pass --trust-collection only for a trusted checkout
+
+Explicit trusted collection
+---------------------------
+$ python -m greengap plan . --trust-collection --python <selected-audit-python> --json
+exit=1
+outcome=BLOCKED
+collection.complete=true
+collection.environment_valid=true
+collected_nodes=tests/test_database.py::test_database_path, tests/test_fast.py::test_fast_path
+finding=tests/test_database.py | NOT_PLANNED | COLLECTED_FILE_NOT_PLANNED
+finding=tests/test_fast.py | PLANNED | PROVEN_SCOPE
+
+Interpretation
+--------------
+The fixture proves a collected test file is absent from the workflow's proven
+pytest scope. It does not claim that the omitted test never executes elsewhere,
+and trusted collection is explicitly repository-code execution.

@@ -259,6 +259,32 @@ runs:
     assert result.invocations[0].paths == ("tests",)
 
 
+def test_local_composite_action_cycle_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/a
+""",
+            ".github/actions/a/action.yml": """name: a
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/a
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert any(issue.code == "COMPOSITE_ACTION_CYCLE" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
 def test_local_reusable_workflow_is_resolved(tmp_path) -> None:
     write_files(
         tmp_path,

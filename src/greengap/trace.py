@@ -19,6 +19,8 @@ import yaml
 
 from .model import PytestInvocation, TraceIssue, TraceResult
 from .util import (
+    MAX_CHANGED_FILE_BYTES,
+    MAX_CHANGED_FILES,
     MAX_CONFIG_BYTES,
     MAX_MATRIX_ROWS,
     MAX_WORKFLOW_FILES,
@@ -1231,15 +1233,6 @@ def _safe_python_code(tokens: tuple[str, ...]) -> bool:
     return True
 
 
-def _known_read_only_python_script(tokens: tuple[str, ...]) -> bool:
-    """Recognize the explicit check-only mode of the unasync helper."""
-
-    if len(tokens) < 3 or not _basename(tokens[0]).startswith("python"):
-        return False
-    script = tokens[1].replace("\\", "/").lower()
-    return (script == "scripts/unasync.py" or script.endswith("/scripts/unasync.py")) and tokens[2:] == ("--check",)
-
-
 def _safe_setup_command(tokens: tuple[str, ...]) -> bool:
     """Recognize commands that cannot select or execute the test suite by themselves."""
 
@@ -1264,8 +1257,6 @@ def _safe_setup_command(tokens: tuple[str, ...]) -> bool:
         return len(tokens) > 1 and tokens[1] in {"erase", "combine", "xml", "report"}
     if first.startswith("python"):
         if len(tokens) == 1:
-            return True
-        if _known_read_only_python_script(tokens):
             return True
         if "-c" in tokens:
             return _safe_python_code(tokens)
@@ -2144,8 +2135,6 @@ def _workspace_effect_for_tokens(
             if module in _SAFE_PYTHON_MODULES:
                 return MODELED_STATE_TRANSITION
             return UNKNOWN_SIDE_EFFECT
-        if _known_read_only_python_script(core):
-            return MODELED_STATE_TRANSITION
         # A Python script, stdin program, or dynamically selected executable
         # can rewrite any repository byte.  Only explicit read-only diagnostics
         # and the audited module allowlist are safe here.
@@ -2859,6 +2848,7 @@ class _Resolver:
         commit_count: int | None = None,
         changed_file_count: int | None = None,
         diff_timed_out: bool = False,
+        workspace_clean: bool | None = None,
     ) -> None:
         self.root = root.resolve()
         self.event_context = event_context
@@ -2869,6 +2859,7 @@ class _Resolver:
         self.commit_count = commit_count
         self.changed_file_count = changed_file_count
         self.diff_timed_out = diff_timed_out
+        self.workspace_clean = workspace_clean
         self.invocations: list[PytestInvocation] = []
         self.issues: list[TraceIssue] = []
         self.workflows: list[str] = []
@@ -2876,14 +2867,33 @@ class _Resolver:
             self.changed_files: tuple[str, ...] | None = None
         else:
             normalized: list[str] = []
-            for changed_file in changed_files:
+            total_bytes = 0
+            for index, changed_file in enumerate(changed_files):
+                if index >= MAX_CHANGED_FILES:
+                    self.issue(
+                        "CHANGED_FILE_SET_LIMIT",
+                        f"changed-file evidence exceeds limit of {MAX_CHANGED_FILES} files",
+                        ("changed-files",),
+                    )
+                    self.change_set_complete = False
+                    break
+                raw_changed_file = str(changed_file)
+                total_bytes += len(os.fsencode(raw_changed_file))
+                if total_bytes > MAX_CHANGED_FILE_BYTES:
+                    self.issue(
+                        "CHANGED_FILE_SET_LIMIT",
+                        f"changed-file evidence exceeds byte limit of {MAX_CHANGED_FILE_BYTES}",
+                        ("changed-files",),
+                    )
+                    self.change_set_complete = False
+                    break
                 try:
-                    normalized.append(normalize_repo_path(self.root, changed_file))
+                    normalized.append(normalize_repo_path(self.root, raw_changed_file))
                 except PathSafetyError as exc:
                     self.issue(
                         "CHANGED_FILE_UNKNOWN",
                         f"changed file is outside the repository or unsafe: {exc}",
-                        (str(changed_file),),
+                        (raw_changed_file,),
                     )
             self.changed_files = tuple(dict.fromkeys(normalized))
         self._workflow_stack: set[Path] = set()
@@ -2891,6 +2901,7 @@ class _Resolver:
         self._make_stack: set[tuple[Path, str]] = set()
         self._package_stack: set[tuple[Path, str]] = set()
         self._tox_stack: set[Path] = set()
+        self._composite_stack: set[Path] = set()
         self._workflow_events: dict[str, set[str]] = {}
         self._workflow_event_kinds: dict[str, set[str]] = {}
         self._workflow_path_filters: set[str] = set()
@@ -3170,14 +3181,19 @@ class _Resolver:
             return self._trace_result((), tuple(self.issues), ())
         if not workflow_dir.is_dir():
             return self._trace_result((), (), ())
+        paths_list: list[Path] = []
         try:
-            paths = tuple(
-                sorted(
-                    path
-                    for path in workflow_dir.iterdir()
-                    if path.suffix.lower() in {".yml", ".yaml"}
-                )
-            )
+            for path in workflow_dir.iterdir():
+                if path.suffix.lower() not in {".yml", ".yaml"}:
+                    continue
+                if len(paths_list) >= MAX_WORKFLOW_FILES:
+                    self.issue(
+                        "WORKFLOW_COUNT_LIMIT",
+                        f"workflow directory contains more than {MAX_WORKFLOW_FILES} files",
+                        (".github/workflows",),
+                    )
+                    break
+                paths_list.append(path)
         except OSError as exc:
             self.issue(
                 "WORKFLOW_ENUMERATION_ERROR",
@@ -3185,13 +3201,7 @@ class _Resolver:
                 (".github/workflows",),
             )
             return self._trace_result((), tuple(self.issues), ())
-        if len(paths) > MAX_WORKFLOW_FILES:
-            self.issue(
-                "WORKFLOW_COUNT_LIMIT",
-                f"workflow directory contains {len(paths)} files; limit is {MAX_WORKFLOW_FILES}",
-                (".github/workflows",),
-            )
-            paths = paths[:MAX_WORKFLOW_FILES]
+        paths = tuple(sorted(paths_list))
         for path in paths:
             try:
                 relative = normalize_repo_path(self.root, path)
@@ -3919,6 +3929,17 @@ class _Resolver:
                                 self.issue(code, message, provenance)
                             if configured:
                                 workspace_state = UNKNOWN_SIDE_EFFECT
+                            elif self.workspace_clean is True:
+                                workspace_state = _merge_workspace_state(
+                                    workspace_state, MODELED_STATE_TRANSITION
+                                )
+                            else:
+                                self.issue(
+                                    "CHECKOUT_CLEAN_STATE_UNKNOWN",
+                                    "actions/checkout defaults to clean=true but the analyzed workspace is not proven clean",
+                                    provenance,
+                                )
+                                workspace_state = UNKNOWN_SIDE_EFFECT
                     if action_name in _WORKSPACE_RESTORING_ACTIONS:
                         raw_with = raw_step.get("with")
                         restore_effect = _workspace_restore_effect(
@@ -4064,6 +4085,30 @@ class _Resolver:
         return MODELED_STATE_TRANSITION
 
     def _resolve_composite(
+        self, action_dir: Path, context: _Context, default_shell: str | None
+    ) -> WorkspaceState:
+        action_key = action_dir.resolve(strict=False)
+        if action_key in self._composite_stack:
+            self.issue(
+                "COMPOSITE_ACTION_CYCLE",
+                "local composite action resolution contains a cycle",
+                context.provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+        if len(self._composite_stack) >= MAX_DEPTH:
+            self.issue(
+                "RESOLUTION_DEPTH_EXCEEDED",
+                "local composite action resolution depth exceeded",
+                context.provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+        self._composite_stack.add(action_key)
+        try:
+            return self._resolve_composite_inner(action_dir, context, default_shell)
+        finally:
+            self._composite_stack.remove(action_key)
+
+    def _resolve_composite_inner(
         self, action_dir: Path, context: _Context, default_shell: str | None
     ) -> WorkspaceState:
         action_relative = normalize_repo_path(self.root, action_dir)
@@ -4670,8 +4715,6 @@ class _Resolver:
                         state = UNKNOWN_SIDE_EFFECT
                         continue
                 elif len(tokens) > 1:
-                    if _known_read_only_python_script(tokens):
-                        continue
                     self.issue(
                         "PYTHON_EXECUTION_UNKNOWN",
                         "python script or stdin execution can rewrite repository bytes",
@@ -6299,7 +6342,14 @@ class _Resolver:
             return None
         try:
             data = json.loads(read_limited_text(path, MAX_CONFIG_BYTES))
-        except (OSError, ValueError, UnicodeError, json.JSONDecodeError):
+        except (
+            OSError,
+            ValueError,
+            UnicodeError,
+            json.JSONDecodeError,
+            RecursionError,
+            MemoryError,
+        ):
             return None
         scripts = data.get("scripts", {}) if isinstance(data, dict) else {}
         if not isinstance(scripts, dict):
@@ -6456,6 +6506,8 @@ def trace_github_actions(
     commit_count: int | None = None,
     changed_file_count: int | None = None,
     diff_timed_out: bool = False,
+    *,
+    workspace_clean: bool | None = None,
 ) -> TraceResult:
     return _Resolver(
         root,
@@ -6468,4 +6520,5 @@ def trace_github_actions(
         commit_count,
         changed_file_count,
         diff_timed_out,
+        workspace_clean,
     ).trace()

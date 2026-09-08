@@ -1,0 +1,159 @@
+name: GreenGap Plan
+
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: "Exact immutable GreenGap release tag to install"
+        required: true
+        type: string
+      python-version:
+        description: "Python used for the analyzed project's pytest collection"
+        required: false
+        default: "3.12"
+        type: string
+      trust-collection:
+        description: "Consent to execute the analyzed checkout's pytest collection code"
+        required: false
+        default: false
+        type: boolean
+      fail-on-gap:
+        description: "Fail the job for proven NOT_PLANNED findings or incomplete analysis"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: GreenGap Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the analyzed revision
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up the requested project Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Download and install the exact GreenGap release artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          GREENGAP_RELEASE_REPOSITORY: Smkzz/GreenGap
+        run: |
+          set -euo pipefail
+          test -n "${RELEASE_TAG}"
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.-]*$ ]]
+          mkdir -p .greengap-dist
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GREENGAP_RELEASE_REPOSITORY}" \
+            --pattern 'greengap-*.whl' \
+            --pattern 'SHA256SUMS' \
+            --dir .greengap-dist
+          mapfile -t wheels < <(find .greengap-dist -maxdepth 1 -type f -name 'greengap-*.whl' -print)
+          test "${#wheels[@]}" -eq 1
+          gh release verify "${RELEASE_TAG}" --repo "${GREENGAP_RELEASE_REPOSITORY}"
+          gh release verify-asset "${RELEASE_TAG}" "${wheels[0]}" --repo "${GREENGAP_RELEASE_REPOSITORY}"
+          wheel_name="$(basename "${wheels[0]}")"
+          expected="$(awk -v name="${wheel_name}" '$2 == name || $2 == "dist/" name { print $1; exit }' .greengap-dist/SHA256SUMS)"
+          test -n "${expected}"
+          actual="$(sha256sum "${wheels[0]}" | cut -d ' ' -f1)"
+          test "${actual}" = "${expected}"
+          python -m pip install --no-deps --force-reinstall "${wheels[0]}"
+
+      - name: Bind the GitHub change set
+        env:
+          GREENGAP_EVENT_NAME: ${{ github.event_name }}
+          GREENGAP_BASE_REF: ${{ github.base_ref }}
+          GREENGAP_EVENT_BEFORE: ${{ github.event.before }}
+          GREENGAP_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          changed_file_limit=3000
+          write_changed_files() {
+            set +e
+            set +o pipefail
+            git diff --name-only "$@" | awk -v limit="${changed_file_limit}" '
+              NR <= limit { print }
+              NR == limit + 1 { exit 42 }
+            ' > .greengap-changed-files
+            pipeline_status=("${PIPESTATUS[@]}")
+            set -o pipefail
+            set -e
+            if [[ "${pipeline_status[1]}" -eq 42 ]]; then
+              echo "$((changed_file_limit + 1))" > .greengap-changed-file-count
+            elif [[ "${pipeline_status[0]}" -ne 0 || "${pipeline_status[1]}" -ne 0 ]]; then
+              return 1
+            else
+              wc -l < .greengap-changed-files | tr -d ' ' > .greengap-changed-file-count
+            fi
+          }
+          case "${GREENGAP_EVENT_NAME}" in
+            pull_request)
+              write_changed_files "origin/${GREENGAP_BASE_REF}...HEAD"
+              ;;
+            push)
+              if [[ -n "${GREENGAP_EVENT_BEFORE}" && "${GREENGAP_EVENT_BEFORE}" != "0000000000000000000000000000000000000000" ]]; then
+                [[ "${GREENGAP_EVENT_BEFORE}" =~ ^[0-9a-fA-F]{40}$ ]]
+                [[ "${GREENGAP_SHA}" =~ ^[0-9a-fA-F]{40}$ ]]
+                write_changed_files "${GREENGAP_EVENT_BEFORE}" "${GREENGAP_SHA}"
+              else
+                : > .greengap-changed-files
+                echo 0 > .greengap-changed-file-count
+              fi
+              ;;
+            *)
+              : > .greengap-changed-files
+              echo 0 > .greengap-changed-file-count
+              ;;
+          esac
+
+      - name: Analyze the planned pytest surface
+        id: greengap
+        env:
+          TRUST_COLLECTION: ${{ inputs.trust-collection }}
+          GREENGAP_EVENT_NAME: ${{ github.event_name }}
+          GREENGAP_REF: ${{ github.ref }}
+          GREENGAP_BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -uo pipefail
+          args=(plan . --json --event "${GREENGAP_EVENT_NAME}" --ref "${GREENGAP_REF}" --base-ref "${GREENGAP_BASE_REF}" --change-set-complete)
+          args+=(--changed-file-count "$(< .greengap-changed-file-count)")
+          while IFS= read -r changed_file; do
+            [[ -z "${changed_file}" ]] || args+=(--changed-file "${changed_file}")
+          done < .greengap-changed-files
+          if [[ "${TRUST_COLLECTION}" == "true" ]]; then
+            args+=(--trust-collection)
+          else
+            args+=(--no-collect)
+          fi
+          greengap "${args[@]}" > greengap-report.json
+          code=$?
+          echo "exit_code=${code}" >> "${GITHUB_OUTPUT}"
+          cat greengap-report.json
+          exit 0
+
+      - name: Publish the inert GreenGap report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: greengap-plan-report
+          path: greengap-report.json
+          if-no-files-found: error
+
+      - name: Apply the caller's enforcement policy
+        if: ${{ inputs.fail-on-gap && steps.greengap.outputs.exit_code != '0' }}
+        env:
+          GREENGAP_EXIT_CODE: ${{ steps.greengap.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+          echo "GreenGap enforcement requested; exit=${GREENGAP_EXIT_CODE}" >&2
+          exit "${GREENGAP_EXIT_CODE}"

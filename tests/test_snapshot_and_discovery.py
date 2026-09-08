@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 
-from greengap.pytest_adapter import discover_candidates
+from greengap.pytest_adapter import discover_candidates, scan_pytest
 from greengap.snapshot import workspace_snapshot
 
 from .conftest import write_files
@@ -44,6 +44,43 @@ def test_snapshot_includes_nonignored_untracked_file(tmp_path) -> None:
     assert first.fingerprint != second.fingerprint
     assert "new.txt" in second.files
     assert "ignored.txt" not in second.files
+
+
+def test_large_snapshot_parallel_path_is_deterministic(tmp_path) -> None:
+    for index in range(260):
+        path = tmp_path / "files" / f"file-{index:03d}.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"value-{index}\n", encoding="utf-8")
+    first = workspace_snapshot(tmp_path)
+    second = workspace_snapshot(tmp_path)
+
+    assert first.method == "filesystem"
+    assert first.fingerprint == second.fingerprint
+
+
+def test_snapshot_inventory_limit_is_incomplete(monkeypatch, tmp_path) -> None:
+    write_files(tmp_path, {f"file-{index}.txt": "value\n" for index in range(3)})
+    monkeypatch.setattr("greengap.util.MAX_PATH_INVENTORY_ITEMS", 2)
+
+    snapshot = workspace_snapshot(tmp_path)
+
+    assert not snapshot.complete
+    assert any("path inventory exceeds" in error for error in snapshot.errors)
+    assert len(snapshot.files) <= 2
+
+
+def test_discovery_inventory_limit_is_incomplete(monkeypatch, tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {f"tests/test_{index}.py": f"def test_{index}():\n    pass\n" for index in range(3)},
+    )
+    monkeypatch.setattr("greengap.util.MAX_PATH_INVENTORY_ITEMS", 2)
+
+    candidates, collection = scan_pytest(tmp_path, collect=False)
+
+    assert candidates == ()
+    assert not collection.complete
+    assert "path inventory exceeds" in (collection.error or "")
 
 
 def test_default_discovery_marks_symbol_file_high(tmp_path) -> None:

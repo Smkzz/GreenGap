@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "status": "LOCAL_CANDIDATE_ONLY",
+  "version": "1.0.0rc1",
+  "source": {
+    "baseCommit": "2de5f22a0a1fe1aa8f5e30712e96077d923b104f",
+    "baseTree": "c21113d1192dcd68a117c89b1805da41bc63e32d",
+    "workingTreeStatus": "DIRTY",
+    "releaseSha": null,
+    "releaseTree": null
+  },
+  "build": {
+    "backend": "setuptools==84.0.0",
+    "command": "pyproject-build --no-isolation --outdir <out> (two independent output directories)",
+    "python": "3.13.3 audit environment (two independent output directories)",
+    "sourceDateEpoch": 0,
+    "buildsCompared": 2,
+    "distributionBytesIdentical": true,
+    "twineCheck": "NOT_RUN: twine was unavailable in the managed audit environment"
+  },
+  "subjects": [
+    {
+      "name": "greengap-1.0.0rc1-py3-none-any.whl",
+      "sha256": "8b75cd9132e2c4f2a26372f54baeba4600e1a991ca8f95e6248f99502ea3cf0c",
+      "size": 92186
+    },
+    {
+      "name": "greengap-1.0.0rc1.tar.gz",
+      "sha256": "bfc454da462a92fbd0ec1c666e2e628c7be7c82bf6a2aa6277cfb3dc321c03db",
+      "size": 158471
+    }
+  ],
+  "wheelFromSdist": {
+    "source": "greengap-1.0.0rc1.tar.gz",
+    "sourceSha256": "bfc454da462a92fbd0ec1c666e2e628c7be7c82bf6a2aa6277cfb3dc321c03db",
+    "wheel": "greengap-1.0.0rc1-py3-none-any.whl",
+    "sha256": "8b75cd9132e2c4f2a26372f54baeba4600e1a991ca8f95e6248f99502ea3cf0c",
+    "size": 92186,
+    "installSmoke": "PASS",
+    "version": "1.0.0rc1"
+  },
+  "limitations": [
+    "This is not a signed or hosted build attestation.",
+    "The candidate has no final source commit/tree until an owner freezes and commits it.",
+    "The exact subjects must be rebuilt from the frozen source identity before publication.",
+    "A cross-version Python 3.12 rebuild of this current candidate was unavailable on the managed host.",
+    "The managed audit environment did not have twine installed, so the post-fix twine check was not rerun."
+  ]
+}

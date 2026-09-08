@@ -6,22 +6,36 @@ import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import __version__
-from .junit import parse_junit
-from .model import PlanReport, ScanReport
-from .pytest_adapter import scan_pytest
-from .reconcile import plan_is_complete, reconcile_plan
-from .snapshot import workspace_snapshot
-from .trace import trace_github_actions
-from .util import json_dump
+from .report import redact_shareable
+from .util import terminal_safe_text
+
+if TYPE_CHECKING:
+    from .model import PlanReport, ScanReport
 
 
-def run_scan(root: Path, timeout: float = 60.0, initial: Any | None = None) -> ScanReport:
+def run_scan(
+    root: Path,
+    timeout: float = 60.0,
+    initial: Any | None = None,
+    *,
+    python_executable: str | None = None,
+    collect: bool = False,
+) -> ScanReport:
+    from .model import ScanReport
+    from .pytest_adapter import scan_pytest
+    from .snapshot import workspace_snapshot
+
     root = root.resolve()
     snapshot = initial or workspace_snapshot(root, timeout=min(timeout, 10.0))
-    candidates, collection = scan_pytest(root, timeout)
+    candidates, collection = scan_pytest(
+        root,
+        timeout,
+        python_executable=python_executable,
+        collect=collect,
+    )
     final = workspace_snapshot(root, timeout=min(timeout, 10.0))
     errors = list(snapshot.errors) + list(final.errors)
     stable = snapshot.fingerprint == final.fingerprint and snapshot.complete and final.complete
@@ -50,10 +64,26 @@ def run_plan(
     commit_count: int | None = None,
     changed_file_count: int | None = None,
     diff_timed_out: bool = False,
+    *,
+    python_executable: str | None = None,
+    collect: bool = False,
 ) -> PlanReport:
+    from .model import PlanReport
+    from .pytest_adapter import scan_pytest
+    from .reconcile import plan_is_complete, reconcile_plan
+    from .snapshot import workspace_snapshot
+    from .trace import trace_github_actions
+    from .util import git_workspace_clean
+
     root = root.resolve()
     snapshot = workspace_snapshot(root, timeout=min(timeout, 10.0))
-    candidates, collection = scan_pytest(root, timeout)
+    workspace_clean = git_workspace_clean(root, timeout=min(timeout, 10.0))
+    candidates, collection = scan_pytest(
+        root,
+        timeout,
+        python_executable=python_executable,
+        collect=collect,
+    )
     trace = trace_github_actions(
         root,
         changed_files,
@@ -65,6 +95,7 @@ def run_plan(
         commit_count,
         changed_file_count,
         diff_timed_out,
+        workspace_clean=workspace_clean,
     )
     final = workspace_snapshot(root, timeout=min(timeout, 10.0))
     stable = snapshot.fingerprint == final.fingerprint and snapshot.complete and final.complete
@@ -72,7 +103,7 @@ def run_plan(
     if not stable:
         errors.append("workspace fingerprint changed or could not be read consistently")
     findings = reconcile_plan(candidates, collection, trace, stable=stable)
-    complete = plan_is_complete(findings, collection, stable)
+    complete = plan_is_complete(findings, collection, stable, trace=trace)
     if not collection.environment_valid:
         errors.append("pytest qualification environment is invalid or collection failed")
     return PlanReport(
@@ -89,23 +120,37 @@ def run_plan(
     )
 
 
-def _human_scan(report: ScanReport) -> str:
+def _human_scan(report: ScanReport, *, collection_enabled: bool) -> str:
+    root = Path(report.repository)
+
+    def safe(value: Any) -> str:
+        return terminal_safe_text(str(redact_shareable(str(value), root)))
+
     lines = [
-        f"GreenGap scan: {report.repository}",
+        f"GreenGap scan: {safe(report.repository)}",
         f"workspace: {'stable' if report.stable else 'UNSTABLE'} ({report.snapshot.fingerprint})",
         f"pytest collection: {'complete' if report.collection.complete else 'INCOMPLETE'}; "
         f"{len(report.collection.nodes)} nodes across {len(report.collection.paths)} files",
         f"repository candidates: {len(report.candidates)}",
+        "collection mode: "
+        + ("trusted checkout (repository code executed)" if collection_enabled else "non-executing"),
     ]
     for candidate in report.candidates:
-        lines.append(f"  {candidate.confidence.upper():9} {candidate.path}")
+        lines.append(
+            f"  {candidate.confidence.upper():9} {safe(candidate.path)}"
+        )
     if report.errors:
         lines.append("errors:")
-        lines.extend(f"  - {error}" for error in report.errors)
+        lines.extend(f"  - {safe(error)}" for error in report.errors)
     return "\n".join(lines)
 
 
-def _human_plan(report: PlanReport) -> str:
+def _human_plan(report: PlanReport, *, collection_enabled: bool) -> str:
+    root = Path(report.repository)
+
+    def safe(value: Any) -> str:
+        return terminal_safe_text(str(redact_shareable(str(value), root)))
+
     if not report.complete:
         status = "INCOMPLETE / UNKNOWN"
     elif report.blockers:
@@ -113,23 +158,31 @@ def _human_plan(report: PlanReport) -> str:
     else:
         status = "COMPLETE / NO BLOCKERS"
     lines = [
-        f"GreenGap plan: {report.repository}",
+        f"GreenGap plan: {safe(report.repository)}",
         f"status: {status}",
         f"workspace: {'stable' if report.stable else 'UNSTABLE'} ({report.snapshot.fingerprint})",
         f"pytest collection: {'complete' if report.collection.complete else 'INCOMPLETE'}",
         f"CI trace: {'complete' if report.trace.complete else 'INCOMPLETE'}",
+        "collection mode: "
+        + ("trusted checkout (repository code executed)" if collection_enabled else "non-executing"),
     ]
     for finding in report.findings:
         marker = "BLOCKING" if finding.blocking else "         "
-        lines.append(f"{marker} {finding.state.value:13} {finding.path} — {finding.reason}")
+        lines.append(
+            f"{marker} {finding.state.value:13} "
+            f"{safe(finding.path)} — {safe(finding.reason)}"
+        )
     if report.trace.issues:
         lines.append("trace evidence:")
         for issue in report.trace.issues:
             scope = "relevant" if issue.relevant else "unrelated"
-            lines.append(f"  - [{scope}] {issue.code}: {issue.message}")
+            lines.append(
+                f"  - [{scope}] {issue.code}: {safe(issue.message)}"
+            )
     if report.errors:
         lines.append("errors:")
-        lines.extend(f"  - {error}" for error in report.errors)
+        lines.extend(f"  - {safe(error)}" for error in report.errors)
+    lines.append("exit semantics: 0=complete/no blockers, 1=proven gap, 2=incomplete/UNKNOWN")
     return "\n".join(lines)
 
 
@@ -146,8 +199,40 @@ def _build_parser() -> argparse.ArgumentParser:
     ):
         command = subparsers.add_parser(name, help=help_text)
         command.add_argument("repo", nargs="?", default=".")
-        command.add_argument("--json", action="store_true", dest="as_json")
+        output = command.add_mutually_exclusive_group()
+        output.add_argument("--json", action="store_true", dest="as_json")
+        output.add_argument(
+            "--sarif",
+            action="store_true",
+            dest="as_sarif",
+            help="emit SARIF 2.1.0 findings with explicit completeness metadata",
+        )
         command.add_argument("--timeout", type=float, default=60.0)
+        command.add_argument(
+            "--python",
+            dest="python_executable",
+            default=None,
+            help="interpreter used for target pytest collection; dependencies are never installed",
+        )
+        execution = command.add_mutually_exclusive_group()
+        execution.add_argument(
+            "--trust-collection",
+            action="store_true",
+            dest="trust_collection",
+            help="consent to executing the target repository's pytest collection code",
+        )
+        execution.add_argument(
+            "--no-collect",
+            action="store_false",
+            dest="trust_collection",
+            help="inspect source and workflows without executing repository code (default)",
+        )
+        command.set_defaults(as_json=False, as_sarif=False, trust_collection=False)
+        command.add_argument(
+            "--no-color",
+            action="store_true",
+            help="disable terminal color in any target pytest diagnostics",
+        )
         if name == "plan":
             command.add_argument(
                 "--changed-file",
@@ -206,16 +291,30 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _verify(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    from .junit import parse_junit
+    from .report import REPORT_VERSION, redact_shareable
+
     cases: list[dict[str, Any]] = []
     error: str | None = None
+    report_root = Path(args.repo).resolve()
     if args.junitxml:
         try:
-            cases = [case.to_dict() for case in parse_junit(Path(args.junitxml))]
+            cases = [
+                redact_shareable(case.to_dict(), report_root)
+                for case in parse_junit(Path(args.junitxml))
+            ]
         except (OSError, ValueError, TypeError) as exc:
-            error = f"could not parse JUnit evidence: {exc}"
+            error = redact_shareable(f"could not parse JUnit evidence: {exc}", report_root)
     payload: dict[str, Any] = {
+        "report_version": REPORT_VERSION,
         "mode": "verify",
-        "repository": str(Path(args.repo).resolve()),
+        "repository": ".",
+        "tool": {"name": "greengap", "version": __version__, "runtime_proof": False},
+        "environment": {
+            "collection_mode": "non_executing",
+            "execution_consent": False,
+            "network_access": "not requested by the analyzer",
+        },
         "identity_reconciliation": "NOT_CERTIFIED",
         "complete": False,
         "cases": cases,
@@ -236,6 +335,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         pass
     parser = _build_parser()
     args = parser.parse_args(argv)
+    from .report import REPORT_VERSION, public_report, sarif_report
+    from .util import json_dump
+
     if args.command == "verify":
         payload, code = _verify(args)
         if args.as_json:
@@ -245,31 +347,95 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("identity reconciliation: NOT_CERTIFIED")
             print(f"JUnit cases parsed: {payload['case_count']}")
             if payload["error"]:
-                print(f"error: {payload['error']}")
-            print("verify does not claim witness completeness in v0.1.")
+                print(f"error: {terminal_safe_text(payload['error'])}")
+            print("verify does not claim witness completeness in the stable Plan-mode API.")
         return code
 
-    root = Path(args.repo)
+    root = Path(args.repo).resolve()
     if not root.is_dir():
         payload = {
+            "report_version": REPORT_VERSION,
             "mode": args.command,
-            "repository": str(root.resolve()),
+            "repository": ".",
             "complete": False,
             "error": "repository is not a directory",
+            "outcome": "INCOMPLETE",
         }
-        if args.as_json:
+        if args.as_sarif:
+            print(
+                json_dump(
+                    {
+                        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+                        "version": "2.1.0",
+                        "runs": [
+                            {
+                                "tool": {
+                                    "driver": {
+                                        "name": "GreenGap",
+                                        "version": __version__,
+                                        "rules": [],
+                                    }
+                                },
+                                "results": [],
+                                "invocations": [
+                                    {
+                                        "executionSuccessful": False,
+                                        "properties": {"analysisComplete": False},
+                                    }
+                                ],
+                                "properties": {
+                                    "greengapReportVersion": REPORT_VERSION,
+                                    "analysisComplete": False,
+                                },
+                            }
+                        ],
+                    }
+                ),
+                end="",
+            )
+        elif args.as_json:
             print(json_dump(payload), end="")
         else:
-            print(f"error: repository is not a directory: {root}", file=sys.stderr)
+            print(
+                f"error: repository is not a directory: {terminal_safe_text(str(root))}",
+                file=sys.stderr,
+            )
         return 2
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
     if args.command == "scan":
-        scan_report = run_scan(root, args.timeout)
-        if args.as_json:
-            print(json_dump(scan_report.to_dict()), end="")
+        scan_report = run_scan(
+            root,
+            args.timeout,
+            python_executable=args.python_executable,
+            collect=args.trust_collection,
+        )
+        if args.as_sarif:
+            print(
+                json_dump(
+                    sarif_report(
+                        scan_report,
+                        root=root,
+                        python_executable=args.python_executable,
+                        collection_enabled=args.trust_collection,
+                    )
+                ),
+                end="",
+            )
+        elif args.as_json:
+            print(
+                json_dump(
+                    public_report(
+                        scan_report,
+                        root=root,
+                        python_executable=args.python_executable,
+                        collection_enabled=args.trust_collection,
+                    )
+                ),
+                end="",
+            )
         else:
-            print(_human_scan(scan_report))
+            print(_human_scan(scan_report, collection_enabled=args.trust_collection))
         return 0 if scan_report.stable and scan_report.collection.complete else 2
 
     plan_report = run_plan(
@@ -284,11 +450,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.commit_count,
         args.changed_file_count,
         args.diff_timed_out,
+        python_executable=args.python_executable,
+        collect=args.trust_collection,
     )
-    if args.as_json:
-        print(json_dump(plan_report.to_dict()), end="")
+    if args.as_sarif:
+        print(
+            json_dump(
+                sarif_report(
+                    plan_report,
+                    root=root,
+                    python_executable=args.python_executable,
+                    collection_enabled=args.trust_collection,
+                )
+            ),
+            end="",
+        )
+    elif args.as_json:
+        print(
+            json_dump(
+                public_report(
+                    plan_report,
+                    root=root,
+                    python_executable=args.python_executable,
+                    collection_enabled=args.trust_collection,
+                )
+            ),
+            end="",
+        )
     else:
-        print(_human_plan(plan_report))
+        print(_human_plan(plan_report, collection_enabled=args.trust_collection))
     if not plan_report.complete:
         return 2
     return 1 if plan_report.blockers else 0

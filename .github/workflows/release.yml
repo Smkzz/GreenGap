@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing immutable tag to package (for example v0.1.3)
+        description: New exact candidate tag to package (for example v1.0.0rc1); immutable baseline tags are refused
         required: true
         type: string
       title:
@@ -15,28 +15,69 @@ on:
       notes:
         description: Draft release notes
         required: true
-        default: Early alpha release; see the changelog for the certified scope and fail-closed UNKNOWN caveat.
+        default: GreenGap release candidate; see the changelog for the supported Plan-mode scope and fail-closed UNKNOWN caveat.
         type: string
 
 permissions: {}
 
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
 jobs:
-  artifacts:
+  build:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       RELEASE_TITLE: ${{ inputs.title }}
       RELEASE_NOTES: ${{ inputs.notes }}
+      RELEASE_WORKFLOW_REF: ${{ github.ref }}
+      RELEASE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: refs/tags/${{ inputs.tag }}
           persist-credentials: false
+      - name: Refuse immutable baseline and existing releases before building
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test "${RELEASE_TAG}" != "v0.1.3" || {
+            echo "refusing to rebuild the immutable v0.1.3 baseline" >&2
+            exit 1
+          }
+          set +e
+          release_response="$(gh api --include "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" 2>&1)"
+          release_status=$?
+          set -e
+          if [ "${release_status}" -eq 0 ]; then
+            echo "release ${RELEASE_TAG} already exists; refusing to build or replace it" >&2
+            exit 1
+          fi
+          http_status="$(printf '%s\n' "${release_response}" | awk 'NR == 1 { print $2 }')"
+          test "${http_status}" = 404 || {
+            echo "unable to prove release ${RELEASE_TAG} is absent" >&2
+            printf '%s\n' "${release_response}" >&2
+            exit 1
+          }
+          test "${RELEASE_WORKFLOW_REF}" = "refs/heads/${RELEASE_DEFAULT_BRANCH}"
+          protected_tags="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/tags/protection")"
+          jq -e --arg tag "${RELEASE_TAG}" '
+            flatten | any(.[];
+              .pattern as $pattern |
+              ($pattern | rtrimstr("*")) as $prefix |
+              ($pattern == $tag) or
+              (($pattern | endswith("*")) and ($tag | startswith($prefix)))
+            )
+          ' <<<"${protected_tags}" >/dev/null || {
+            echo "release tag ${RELEASE_TAG} is not covered by an active immutable tag-protection rule" >&2
+            exit 1
+          }
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.13"
@@ -65,6 +106,20 @@ jobs:
             --tag "${RELEASE_TAG}" \
             --commit "${RELEASE_COMMIT}" \
             --tree "${RELEASE_TREE}"
+          jq -n \
+            --arg tag "${RELEASE_TAG}" \
+            --arg commit "${RELEASE_COMMIT}" \
+            --arg tree "${RELEASE_TREE}" \
+            --arg source_date_epoch "${SOURCE_DATE_EPOCH}" \
+            --arg workflow_run_id "${GITHUB_RUN_ID}" \
+            --arg workflow_repository "${GITHUB_REPOSITORY}" \
+            --arg workflow_event "${GITHUB_EVENT_NAME}" \
+            --arg workflow_sha "${GITHUB_SHA}" \
+            --arg workflow_ref "${RELEASE_WORKFLOW_REF}" \
+            '{tag: $tag, commit: $commit, tree: $tree, source_date_epoch: ($source_date_epoch | tonumber), workflow_run_id: $workflow_run_id, workflow_repository: $workflow_repository, workflow_event: $workflow_event, workflow_sha: $workflow_sha, workflow_ref: $workflow_ref}' \
+            > RELEASE_BINDING.json
+          printf '%s' "${RELEASE_TITLE}" > RELEASE_TITLE.txt
+          printf '%s' "${RELEASE_NOTES}" > RELEASE_NOTES.txt
       - name: Generate SBOM
         uses: anchore/sbom-action@e11c554f704a0b820cbf8c51673f6945e0731532
         with:
@@ -76,15 +131,7 @@ jobs:
           set -euo pipefail
           sha256sum dist/* sbom.spdx.json PROVENANCE.json > SHA256SUMS
           sha256sum -c SHA256SUMS
-      - name: Attest exact release bytes
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
-        with:
-          subject-path: |
-            dist/*
-            SHA256SUMS
-            PROVENANCE.json
-            sbom.spdx.json
-      - name: Upload release artifacts
+      - name: Stage exact release inputs for the approval-gated publisher
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: greengap-release-artifacts
@@ -93,34 +140,7 @@ jobs:
             SHA256SUMS
             sbom.spdx.json
             PROVENANCE.json
+            RELEASE_BINDING.json
+            RELEASE_TITLE.txt
+            RELEASE_NOTES.txt
           if-no-files-found: error
-      - name: Create draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            echo "release ${RELEASE_TAG} already exists; refusing to replace or resume it" >&2
-            exit 1
-          fi
-          gh release create "${RELEASE_TAG}" \
-            --draft \
-            --verify-tag \
-            --title "${RELEASE_TITLE}" \
-            --notes "${RELEASE_NOTES}"
-          # The draft is the assembly boundary. Publication is the immutable
-          # boundary when repository release immutability is enabled.
-          test -z "$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name')"
-      - name: Attach release artifacts once
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh release upload "${RELEASE_TAG}" dist/* SHA256SUMS sbom.spdx.json PROVENANCE.json
-          expected="$(find dist -maxdepth 1 -type f -printf '%f\n' | sort)"
-          expected="${expected}"$'\nSHA256SUMS\nPROVENANCE.json\nsbom.spdx.json'
-          actual="$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' | sort)"
-          test "${actual}" = "$(printf '%s\n' "${expected}" | sort)"
-      - name: Human publication boundary
-        run: |
-          echo "Draft ${RELEASE_TAG} contains the attested, checksummed build. Publish it exactly once after human inspection; reruns refuse to replace it."

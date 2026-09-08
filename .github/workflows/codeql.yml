@@ -3,8 +3,6 @@ name: CodeQL
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
   schedule:
     - cron: "23 3 * * 1"
 
@@ -20,6 +18,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
+      # This workflow is deliberately limited to protected-main pushes and
+      # scheduled default-branch runs; no PR-controlled workflow receives a
+      # security-events write token.
       contents: read
       security-events: write
       actions: read
