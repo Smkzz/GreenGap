@@ -205,6 +205,24 @@ _PYTEST_DISCOVERY_IGNORED_PARTS = {
 _MAX_PYTEST_DISCOVERY_ENTRIES = 50_000
 _MAX_PYTEST_DISCOVERY_BYTES = 64 * 1024 * 1024
 _MAX_PYTEST_DISCOVERY_SECONDS = 10.0
+_NATIVE_LOADER_ENVIRONMENT = frozenset(
+    {
+        "LD_PRELOAD",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_DEBUG",
+        "LD_DEBUG_OUTPUT",
+        "LD_PROFILE",
+        "LD_ORIGIN_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FRAMEWORK_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        "DYLD_VERSIONED_LIBRARY_PATH",
+        "DYLD_FALLBACK_FRAMEWORK_PATH",
+    }
+)
+_MAX_PATH_CASE_ENTRIES = 4_096
 
 
 def _merge_workspace_state(left: WorkspaceState, right: WorkspaceState) -> WorkspaceState:
@@ -267,7 +285,7 @@ def _expression_value(expression: str, context: _Context) -> str | None:
         if len(part) >= 2 and part[0] == part[-1] and part[0] in "'\"":
             return part[1:-1]
         value = _lookup(part, context)
-        if value is not None and str(value) != "":
+        if value is not None and _github_truthy(value):
             return str(value)
     return None
 
@@ -293,7 +311,7 @@ def _condition_value(value: Any, context: _Context | None = None) -> bool | None
     if context is not None:
         direct = _lookup(stripped, context)
         if direct is not None:
-            return bool(direct)
+            return _github_truthy(direct)
         match = re.fullmatch(
             r"([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\s*(==|!=)\s*(['\"])(.*?)\3",
             stripped,
@@ -318,6 +336,20 @@ def _condition_value(value: Any, context: _Context | None = None) -> bool | None
                 return text_actual.startswith(suffix)
             return text_actual.endswith(suffix)
     return None
+
+
+def _github_truthy(value: Any) -> bool:
+    """Match GitHub expression falsy values for statically known inputs."""
+
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return value != 0
+    if isinstance(value, str):
+        return value != ""
+    return True
 
 
 def _structure_too_deep(value: Any, limit: int = MAX_YAML_DEPTH) -> bool:
@@ -1066,7 +1098,7 @@ def _casefold_repo_matches(root: Path, relative: str) -> tuple[Path, ...] | None
             try:
                 entries = parent.iterdir()
                 for inspected, entry in enumerate(entries, start=1):
-                    if inspected > 4096:
+                    if inspected > _MAX_PATH_CASE_ENTRIES:
                         return None
                     if entry.name.casefold() == part.casefold():
                         next_paths.append(entry)
@@ -1098,11 +1130,12 @@ def _portable_path_case_error(root: Path, relative: str) -> str | None:
         next_paths: list[Path] = []
         for parent in current:
             try:
-                matches = [
-                    entry
-                    for entry in parent.iterdir()
-                    if entry.name.casefold() == part.casefold()
-                ]
+                matches: list[Path] = []
+                for inspected, entry in enumerate(parent.iterdir(), start=1):
+                    if inspected > _MAX_PATH_CASE_ENTRIES:
+                        return "pytest path component directory is too large to inspect safely"
+                    if entry.name.casefold() == part.casefold():
+                        matches.append(entry)
             except OSError:
                 return "pytest path component could not be inspected safely"
             if len(matches) > 1:
@@ -1609,6 +1642,11 @@ def _startup_environment_unknown(
 
     core = _command_core_tokens(tokens)
     first = _basename(core[0]) if core else ""
+    if any(environment.get(name, "").strip() for name in _NATIVE_LOADER_ENVIRONMENT):
+        return (
+            "NATIVE_LOADER_ENV_UNKNOWN",
+            "native loader environment can preload or redirect code before the command runs",
+        )
     bash_shells = {"bash", "sh", "zsh", "dash"}
     if environment.get("BASH_ENV", "").strip() and (
         shell in bash_shells or shell == _NEUTRAL_SHELL or first in bash_shells
@@ -3212,7 +3250,14 @@ class _Resolver:
             return self._trace_result((), (), ())
         paths_list: list[Path] = []
         try:
-            for path in workflow_dir.iterdir():
+            for inspected, path in enumerate(workflow_dir.iterdir(), start=1):
+                if inspected > MAX_WORKFLOW_FILES:
+                    self.issue(
+                        "WORKFLOW_COUNT_LIMIT",
+                        f"workflow directory contains more than {MAX_WORKFLOW_FILES} entries",
+                        (".github/workflows",),
+                    )
+                    break
                 if path.suffix.lower() not in {".yml", ".yaml"}:
                     continue
                 if len(paths_list) >= MAX_WORKFLOW_FILES:
@@ -3672,6 +3717,9 @@ class _Resolver:
         raw_with = job.get("with", {})
         if isinstance(raw_with, dict):
             for key, raw in raw_with.items():
+                if isinstance(raw, bool | int | float):
+                    inputs[str(key)] = raw
+                    continue
                 text = _scalar(raw)
                 if text is not None:
                     resolved, known = resolve_expressions(text, context)
@@ -3906,7 +3954,10 @@ class _Resolver:
                     action_dir = self._resolve_path(uses[2:], self.root, provenance)
                     if action_dir is not None:
                         nested_state = self._resolve_composite(
-                            action_dir, replace(step_context, workspace_state=workspace_state), default_shell
+                            action_dir,
+                            replace(step_context, workspace_state=workspace_state),
+                            default_shell,
+                            raw_step.get("with"),
                         )
                         workspace_state = _merge_workspace_state(workspace_state, nested_state)
                     else:
@@ -4114,7 +4165,11 @@ class _Resolver:
         return MODELED_STATE_TRANSITION
 
     def _resolve_composite(
-        self, action_dir: Path, context: _Context, default_shell: str | None
+        self,
+        action_dir: Path,
+        context: _Context,
+        default_shell: str | None,
+        raw_with: Any = None,
     ) -> WorkspaceState:
         action_key = action_dir.resolve(strict=False)
         if action_key in self._composite_stack:
@@ -4133,12 +4188,16 @@ class _Resolver:
             return UNKNOWN_SIDE_EFFECT
         self._composite_stack.add(action_key)
         try:
-            return self._resolve_composite_inner(action_dir, context, default_shell)
+            return self._resolve_composite_inner(action_dir, context, default_shell, raw_with)
         finally:
             self._composite_stack.remove(action_key)
 
     def _resolve_composite_inner(
-        self, action_dir: Path, context: _Context, default_shell: str | None
+        self,
+        action_dir: Path,
+        context: _Context,
+        default_shell: str | None,
+        raw_with: Any = None,
     ) -> WorkspaceState:
         action_relative = normalize_repo_path(self.root, action_dir)
         action_file: Path | None = None
@@ -4188,10 +4247,83 @@ class _Resolver:
                 context.provenance,
             )
             return UNKNOWN_SIDE_EFFECT
+        action_inputs = data.get("inputs", {})
+        if action_inputs is None:
+            action_inputs = {}
+        if not isinstance(action_inputs, dict):
+            self.issue(
+                "COMPOSITE_INPUTS_UNKNOWN",
+                f"inputs in {action_file} are not statically enumerable",
+                context.provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+        if raw_with is None:
+            raw_with = {}
+        if not isinstance(raw_with, dict):
+            self.issue(
+                "COMPOSITE_INPUTS_UNKNOWN",
+                f"with values for {action_file} are not statically enumerable",
+                context.provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+        inputs: dict[str, Any] = {}
+        for key, definition in action_inputs.items():
+            if not isinstance(definition, dict):
+                self.issue(
+                    "COMPOSITE_INPUTS_UNKNOWN",
+                    f"input definition {key!r} in {action_file} is not a mapping",
+                    context.provenance,
+                )
+                return UNKNOWN_SIDE_EFFECT
+            if "default" not in definition:
+                continue
+            default = definition["default"]
+            if isinstance(default, bool | int | float):
+                inputs[str(key)] = default
+                continue
+            text = _scalar(default)
+            if text is None:
+                self.issue(
+                    "COMPOSITE_INPUT_UNRESOLVED",
+                    f"default for composite input {key!r} is not static",
+                    context.provenance,
+                )
+                continue
+            resolved, known = resolve_expressions(text, context)
+            if not known:
+                self.issue(
+                    "COMPOSITE_INPUT_UNRESOLVED",
+                    f"default for composite input {key!r} is dynamic",
+                    context.provenance,
+                )
+                continue
+            inputs[str(key)] = resolved
+        for key, raw in raw_with.items():
+            if isinstance(raw, bool | int | float):
+                inputs[str(key)] = raw
+                continue
+            text = _scalar(raw)
+            if text is None:
+                self.issue(
+                    "COMPOSITE_INPUT_UNRESOLVED",
+                    f"value for composite input {key!r} is not static",
+                    context.provenance,
+                )
+                continue
+            resolved, known = resolve_expressions(text, context)
+            if not known:
+                self.issue(
+                    "COMPOSITE_INPUT_UNRESOLVED",
+                    f"value for composite input {key!r} is dynamic",
+                    context.provenance,
+                )
+                continue
+            inputs[str(key)] = resolved
         return self._resolve_steps(
             runs.get("steps", []),
             replace(
                 context,
+                inputs=inputs,
                 provenance=context.provenance
                 + (f"composite:{normalize_repo_path(self.root, action_dir)}",),
             ),

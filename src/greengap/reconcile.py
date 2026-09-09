@@ -189,7 +189,4 @@ def plan_is_complete(
         return False
     if trace is not None and trace.relevant_incomplete:
         return False
-    return not any(
-        finding.state == FindingState.UNKNOWN and finding.confidence != "low"
-        for finding in findings
-    )
+    return not any(finding.state == FindingState.UNKNOWN for finding in findings)

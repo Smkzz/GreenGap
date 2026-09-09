@@ -165,6 +165,7 @@ def test_package_install_from_repository_invalidates_later_test_inference(tmp_pa
     ("variable", "value", "command", "issue_code"),
     [
         ("BASH_ENV", "scripts/bootstrap.sh", "echo setup", "BASH_STARTUP_ENV_UNKNOWN"),
+        ("LD_PRELOAD", "./scripts/preload.so", "pytest tests", "NATIVE_LOADER_ENV_UNKNOWN"),
         ("PYTHONPATH", "scripts", "python -m pytest", "PYTHON_MODULE_PATH_UNKNOWN"),
         (
             "NODE_OPTIONS",
@@ -2450,7 +2451,9 @@ def test_release_workflow_is_build_once_and_non_overwriting() -> None:
     assert "gh release upload" in workflow_text
     assert "python -m pip install --require-hashes -r .github/requirements-package.txt" in workflow_text
     assert "build==1.5.0" in package_requirements
+    assert "setuptools==84.0.0" in package_requirements
     assert "twine==7.0.0" in package_requirements
+    assert "python -m build --no-isolation" in workflow_text
 
 
 def test_sdist_manifest_includes_certification_support_files() -> None:

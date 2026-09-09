@@ -137,6 +137,7 @@ def test_low_confidence_is_unknown_and_nonblocking() -> None:
     )
     assert findings[0].state == FindingState.UNKNOWN
     assert not findings[0].blocking
+    assert not plan_is_complete(findings, collection(), True, trace=TraceResult())
 
 
 def test_incomplete_collection_downgrades_observed_and_candidates() -> None:

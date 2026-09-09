@@ -19,12 +19,19 @@ _ABSOLUTE_PATH = re.compile(
     r"(?i)(?<![A-Za-z0-9_.-])(?:[a-z]:[\\/]|\\\\|"
     r"(?<![:/A-Za-z0-9_.-])/(?!/))[^\r\n\t]+"
 )
+_FILE_URI_ABSOLUTE_PATH = re.compile(
+    r'(?i)\bfile:(?:/{1,3}|//[^/\s]+/)[^"\r\n\t,;}\]]+'
+)
 _SECRET_REFERENCE = re.compile(r"(?i)\$\{\{\s*secrets\.[^}\s]+\s*\}\}")
 _SECRET_ASSIGNMENT = re.compile(
     r"""(?ix)
     (
-        ["']?\b(?:api[_-]?(?:key|token)|access[_-]?token|auth(?:orization)?|
-        password|passwd|private[_-]?key|secret|token)\b["']?\s*[:=]\s*
+        ["']?(?<![A-Za-z0-9_-])
+        (?:[A-Za-z0-9]+[_-])*
+        (?:aws[_-]?secret[_-]?access[_-]?key|api[_-]?(?:key|token)|
+        access[_-]?token|auth(?:orization)?|password|passwd|private[_-]?key|
+        secret|token)
+        ["']?\s*[:=]\s*
     )
     (
         "(?:\\.|[^"\\])*"
@@ -61,6 +68,7 @@ def _redact_text(value: str, replacements: tuple[str, ...]) -> str:
     result = _BASIC_AUTH_URL.sub(r"\1<redacted>@", result)
     result = _BEARER_CREDENTIAL.sub(r"\1<redacted>", result)
     result = _SECRET_ASSIGNMENT.sub(r"\1<redacted>", result)
+    result = _FILE_URI_ABSOLUTE_PATH.sub("<absolute-path>", result)
     return _ABSOLUTE_PATH.sub("<absolute-path>", result)
 
 
@@ -132,6 +140,14 @@ def _reason_codes(payload: dict[str, Any]) -> list[str]:
     return sorted(codes)
 
 
+def _analysis_complete(report: PlanReport | ScanReport) -> bool:
+    """Return the one authoritative machine-facing analysis-complete value."""
+
+    if isinstance(report, PlanReport):
+        return report.complete
+    return report.stable and report.collection.complete
+
+
 def public_report(
     report: PlanReport | ScanReport,
     *,
@@ -163,7 +179,7 @@ def public_report(
     )
     payload["context"] = _redact(_context(report), replacements)
     payload["completeness"] = {
-        "analysis": report.complete if isinstance(report, PlanReport) else report.stable,
+        "analysis": _analysis_complete(report),
         "workspace_stable": report.stable,
         "collection_complete": report.collection.complete,
         "environment_valid": report.collection.environment_valid,
@@ -174,7 +190,7 @@ def public_report(
     if isinstance(report, ScanReport):
         payload["findings"] = []
         payload["blocker_count"] = 0
-        payload["outcome"] = "COMPLETE" if report.stable and report.collection.complete else "INCOMPLETE"
+        payload["outcome"] = "COMPLETE" if _analysis_complete(report) else "INCOMPLETE"
     else:
         payload["outcome"] = (
             "INCOMPLETE"

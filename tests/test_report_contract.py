@@ -11,6 +11,7 @@ from greengap.model import (
     Finding,
     FindingState,
     PlanReport,
+    ScanReport,
     TraceResult,
     WorkspaceSnapshot,
 )
@@ -120,6 +121,24 @@ def test_sarif_redacts_raw_finding_diagnostics(tmp_path) -> None:
     assert "literal-token" not in rendered
 
 
+def test_scan_sarif_cannot_claim_complete_analysis_without_collection(tmp_path) -> None:
+    report = ScanReport(
+        repository=str(tmp_path),
+        snapshot=WorkspaceSnapshot("fingerprint", (), "filesystem"),
+        final_fingerprint="fingerprint",
+        candidates=(),
+        collection=CollectionResult(False, True, error="withheld"),
+        stable=True,
+    )
+
+    payload = sarif_report(report, root=tmp_path)
+    invocation = payload["runs"][0]["invocations"][0]
+
+    assert invocation["executionSuccessful"] is False
+    assert invocation["properties"]["analysisComplete"] is False
+    assert invocation["properties"]["collectionComplete"] is False
+
+
 def test_relative_repository_argument_preserves_relative_finding_paths(
     capsys, monkeypatch, tmp_path
 ) -> None:
@@ -166,13 +185,32 @@ def test_verify_json_redacts_posix_absolute_paths(capsys, tmp_path) -> None:
     assert "/home/alice" not in json.dumps(output)
 
 
+def test_verify_json_redacts_file_uri_paths(capsys, tmp_path) -> None:
+    junit = tmp_path / "results.xml"
+    junit.write_text(
+        '<testsuite><testcase classname="suite" name="case" '
+        'file="file:///home/alice/private/test.py"/></testsuite>',
+        encoding="utf-8",
+    )
+
+    code = main(["verify", str(tmp_path), "--junitxml", str(junit), "--json"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert output["cases"][0]["file"] == "<absolute-path>"
+    assert "file:///home/alice" not in json.dumps(output)
+
+
 def test_shareable_redaction_removes_secret_shaped_diagnostics(tmp_path) -> None:
     value = (
         "TOKEN=literal-token Bearer bearer-token "
         "https://user:basic-password@example.test/path "
         "$" + "{{ secrets.API_KEY }} "
         "-----BEGIN PRIVATE KEY-----\nprivate-bytes\n-----END PRIVATE KEY----- "
-        '{"token":"quoted-token", "apiKey": "quoted-api-key"}'
+        '{"token":"quoted-token", "apiKey": "quoted-api-key", '
+        '"GITHUB_TOKEN":"github-secret", "AWS_SECRET_ACCESS_KEY":"aws-secret", '
+        '"client_secret":"client-secret", "refresh_token":"refresh-secret", '
+        '"token_count":42}'
     )
 
     redacted = redact_shareable(value, tmp_path)
@@ -183,6 +221,11 @@ def test_shareable_redaction_removes_secret_shaped_diagnostics(tmp_path) -> None
     assert "private-bytes" not in redacted
     assert "quoted-token" not in redacted
     assert "quoted-api-key" not in redacted
+    assert "github-secret" not in redacted
+    assert "aws-secret" not in redacted
+    assert "client-secret" not in redacted
+    assert "refresh-secret" not in redacted
+    assert '"token_count":42' in redacted
     assert "<secret-reference>" in redacted
     assert "<redacted-secret-block>" in redacted
 

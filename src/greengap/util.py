@@ -69,6 +69,21 @@ class PathInventoryLimitError(ValueError):
     """Repository path enumeration exceeded a bounded evidence budget."""
 
 
+_REPARSE_POINT_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _is_reparse_point(info: os.stat_result) -> bool:
+    """Return whether a Windows filesystem entry is a reparse point.
+
+    Python 3.11 does not expose ``Path.is_junction``.  The stat result still
+    carries the Windows reparse-point attribute, so use it as a conservative
+    compatibility boundary.  On POSIX the attribute is absent and this is
+    always false.
+    """
+
+    return bool(getattr(info, "st_file_attributes", 0) & _REPARSE_POINT_ATTRIBUTE)
+
+
 def as_text(value: str | bytes | None) -> str:
     if value is None:
         return ""
@@ -120,8 +135,15 @@ def safe_resolve(root: Path, value: str | Path, base: Path | None = None) -> Pat
     for part in relative.parts:
         current /= part
         try:
-            if current.is_symlink():
+            info = current.lstat()
+            if stat.S_ISLNK(info.st_mode):
                 raise PathSafetyError(f"path crosses symlink: {current}")
+            if _is_reparse_point(info):
+                raise PathSafetyError(f"path crosses Windows reparse point: {current}")
+        except FileNotFoundError:
+            # Preserve the existing support for statically spelling a path
+            # that a workflow creates later.
+            continue
         except OSError as exc:
             raise PathSafetyError(f"could not inspect path: {current}: {exc}") from exc
 
@@ -158,14 +180,23 @@ def _scan_selected_entries(
     """Read selected child identities in one directory scan."""
 
     records: dict[str, _PathRecord] = {}
+    inspected_entries = 0
     try:
         with os.scandir(parent) as entries:
             for entry in entries:
+                inspected_entries += 1
+                if inspected_entries > MAX_PATH_INVENTORY_ITEMS:
+                    return {}, (
+                        f"directory entry inventory exceeds limit of "
+                        f"{MAX_PATH_INVENTORY_ITEMS}: {parent}"
+                    )
                 if entry.name not in names:
                     continue
                 try:
                     info = entry.stat(follow_symlinks=False)
                     is_symlink = stat.S_ISLNK(info.st_mode)
+                    if _is_reparse_point(info) and not is_symlink:
+                        return {}, f"path contains unsupported Windows reparse point: {entry.path}"
                     target = os.fsencode(os.readlink(entry.path)) if is_symlink else b""
                     identity = (
                         device,
@@ -238,7 +269,11 @@ class PathReadContext:
                             except OSError:
                                 reusable = False
                                 break
-                            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                            if (
+                                stat.S_ISLNK(info.st_mode)
+                                or _is_reparse_point(info)
+                                or not stat.S_ISDIR(info.st_mode)
+                            ):
                                 reusable = False
                                 break
                             active_parent_identities[parent] = _file_identity(info)
@@ -248,9 +283,9 @@ class PathReadContext:
                         if records is None or not names.issubset(records):
                             reusable = False
                             break
-                            reusable_parent_files[parent] = {
-                                name: records[name] for name in names
-                            }
+                        reusable_parent_files[parent] = {
+                            name: records[name] for name in names
+                        }
                 if reusable:
                     self._parents = active_parent_identities
                     self._files = {path: self._files[path] for path in paths}
@@ -289,7 +324,11 @@ class PathReadContext:
                 info = parent.lstat()
             except OSError as exc:
                 return f"could not inspect {parent}: {exc}"
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or _is_reparse_point(info)
+                or not stat.S_ISDIR(info.st_mode)
+            ):
                 return f"path crosses non-directory parent: {parent}"
             identities[parent] = _file_identity(info)
 
@@ -320,7 +359,11 @@ class PathReadContext:
                 info = parent.lstat()
             except OSError as exc:
                 return f"could not recheck {parent}: {exc}"
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or _is_reparse_point(info)
+                or not stat.S_ISDIR(info.st_mode)
+            ):
                 return f"path parent changed to a non-directory: {parent}"
             if _file_identity(info) != expected:
                 return f"path parent changed during inspection: {parent}"
@@ -346,8 +389,11 @@ def read_limited_bytes(
     if parent_context is None:
         for parent in path.parents:
             try:
-                if stat.S_ISLNK(parent.lstat().st_mode):
+                info = parent.lstat()
+                if stat.S_ISLNK(info.st_mode):
                     raise ValueError(f"path crosses symlink: {parent}")
+                if _is_reparse_point(info):
+                    raise ValueError(f"path crosses Windows reparse point: {parent}")
             except FileNotFoundError:
                 continue
             except OSError as exc:
@@ -397,6 +443,13 @@ def read_limited_bytes(
         info = path.lstat() if parent_context is None else None
     except OSError as exc:
         raise ValueError(f"could not inspect {path}: {exc}") from exc
+    if (
+        parent_context is None
+        and info is not None
+        and _is_reparse_point(info)
+        and not stat.S_ISLNK(info.st_mode)
+    ):
+        raise ValueError(f"unsupported Windows reparse point: {path}")
     if parent_context is None and info is not None and stat.S_ISLNK(info.st_mode):
         try:
             target_text = os.readlink(path)
@@ -845,6 +898,7 @@ def bounded_filesystem_paths(
     directories: list[str] = [root_text]
     paths: list[str] = []
     inspected_directories = 0
+    inspected_entries = 0
     while directories:
         directory = directories.pop()
         inspected_directories += 1
@@ -853,10 +907,23 @@ def bounded_filesystem_paths(
         try:
             with os.scandir(directory) as entries:
                 for entry in entries:
+                    inspected_entries += 1
+                    if inspected_entries > item_limit:
+                        return (
+                            tuple(sorted(paths)),
+                            f"path inventory exceeds directory-entry limit of {item_limit}",
+                        )
                     relative = os.path.relpath(entry.path, root_text).replace(os.sep, "/")
                     if _is_transient_relative_text(relative):
                         continue
                     try:
+                        info = entry.stat(follow_symlinks=False)
+                        is_symlink = stat.S_ISLNK(info.st_mode)
+                        if _is_reparse_point(info) and not is_symlink:
+                            return (
+                                tuple(sorted(paths)),
+                                f"filesystem path enumeration encountered unsupported Windows reparse point: {entry.path}",
+                            )
                         if entry.is_dir(follow_symlinks=False):
                             directories.append(os.fspath(entry.path))
                             continue

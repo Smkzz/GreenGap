@@ -330,6 +330,87 @@ runs:
     assert result.invocations[0].paths == ("tests",)
 
 
+def test_local_composite_action_uses_call_inputs_over_workflow_inputs(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      scope: tests
+""",
+            ".github/workflows/reusable.yml": """name: reusable
+on:
+  workflow_call:
+    inputs:
+      scope:
+        type: string
+        required: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/test
+        with:
+          scope: tests/unit
+""",
+            ".github/actions/test/action.yml": """name: test
+inputs:
+  scope:
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: pytest ${{ inputs.scope }}
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == ("tests/unit",)
+
+
+def test_reusable_workflow_boolean_input_false_skips_test_step(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      enabled: false
+""",
+            ".github/workflows/reusable.yml": """name: reusable
+on:
+  workflow_call:
+    inputs:
+      enabled:
+        type: boolean
+        required: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - if: ${{ inputs.enabled }}
+        run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert not result.invocations
+    assert not result.relevant_incomplete
+
+
 def test_local_composite_action_cycle_is_unknown(tmp_path) -> None:
     write_files(
         tmp_path,

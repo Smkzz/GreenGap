@@ -8,7 +8,7 @@ import pytest
 import greengap.util as util_module
 from greengap.pytest_adapter import discover_candidates, scan_pytest
 from greengap.snapshot import workspace_snapshot
-from greengap.util import PathReadContext, read_limited_bytes
+from greengap.util import PathReadContext, bounded_filesystem_paths, read_limited_bytes
 
 from .conftest import write_files
 
@@ -59,7 +59,24 @@ def test_prepared_context_reuses_a_safe_subset(monkeypatch, tmp_path) -> None:
     assert context.prepare(paths) is None
     assert context.prepare((paths[0],)) is None
     assert read_limited_bytes(paths[0], 1024, parent_context=context)
-    assert calls == [(tmp_path, frozenset(path.name for path in paths))]
+    paths[0].write_text("changed", encoding="utf-8")
+    assert context.verify() is not None
+    assert calls == [
+        (tmp_path, frozenset(path.name for path in paths)),
+        (tmp_path, frozenset({"first.py"})),
+    ]
+
+
+def test_filesystem_inventory_limits_directory_entries(monkeypatch, tmp_path) -> None:
+    (tmp_path / "first").mkdir()
+    (tmp_path / "second").mkdir()
+    monkeypatch.setattr("greengap.util.MAX_PATH_INVENTORY_ITEMS", 1)
+
+    paths, error = bounded_filesystem_paths(tmp_path)
+
+    assert paths == ()
+    assert error is not None
+    assert "directory-entry" in error
 
 
 def test_snapshot_ignores_ignored_cache_bytes(tmp_path) -> None:
