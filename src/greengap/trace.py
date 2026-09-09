@@ -247,6 +247,10 @@ class _Context:
     runner_os: str | None = None
 
 
+class _UnknownExpression(str):
+    """String marker that must not be mistaken for a known context value."""
+
+
 def _scalar(value: Any) -> str | None:
     if value is None:
         return ""
@@ -282,7 +286,8 @@ def _expression_lookup(name: str, context: _Context) -> tuple[Any | None, bool]:
     if scope == "matrix":
         return context.matrix.get(key), True
     if scope == "env":
-        return context.env.get(key), True
+        value = context.env.get(key)
+        return (None, False) if isinstance(value, _UnknownExpression) else (value, True)
     if scope == "inputs":
         return context.inputs.get(key), True
     if scope == "github" and key == "event_name":
@@ -2934,7 +2939,7 @@ def _env_mapping(value: Any, context: _Context) -> tuple[dict[str, str], bool]:
             complete = False
             continue
         resolved, known = resolve_expressions(text, context)
-        result[str(key)] = resolved
+        result[str(key)] = resolved if known else _UnknownExpression(resolved)
         complete = complete and known
     return result, complete
 
