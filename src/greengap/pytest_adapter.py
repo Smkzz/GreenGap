@@ -30,6 +30,7 @@ from .util import (
     MAX_COLLECTION_SECONDS,
     MAX_CONFIG_BYTES,
     PathInventoryLimitError,
+    PathReadContext,
     PathSafetyError,
     as_text,
     bounded_filesystem_paths,
@@ -149,17 +150,32 @@ def _inspect_candidate(
     path: Path,
     function_patterns: tuple[str, ...],
     class_patterns: tuple[str, ...],
+    parent_context: PathReadContext | None = None,
+    relative: str | None = None,
 ) -> Candidate:
-    try:
-        relative = normalize_repo_path(root, path)
-    except PathSafetyError as exc:
-        return Candidate(
-            path.as_posix(),
-            "low",
-            (),
-            f"candidate path is unsafe and was not inspected: {exc}",
-        )
-    if path.is_symlink():
+    if parent_context is not None:
+        record = parent_context.record(path)
+        if record is None:
+            return Candidate(
+                path.as_posix(),
+                "low",
+                (),
+                "candidate path was not prepared for safe batch inspection",
+            )
+        relative = relative or path.relative_to(root).as_posix()
+        is_symlink = record[1]
+    else:
+        try:
+            relative = normalize_repo_path(root, path)
+        except PathSafetyError as exc:
+            return Candidate(
+                path.as_posix(),
+                "low",
+                (),
+                f"candidate path is unsafe and was not inspected: {exc}",
+            )
+        is_symlink = path.is_symlink()
+    if is_symlink:
         return Candidate(
             relative,
             "low",
@@ -167,7 +183,14 @@ def _inspect_candidate(
             "symlink test candidate is not inspected by default",
         )
     try:
-        tree = ast.parse(read_limited_text(path, MAX_CONFIG_BYTES), filename=relative)
+        tree = ast.parse(
+            read_limited_text(
+                path,
+                MAX_CONFIG_BYTES,
+                parent_context=parent_context,
+            ),
+            filename=relative,
+        )
     except (OSError, ValueError, SyntaxError, UnicodeError) as exc:
         return Candidate(
             relative, "low", (), f"filename matched but AST inspection failed: {exc}"
@@ -180,35 +203,95 @@ def _inspect_candidate(
     )
 
 
-def discover_candidates(root: Path) -> tuple[Candidate, ...]:
+def _inspect_candidate_batch(
+    root: Path,
+    entries: tuple[tuple[Path, str], ...],
+    function_patterns: tuple[str, ...],
+    class_patterns: tuple[str, ...],
+    parent_context: PathReadContext | None,
+) -> tuple[Candidate, ...]:
+    return tuple(
+        _inspect_candidate(
+            root,
+            path,
+            function_patterns,
+            class_patterns,
+            parent_context,
+            relative,
+        )
+        for path, relative in entries
+    )
+
+
+def discover_candidates(
+    root: Path,
+    *,
+    read_context: PathReadContext | None = None,
+) -> tuple[Candidate, ...]:
     options, _ = pytest_config(root)
     file_patterns = split_patterns(options.get("python_files"), DEFAULT_FILE_PATTERNS)
     function_patterns = split_patterns(options.get("python_functions"), DEFAULT_FUNCTION_PATTERNS)
     class_patterns = split_patterns(options.get("python_classes"), DEFAULT_CLASS_PATTERNS)
     git_paths = _git_candidate_paths(root)
     paths = _filesystem_candidate_paths(root) if git_paths is None else iter(git_paths)
-    candidate_paths = tuple(
-        path
+    candidate_entries = tuple(
+        (path, path.relative_to(root).as_posix())
         for path in paths
         if _matches(path.name, file_patterns) and path.name.endswith(".py")
     )
+    candidate_paths = tuple(path for path, _ in candidate_entries)
+    context = read_context or PathReadContext(root)
+    context_error = context.prepare(candidate_paths)
+    batch_context: PathReadContext | None = context
+    if context_error is not None:
+        batch_context = None
     if len(candidate_paths) >= _DISCOVERY_PARALLEL_MIN_FILES:
         workers = min(_DISCOVERY_MAX_WORKERS, len(candidate_paths))
+        chunk_size = (len(candidate_paths) + workers - 1) // workers
+        chunks = tuple(
+            candidate_entries[index : index + chunk_size]
+            for index in range(0, len(candidate_paths), chunk_size)
+        )
         with ThreadPoolExecutor(max_workers=workers) as executor:
             candidates = tuple(
-                executor.map(
-                    _inspect_candidate,
-                    (root,) * len(candidate_paths),
-                    candidate_paths,
-                    (function_patterns,) * len(candidate_paths),
-                    (class_patterns,) * len(candidate_paths),
+                candidate
+                for future in tuple(
+                    executor.submit(
+                        _inspect_candidate_batch,
+                        root,
+                        chunk,
+                        function_patterns,
+                        class_patterns,
+                        batch_context,
+                    )
+                    for chunk in chunks
                 )
+                for candidate in future.result()
             )
     else:
         candidates = tuple(
-            _inspect_candidate(root, path, function_patterns, class_patterns)
-            for path in candidate_paths
+            _inspect_candidate(
+                root,
+                path,
+                function_patterns,
+                class_patterns,
+                batch_context,
+                relative,
+            )
+            for path, relative in candidate_entries
         )
+    if batch_context is not None:
+        context_error = batch_context.verify()
+        if context_error is not None:
+            candidates = tuple(
+                replace(
+                    candidate,
+                    confidence="low",
+                    symbols=(),
+                    reason=f"{candidate.reason}; {context_error}",
+                )
+                for candidate in candidates
+            )
     return tuple(sorted(candidates, key=lambda item: item.path))
 
 
@@ -823,6 +906,7 @@ def scan_pytest(
     *,
     python_executable: str | None = None,
     collect: bool = True,
+    read_context: PathReadContext | None = None,
 ) -> tuple[tuple[Candidate, ...], CollectionResult]:
     collection = (
         collect_pytest(root, timeout, python_executable)
@@ -832,7 +916,7 @@ def scan_pytest(
         )
     )
     try:
-        candidates = discover_candidates(root)
+        candidates = discover_candidates(root, read_context=read_context)
     except PathInventoryLimitError as exc:
         collection = replace(collection, complete=False, error=str(exc))
         candidates = ()

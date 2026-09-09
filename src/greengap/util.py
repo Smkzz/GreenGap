@@ -33,6 +33,33 @@ MAX_CHANGED_FILE_BYTES = 4 * 1024 * 1024
 MAX_PATH_INVENTORY_BYTES = 64 * 1024 * 1024
 MAX_PATH_INVENTORY_ITEMS = MAX_WORKSPACE_FILES
 
+_TRANSIENT_PATHS = frozenset(
+    {
+        ".git",
+        ".tox",
+        ".nox",
+        ".venv",
+        "venv",
+        "node_modules",
+        "build",
+        "dist",
+        ".eggs",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".cache",
+        "htmlcov",
+        "coverage",
+        "reports/raw",
+        "qualification/clones",
+        "qualification/envs",
+    }
+)
+_TRANSIENT_COMPONENTS = frozenset(
+    item for item in _TRANSIENT_PATHS if "/" not in item
+)
+
 
 class PathSafetyError(ValueError):
     """A path is outside the repository or crosses a symlink boundary."""
@@ -120,27 +147,205 @@ def _file_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
     )
 
 
-def read_limited_bytes(path: Path, limit: int) -> bytes:
+_PathRecord = tuple[tuple[int, int, int, int, int], bool, bytes]
+
+
+def _scan_selected_entries(
+    parent: Path,
+    names: set[str],
+    device: int,
+) -> tuple[dict[str, _PathRecord], str | None]:
+    """Read selected child identities in one directory scan."""
+
+    records: dict[str, _PathRecord] = {}
+    try:
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                if entry.name not in names:
+                    continue
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                    is_symlink = stat.S_ISLNK(info.st_mode)
+                    target = os.fsencode(os.readlink(entry.path)) if is_symlink else b""
+                    identity = (
+                        device,
+                        entry.inode(),
+                        info.st_mode,
+                        info.st_size,
+                        info.st_mtime_ns,
+                    )
+                except OSError as exc:
+                    return {}, f"could not inspect {entry.path}: {exc}"
+                records[entry.name] = (identity, is_symlink, target)
+    except OSError as exc:
+        return {}, f"could not inspect {parent}: {exc}"
+    missing = names - records.keys()
+    if missing:
+        return {}, f"path disappeared during batch preparation: {parent / sorted(missing)[0]}"
+    return records, None
+
+
+class PathReadContext:
+    """Batch directory and file safety checks for one bounded analysis phase."""
+
+    __slots__ = ("root", "_parents", "_files", "_parent_files")
+
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+        self._parents: dict[Path, tuple[int, int, int, int, int]] = {}
+        self._files: dict[Path, _PathRecord] = {}
+        self._parent_files: dict[Path, dict[str, _PathRecord]] = {}
+
+    def prepare(self, paths: Sequence[Path]) -> str | None:
+        """Validate and remember every parent and selected file in ``paths``."""
+
+        parents: set[Path] = set()
+        selected_names: dict[Path, set[str]] = {}
+        root = self.root
+        for path in paths:
+            try:
+                path.relative_to(root)
+            except ValueError:
+                return f"path escapes repository root: {path}"
+            leaf_parent = path.parent
+            names = selected_names.setdefault(leaf_parent, set())
+            names.add(path.name)
+            if leaf_parent in parents:
+                continue
+            current = leaf_parent
+            while True:
+                parents.add(current)
+                if current == root:
+                    break
+                parent = current.parent
+                if parent == current:
+                    return f"path parent escaped repository root: {path}"
+                try:
+                    parent.relative_to(root)
+                except ValueError:
+                    return f"path parent escaped repository root: {path}"
+                current = parent
+
+        identities: dict[Path, tuple[int, int, int, int, int]] = {}
+        for parent in parents:
+            try:
+                info = parent.lstat()
+            except OSError as exc:
+                return f"could not inspect {parent}: {exc}"
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                return f"path crosses non-directory parent: {parent}"
+            identities[parent] = _file_identity(info)
+
+        parent_files: dict[Path, dict[str, _PathRecord]] = {}
+        files: dict[Path, _PathRecord] = {}
+        for parent, names in selected_names.items():
+            records, error = _scan_selected_entries(parent, names, identities[parent][0])
+            if error is not None:
+                return error
+            parent_files[parent] = records
+            for name, record in records.items():
+                files[parent / name] = record
+        self._parents = identities
+        self._files = files
+        self._parent_files = parent_files
+        return None
+
+    def record(self, path: Path) -> _PathRecord | None:
+        """Return the prepared path identity, if this phase owns ``path``."""
+
+        return self._files.get(path)
+
+    def verify(self) -> str | None:
+        """Fail closed if a prepared parent or selected file changed."""
+
+        for parent, expected in self._parents.items():
+            try:
+                info = parent.lstat()
+            except OSError as exc:
+                return f"could not recheck {parent}: {exc}"
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                return f"path parent changed to a non-directory: {parent}"
+            if _file_identity(info) != expected:
+                return f"path parent changed during inspection: {parent}"
+            wanted = self._parent_files.get(parent)
+            if wanted:
+                current, error = _scan_selected_entries(parent, set(wanted), expected[0])
+                if error is not None:
+                    return error
+                for name, record in wanted.items():
+                    if current.get(name) != record:
+                        return f"path changed during inspection: {parent / name}"
+        return None
+
+
+def read_limited_bytes(
+    path: Path,
+    limit: int,
+    *,
+    parent_context: PathReadContext | None = None,
+) -> bytes:
     """Read regular-file bytes or stable symlink metadata without following links."""
 
-    for parent in path.parents:
+    if parent_context is None:
+        for parent in path.parents:
+            try:
+                if stat.S_ISLNK(parent.lstat().st_mode):
+                    raise ValueError(f"path crosses symlink: {parent}")
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ValueError(f"could not inspect {parent}: {exc}") from exc
+    else:
+        record = parent_context.record(path)
+        if record is None:
+            raise ValueError(f"path was not prepared for safe batch reading: {path}")
+        expected_identity, is_symlink, expected_target = record
+        if is_symlink:
+            try:
+                target = os.fsencode(os.readlink(path))
+            except OSError as exc:
+                raise ValueError(f"could not read symlink {path}: {exc}") from exc
+            if target != expected_target:
+                raise ValueError(f"symlink changed during inspection: {path}")
+            if len(target) + len(b"SYMLINK\0") > limit:
+                raise ValueError(f"symlink target exceeds size limit: {path}")
+            return b"SYMLINK\0" + target
+        if not stat.S_ISREG(expected_identity[2]):
+            raise ValueError(f"unsupported non-regular file: {path}")
+        if expected_identity[3] > limit:
+            raise ValueError(f"file exceeds size limit: {path}")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        batch_descriptor: int | None = None
         try:
-            if stat.S_ISLNK(parent.lstat().st_mode):
-                raise ValueError(f"path crosses symlink: {parent}")
-        except FileNotFoundError:
-            continue
+            batch_descriptor = os.open(path, flags)
+            opened_info = os.fstat(batch_descriptor)
+            if expected_identity != _file_identity(opened_info):
+                raise ValueError(f"file changed during inspection: {path}")
+            data = os.read(batch_descriptor, expected_identity[3])
+            closed_info = os.fstat(batch_descriptor)
         except OSError as exc:
-            raise ValueError(f"could not inspect {parent}: {exc}") from exc
+            raise ValueError(f"could not read {path}: {exc}") from exc
+        finally:
+            if batch_descriptor is not None:
+                with suppress(OSError):
+                    os.close(batch_descriptor)
+        if expected_identity != _file_identity(closed_info):
+            raise ValueError(f"file changed during inspection: {path}")
+        if len(data) != expected_identity[3]:
+            raise ValueError(f"file changed during inspection: {path}")
+        return data
     try:
-        info = path.lstat()
+        info = path.lstat() if parent_context is None else None
     except OSError as exc:
         raise ValueError(f"could not inspect {path}: {exc}") from exc
-    if stat.S_ISLNK(info.st_mode):
+    if parent_context is None and info is not None and stat.S_ISLNK(info.st_mode):
         try:
-            target = os.readlink(path)
+            target_text = os.readlink(path)
         except OSError as exc:
             raise ValueError(f"could not read symlink {path}: {exc}") from exc
-        encoded = os.fsencode(target)
+        encoded = os.fsencode(target_text)
         if len(encoded) + len(b"SYMLINK\0") > limit:
             raise ValueError(f"symlink target exceeds size limit: {path}")
         try:
@@ -149,9 +354,9 @@ def read_limited_bytes(path: Path, limit: int) -> bytes:
         except OSError as exc:
             raise ValueError(f"could not recheck symlink {path}: {exc}") from exc
         return b"SYMLINK\0" + encoded
-    if not stat.S_ISREG(info.st_mode):
+    if parent_context is None and (info is None or not stat.S_ISREG(info.st_mode)):
         raise ValueError(f"unsupported non-regular file: {path}")
-    if info.st_size > limit:
+    if parent_context is None and info is not None and info.st_size > limit:
         raise ValueError(f"file exceeds size limit: {path}")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     if hasattr(os, "O_NOFOLLOW"):
@@ -160,15 +365,19 @@ def read_limited_bytes(path: Path, limit: int) -> bytes:
     try:
         descriptor = os.open(path, flags)
         opened_info = os.fstat(descriptor)
-        if _file_identity(info) != _file_identity(opened_info):
+        if parent_context is not None:
+            raise AssertionError("batch reader returned before the fast path")
+        assert info is not None
+        expected = _file_identity(info)
+        if expected != _file_identity(opened_info):
             raise ValueError(f"file changed during inspection: {path}")
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = None
             data = handle.read(limit + 1)
             closed_info = os.fstat(handle.fileno())
-        if _file_identity(info) != _file_identity(closed_info):
+        if expected != _file_identity(closed_info):
             raise ValueError(f"file changed during inspection: {path}")
-        if _file_identity(info) != _file_identity(path.lstat()):
+        if parent_context is None and info is not None and expected != _file_identity(path.lstat()):
             raise ValueError(f"file path changed during inspection: {path}")
     except ValueError:
         raise
@@ -183,40 +392,44 @@ def read_limited_bytes(path: Path, limit: int) -> bytes:
     return data
 
 
-def read_limited_text(path: Path, limit: int) -> str:
-    return read_limited_bytes(path, limit).decode("utf-8", errors="strict")
+def read_limited_text(
+    path: Path,
+    limit: int,
+    *,
+    parent_context: PathReadContext | None = None,
+) -> str:
+    return read_limited_bytes(path, limit, parent_context=parent_context).decode(
+        "utf-8", errors="strict"
+    )
 
 
 def is_transient_path(path: str | Path) -> bool:
-    transient = {
-        ".git",
-        ".tox",
-        ".nox",
-        ".venv",
-        "venv",
-        "node_modules",
-        "build",
-        "dist",
-        ".eggs",
-        "__pycache__",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".cache",
-        "htmlcov",
-        "coverage",
-        "reports/raw",
-        "qualification/clones",
-        "qualification/envs",
-    }
     parts = Path(str(path).replace("\\", "/")).parts
     lowered = {part.lower() for part in parts}
-    if lowered & transient:
+    if lowered & _TRANSIENT_COMPONENTS:
         return True
     normalized = "/".join(part.lower() for part in parts)
     if normalized.startswith("qualification/stage0f"):
         return True
-    return any(normalized == item or normalized.startswith(item + "/") for item in transient)
+    return any(
+        normalized == item or normalized.startswith(item + "/")
+        for item in _TRANSIENT_PATHS
+    )
+
+
+def _is_transient_relative_text(path: str) -> bool:
+    """Fast transient-path check for normalized filesystem walk results."""
+
+    normalized = path.replace("\\", "/").lower()
+    parts = normalized.split("/")
+    if any(part in _TRANSIENT_COMPONENTS for part in parts):
+        return True
+    if normalized.startswith("qualification/stage0f"):
+        return True
+    return any(
+        normalized == item or normalized.startswith(item + "/")
+        for item in _TRANSIENT_PATHS
+    )
 
 
 def process_group_options() -> dict[str, Any]:
@@ -519,7 +732,7 @@ def bounded_git_paths(
         if inventory_items > item_limit:
             return tuple(paths), f"path inventory exceeds limit of {item_limit} files"
         path = os.fsdecode(item)
-        if not is_transient_path(path):
+        if not _is_transient_relative_text(path):
             paths.append(path)
     if output_limited or (raw and not raw.endswith(b"\0")):
         return tuple(paths), f"path inventory exceeds byte limit of {MAX_PATH_INVENTORY_BYTES}"
@@ -571,7 +784,8 @@ def bounded_filesystem_paths(
     """Walk regular and symlink files without unbounded path accumulation."""
 
     item_limit = MAX_PATH_INVENTORY_ITEMS if max_items is None else max_items
-    directories: list[Path] = [root]
+    root_text = os.fspath(root)
+    directories: list[str] = [root_text]
     paths: list[str] = []
     inspected_directories = 0
     while directories:
@@ -582,22 +796,23 @@ def bounded_filesystem_paths(
         try:
             with os.scandir(directory) as entries:
                 for entry in entries:
-                    relative = Path(os.path.relpath(entry.path, root))
-                    if is_transient_path(relative):
+                    relative = os.path.relpath(entry.path, root_text).replace(os.sep, "/")
+                    if _is_transient_relative_text(relative):
                         continue
                     try:
                         if entry.is_dir(follow_symlinks=False):
-                            directories.append(Path(entry.path))
+                            directories.append(os.fspath(entry.path))
                             continue
-                        if entry.is_symlink() and entry.is_dir(follow_symlinks=True):
-                            continue
-                        if not entry.is_file(follow_symlinks=False) and not entry.is_symlink():
+                        if not entry.is_file(follow_symlinks=False) and (
+                            not entry.is_symlink()
+                            or entry.is_dir(follow_symlinks=True)
+                        ):
                             continue
                     except OSError:
                         return tuple(sorted(paths)), "filesystem path enumeration failed"
                     if len(paths) >= item_limit:
                         return tuple(sorted(paths)), f"path inventory exceeds limit of {item_limit} files"
-                    paths.append(relative.as_posix())
+                    paths.append(relative)
         except OSError:
             return tuple(sorted(paths)), "filesystem path enumeration failed"
     return tuple(sorted(paths)), None

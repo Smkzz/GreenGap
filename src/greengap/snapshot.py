@@ -11,6 +11,7 @@ from .util import (
     MAX_WORKSPACE_FILE_BYTES,
     MAX_WORKSPACE_FILES,
     MAX_WORKSPACE_TOTAL_BYTES,
+    PathReadContext,
     bounded_filesystem_paths,
     bounded_git_paths,
     read_limited_bytes,
@@ -34,15 +35,30 @@ def _walk_paths(root: Path) -> tuple[tuple[str, ...], str | None]:
     return bounded_filesystem_paths(root)
 
 
-def _read_snapshot_entry(root: Path, relative: str) -> tuple[bytes, str | None]:
-    path = root / Path(relative)
+def _read_snapshot_entry(
+    path: Path,
+    relative: str,
+    parent_context: PathReadContext | None = None,
+) -> tuple[bytes, str | None]:
     try:
-        return read_limited_bytes(path, MAX_WORKSPACE_FILE_BYTES), None
+        return (
+            read_limited_bytes(
+                path,
+                MAX_WORKSPACE_FILE_BYTES,
+                parent_context=parent_context,
+            ),
+            None,
+        )
     except ValueError as exc:
         return b"<UNREADABLE>", f"{relative}: {exc}"
 
 
-def workspace_snapshot(root: Path, timeout: float = 10.0) -> WorkspaceSnapshot:
+def workspace_snapshot(
+    root: Path,
+    timeout: float = 10.0,
+    *,
+    read_context: PathReadContext | None = None,
+) -> WorkspaceSnapshot:
     """Hash relevant tracked and non-ignored bytes, including dirty files."""
 
     root = root.resolve()
@@ -79,7 +95,14 @@ def workspace_snapshot(root: Path, timeout: float = 10.0) -> WorkspaceSnapshot:
         return True
 
     selected_paths = paths[:MAX_WORKSPACE_FILES]
-    if len(selected_paths) >= _SNAPSHOT_PARALLEL_MIN_FILES:
+    selected_files = tuple(root / Path(relative) for relative in selected_paths)
+    context = read_context or PathReadContext(root)
+    context_error = context.prepare(selected_files)
+    batch_context: PathReadContext | None = context
+    if context_error is not None:
+        errors.append(context_error)
+        batch_context = None
+    if batch_context is None and len(selected_paths) >= _SNAPSHOT_PARALLEL_MIN_FILES:
         workers = min(_SNAPSHOT_MAX_WORKERS, len(selected_paths))
         with ThreadPoolExecutor(max_workers=workers) as executor:
             index = 0
@@ -88,8 +111,10 @@ def workspace_snapshot(root: Path, timeout: float = 10.0) -> WorkspaceSnapshot:
                 # Never schedule a batch whose worst-case bytes could cross
                 # the total-read limit; finish the tail sequentially.
                 if total_bytes > MAX_WORKSPACE_TOTAL_BYTES - (workers * MAX_WORKSPACE_FILE_BYTES):
-                    for relative in selected_paths[index:]:
-                        data, error = _read_snapshot_entry(root, relative)
+                    for relative, path in zip(
+                        selected_paths[index:], selected_files[index:], strict=True
+                    ):
+                        data, error = _read_snapshot_entry(path, relative, batch_context)
                         if not consume(relative, data, error):
                             break
                     break
@@ -97,8 +122,9 @@ def workspace_snapshot(root: Path, timeout: float = 10.0) -> WorkspaceSnapshot:
                     batch,
                     executor.map(
                         _read_snapshot_entry,
-                        (root,) * len(batch),
+                        selected_files[index : index + len(batch)],
                         batch,
+                        (batch_context,) * len(batch),
                     ),
                     strict=True,
                 ):
@@ -108,8 +134,12 @@ def workspace_snapshot(root: Path, timeout: float = 10.0) -> WorkspaceSnapshot:
                 else:
                     index += len(batch)
     else:
-        for relative in selected_paths:
-            data, error = _read_snapshot_entry(root, relative)
+        for relative, path in zip(selected_paths, selected_files, strict=True):
+            data, error = _read_snapshot_entry(path, relative, batch_context)
             if not consume(relative, data, error):
                 break
+    if batch_context is not None:
+        context_error = batch_context.verify()
+        if context_error is not None:
+            errors.append(context_error)
     return WorkspaceSnapshot(digest.hexdigest(), paths, method, tuple(errors))

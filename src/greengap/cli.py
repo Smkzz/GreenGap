@@ -27,16 +27,27 @@ def run_scan(
     from .model import ScanReport
     from .pytest_adapter import scan_pytest
     from .snapshot import workspace_snapshot
+    from .util import PathReadContext
 
     root = root.resolve()
-    snapshot = initial or workspace_snapshot(root, timeout=min(timeout, 10.0))
+    read_context = PathReadContext(root)
+    snapshot = initial or workspace_snapshot(
+        root,
+        timeout=min(timeout, 10.0),
+        read_context=read_context,
+    )
     candidates, collection = scan_pytest(
         root,
         timeout,
         python_executable=python_executable,
         collect=collect,
+        read_context=read_context if initial is None else None,
     )
-    final = workspace_snapshot(root, timeout=min(timeout, 10.0))
+    final = workspace_snapshot(
+        root,
+        timeout=min(timeout, 10.0),
+        read_context=read_context,
+    )
     errors = list(snapshot.errors) + list(final.errors)
     stable = snapshot.fingerprint == final.fingerprint and snapshot.complete and final.complete
     if not stable:
@@ -73,16 +84,22 @@ def run_plan(
     from .reconcile import plan_is_complete, reconcile_plan
     from .snapshot import workspace_snapshot
     from .trace import trace_github_actions
-    from .util import git_workspace_clean
+    from .util import PathReadContext, git_workspace_clean
 
     root = root.resolve()
-    snapshot = workspace_snapshot(root, timeout=min(timeout, 10.0))
+    read_context = PathReadContext(root)
+    snapshot = workspace_snapshot(
+        root,
+        timeout=min(timeout, 10.0),
+        read_context=read_context,
+    )
     workspace_clean = git_workspace_clean(root, timeout=min(timeout, 10.0))
     candidates, collection = scan_pytest(
         root,
         timeout,
         python_executable=python_executable,
         collect=collect,
+        read_context=read_context,
     )
     trace = trace_github_actions(
         root,
@@ -97,7 +114,11 @@ def run_plan(
         diff_timed_out,
         workspace_clean=workspace_clean,
     )
-    final = workspace_snapshot(root, timeout=min(timeout, 10.0))
+    final = workspace_snapshot(
+        root,
+        timeout=min(timeout, 10.0),
+        read_context=read_context,
+    )
     stable = snapshot.fingerprint == final.fingerprint and snapshot.complete and final.complete
     errors = list(snapshot.errors) + list(final.errors)
     if not stable:

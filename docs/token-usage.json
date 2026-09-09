@@ -17,6 +17,23 @@
     "snapshot_digest": "codex-security-snapshot/v1:sha256:2e203a125ad6d4922d2ef593959df44e52d37bb38f03b8ef7cc231461f48e77f",
     "finding_count": 0
   },
+  "SECURITY_DIFF_SCAN": {
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "max",
+    "thread_count": 2,
+    "input_tokens_raw": 6122120,
+    "cached_input_tokens": 6038272,
+    "uncached_input_tokens": 83848,
+    "cache_write_input_tokens": 0,
+    "output_tokens": 14097,
+    "reasoning_output_tokens": 6252,
+    "total_tokens": 6136217,
+    "source": "Codex Security completed working-tree diff scan completion telemetry",
+    "scan_id": "849c6050-cb45-45a1-a2a9-e444ccb944ae",
+    "snapshot_digest": "codex-security-snapshot/v1:sha256:f624706b06f492b69b4b1afbb09fd1aa66322c45867ff8ac076219740f8cd318",
+    "finding_count": 0,
+    "coverage": "complete_changed_diff_not_repository"
+  },
   "SECURITY_SCANS": [
     {
       "scan_id": "299864e6-f17b-4677-9ca8-90a3c54e179e",
@@ -68,6 +85,23 @@
       "finding_count": 0,
       "severity_counts": {},
       "status": "COMPLETE_NO_REPORTABLE_FINDINGS_PARTIAL_COVERAGE"
+    },
+    {
+      "scan_id": "849c6050-cb45-45a1-a2a9-e444ccb944ae",
+      "snapshot_digest": "codex-security-snapshot/v1:sha256:f624706b06f492b69b4b1afbb09fd1aa66322c45867ff8ac076219740f8cd318",
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "max",
+      "thread_count": 2,
+      "input_tokens_raw": 6122120,
+      "cached_input_tokens": 6038272,
+      "uncached_input_tokens": 83848,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 14097,
+      "reasoning_output_tokens": 6252,
+      "total_tokens": 6136217,
+      "finding_count": 0,
+      "severity_counts": {},
+      "status": "COMPLETE_NO_REPORTABLE_FINDINGS_WORKING_TREE_DIFF_COMPLETE_CHANGED_COVERAGE"
     }
   ],
   "PRIMARY_IMPLEMENTATION": {

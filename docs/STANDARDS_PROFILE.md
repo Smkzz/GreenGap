@@ -1,8 +1,8 @@
 # Standards applicability profile
 
 This is an evidence profile, not a certification or legal-compliance claim.
-Editions and publication status must be rechecked at freeze; the access date
-for this candidate is 2026-09-08.
+Editions and publication status must be rechecked at the final freeze; the
+access date for this candidate is 2026-09-09.
 
 | Reference | Candidate scope | Claim boundary |
 | --- | --- | --- |
@@ -18,7 +18,7 @@ for this candidate is 2026-09-08.
 
 ## Official-source revalidation
 
-Revalidated on 2026-09-08 against the linked official pages before this
+Revalidated on 2026-09-09 against the linked official pages before this
 candidate handoff:
 
 - [OpenSSF OSPS Baseline 2026.08.28](https://baseline.openssf.org/versions/2026-08-28) is explicitly versioned `2026.08.28`; Level 1 is the applicable engineering minimum, while higher-level organizational controls remain assessed rather than claimed.
@@ -27,7 +27,7 @@ candidate handoff:
 - [OpenSSF Best Practices criteria](https://www.bestpractices.dev/en/criteria) remains the assessment reference; no badge, silver status, or reviewer identity is claimed.
 - [PyPA GitHub release guidance](https://packaging.python.org/en/latest/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/), [PyPI Trusted Publishers](https://docs.pypi.org/trusted-publishers/), and [PEP 740](https://peps.python.org/pep-0740/) are the packaging/provenance references; registry publication remains disabled and unauthorized.
 - [GitHub secure-use guidance](https://docs.github.com/en/actions/reference/security/secure-use) and [release-integrity verification](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/verify-release-integrity) are the CI and public-verification references; hosted verification has not been performed for this candidate.
-- [SARIF 2.1.0](https://www.oasis-open.org/standard/sarifv2-1-os/), [SemVer 2.0.0](https://semver.org/spec/v2.0.0.html), [WCAG 2.2](https://www.w3.org/TR/WCAG22/), and [ISO/IEC 25010:2023](https://www.iso.org/standard/78176.html) remain the format, versioning, accessibility-scope, and quality-model references. The candidate ships no web surface, and ISO is used only as an internal quality vocabulary.
+- [SARIF 2.1.0](https://www.oasis-open.org/standard/sarifv2-1-os/) and its [official 2.1.0 JSON Schema](https://docs.oasis-open.org/sarif/sarif/v2.1.0/cs01/schemas/sarif-schema-2.1.0.json), [SemVer 2.0.0](https://semver.org/spec/v2.0.0.html), [WCAG 2.2](https://www.w3.org/TR/WCAG22/), and [ISO/IEC 25010:2023](https://www.iso.org/standard/78176.html) remain the format, versioning, accessibility-scope, and quality-model references. The candidate ships no web surface, and ISO is used only as an internal quality vocabulary.
 
 The launch report must include the exact controls assessed, evidence paths,
 unknown organizational controls, and any human-review requirement.

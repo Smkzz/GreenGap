@@ -51,3 +51,23 @@ fail-closed workspace binding or adding a source cache. The launch decision
 remains open pending an owner-approved budget exception, a separately reviewed
 algorithmic change, and Linux evidence; the measurements are not presented as
 a stable-performance pass.
+
+The 2026-09-09 post-optimization matrix was measured on the same Windows 11
+AMD64 / Python 3.13.3 reference environment, again with one warmup, five
+measured runs, and `collection_enabled=false`:
+
+| Fixture | p50 wall | p95 wall | peak parent RSS | disk delta | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Small | 0.146 s | 0.214 s | 33.3 MiB | 0 B | measured |
+| Medium | 1.390 s | 1.521 s | 43.3 MiB | 0 B | measured |
+| Large | 13.473 s | 14.419 s | 123.7 MiB | 0 B | timing budget miss |
+
+Receipts: [`performance-small-20260909.json`](evidence/performance-small-20260909.json),
+[`performance-medium-20260909.json`](evidence/performance-medium-20260909.json),
+[`performance-large-20260909.json`](evidence/performance-large-20260909.json),
+and the aggregate [`performance-20260909.json`](evidence/performance-20260909.json).
+The algorithmic pass reduced large-fixture p95 from 57.926 s to 14.419 s and
+preserved the 512 MiB memory budget, but it did not meet the frozen 5.0 s
+target. No unilateral exception is accepted; the performance blocker remains
+open pending a qualifying further optimization or the master prompt's
+independent rebaseline conditions, plus Ubuntu evidence.

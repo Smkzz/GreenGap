@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from greengap.pytest_adapter import discover_candidates, scan_pytest
 from greengap.snapshot import workspace_snapshot
+from greengap.util import PathReadContext, read_limited_bytes
 
 from .conftest import write_files
 
@@ -20,6 +23,21 @@ def test_snapshot_changes_for_tracked_dirty_bytes(tmp_path) -> None:
     (tmp_path / "tracked.txt").write_text("two\n", encoding="utf-8")
     second = workspace_snapshot(tmp_path)
     assert first.fingerprint != second.fingerprint
+
+
+def test_prepared_batch_read_fails_closed_when_file_changes(tmp_path) -> None:
+    path = tmp_path / "candidate.py"
+    path.write_text("def test_before():\n    pass\n", encoding="utf-8")
+    context = PathReadContext(tmp_path)
+
+    assert context.prepare((path,)) is None
+    assert read_limited_bytes(path, 1024, parent_context=context)
+
+    path.write_text("def test_after():\n    pass\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="changed during inspection"):
+        read_limited_bytes(path, 1024, parent_context=context)
+    assert context.verify() is not None
 
 
 def test_snapshot_ignores_ignored_cache_bytes(tmp_path) -> None:
