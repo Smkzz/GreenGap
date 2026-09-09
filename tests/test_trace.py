@@ -602,6 +602,49 @@ runs:
     assert not result.relevant_incomplete
 
 
+@pytest.mark.parametrize(
+    ("matrix_value", "expected"),
+    [("false", "false"), ("0", "0")],
+)
+def test_composite_expression_falsy_input_is_known_runtime_string(
+    tmp_path, matrix_value: str, expected: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: caller
+on: push
+jobs:
+  test:
+    strategy:
+      matrix:
+        enabled: [{matrix_value}]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/test
+        with:
+          enabled: ${{{{ matrix.enabled }}}}
+""",
+            ".github/actions/test/action.yml": f"""name: test
+inputs:
+  enabled:
+    default: false
+runs:
+  using: composite
+  steps:
+    - if: ${{{{ inputs.enabled == '{expected}' }}}}
+      shell: bash
+      run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert len(result.invocations) == 1
+    assert not result.relevant_incomplete
+
+
 def test_local_composite_action_cycle_is_unknown(tmp_path) -> None:
     write_files(
         tmp_path,

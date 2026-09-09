@@ -274,7 +274,8 @@ def _lookup(name: str, context: _Context) -> Any | None:
 
 def _expression_value(expression: str, context: _Context) -> str | None:
     expression = expression.strip()
-    for part in (part.strip() for part in expression.split("||")):
+    parts = [part.strip() for part in expression.split("||")]
+    for index, part in enumerate(parts):
         if part.startswith("format(") and part.endswith(")"):
             inner = part[len("format(") : -1]
             match = re.match(r"\s*(['\"])(.*?)\1\s*,\s*(.*?)\s*$", inner)
@@ -287,10 +288,20 @@ def _expression_value(expression: str, context: _Context) -> str | None:
             scalar = _scalar(value)
             return None if scalar is None else template.replace("{0}", scalar)
         if len(part) >= 2 and part[0] == part[-1] and part[0] in "'\"":
-            return part[1:-1]
+            scalar = part[1:-1]
+            if _github_truthy(scalar) or index == len(parts) - 1:
+                return scalar
+            continue
         value = _lookup(part, context)
-        if value is not None and _github_truthy(value):
-            return _scalar(value)
+        if value is None:
+            if index < len(parts) - 1:
+                continue
+            return None
+        scalar = _scalar(value)
+        if scalar is None:
+            return None
+        if _github_truthy(value) or index == len(parts) - 1:
+            return scalar
     return None
 
 
