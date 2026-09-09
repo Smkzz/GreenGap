@@ -258,6 +258,8 @@ def test_reusable_plan_workflow_keeps_github_context_out_of_shell() -> None:
     assert 'gh release verify "${RELEASE_TAG}" --repo "${GREENGAP_RELEASE_REPOSITORY}"' in shell_text
     assert 'gh release verify-asset "${RELEASE_TAG}" "${wheels[0]}" --repo "${GREENGAP_RELEASE_REPOSITORY}"' in shell_text
     assert 'gh api "repos/${GREENGAP_RELEASE_REPOSITORY}/contents/.github/requirements-runtime.txt?ref=${GREENGAP_SOURCE_REF}"' in shell_text
+    assert 'gh api "repos/${GREENGAP_RELEASE_REPOSITORY}/contents/.github/requirements-workflow-collection.txt?ref=${GREENGAP_SOURCE_REF}"' in shell_text
+    assert "the installed GreenGap release has no explicit collection controls" in shell_text
     assert "GREENGAP_RELEASE_REPOSITORY: Smkzz/GreenGap" in workflow.read_text(encoding="utf-8")
     assert "green-gap-source-ref:" in workflow.read_text(encoding="utf-8")
     assert "GREENGAP_SOURCE_REF: ${{ inputs.green-gap-source-ref }}" in workflow.read_text(encoding="utf-8")

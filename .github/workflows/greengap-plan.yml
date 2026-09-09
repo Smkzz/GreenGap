@@ -97,6 +97,23 @@ jobs:
             --require-hashes \
             -r "${runtime_lock}"
 
+      - name: Install the exact pytest collection harness
+        if: ${{ inputs.trust-collection }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GREENGAP_SOURCE_REF: ${{ inputs.green-gap-source-ref }}
+          GREENGAP_RELEASE_REPOSITORY: Smkzz/GreenGap
+        run: |
+          set -euo pipefail
+          collection_lock=.greengap-dist/collection-requirements.txt
+          gh api "repos/${GREENGAP_RELEASE_REPOSITORY}/contents/.github/requirements-workflow-collection.txt?ref=${GREENGAP_SOURCE_REF}" \
+            --jq '.content' | tr -d '\n' | base64 --decode > "${collection_lock}"
+          test -s "${collection_lock}"
+          grep -Eq '^pytest==' "${collection_lock}"
+          python -m pip install \
+            --require-hashes \
+            -r "${collection_lock}"
+
       - name: Bind the GitHub change set
         env:
           GREENGAP_EVENT_NAME: ${{ github.event_name }}
@@ -158,10 +175,17 @@ jobs:
           while IFS= read -r changed_file; do
             [[ -z "${changed_file}" ]] || args+=(--changed-file "${changed_file}")
           done < .greengap-changed-files
-          if [[ "${TRUST_COLLECTION}" == "true" ]]; then
-            args+=(--trust-collection)
-          else
-            args+=(--no-collect)
+          if greengap plan --help 2>&1 | grep -q -- '--trust-collection'; then
+            if [[ "${TRUST_COLLECTION}" == "true" ]]; then
+              args+=(--trust-collection)
+            else
+              args+=(--no-collect)
+            fi
+          elif [[ "${TRUST_COLLECTION}" != "true" ]]; then
+            printf '%s\n' '{"report_version":"1.0","mode":"plan","complete":false,"error":"the installed GreenGap release has no explicit collection controls; refusing to execute target collection"}' > greengap-report.json
+            echo 'exit_code=2' >> "${GITHUB_OUTPUT}"
+            cat greengap-report.json
+            exit 0
           fi
           greengap "${args[@]}" > greengap-report.json
           code=$?

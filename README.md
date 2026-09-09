@@ -116,8 +116,10 @@ jobs:
 The angle-bracket values are publication-bound inputs, not a claim that a
 future tag is already live. Do not replace them with `main` or a floating
 major alias. `green-gap-source-ref` must be the exact 40-character GreenGap
-commit whose hash-locked runtime dependencies are installed. The workflow is
-advisory by default; `fail-on-gap: true`
+commit whose hash-locked runtime and trusted-collection dependencies are
+installed. The trusted path installs only GreenGap's pinned pytest harness;
+target-project dependencies remain the caller's responsibility. The workflow
+is advisory by default; `fail-on-gap: true`
 propagates `1` for a proven gap and `2` for incomplete evidence.
 
 ## Install, upgrade, verify, and uninstall
