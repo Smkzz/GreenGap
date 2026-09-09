@@ -18,10 +18,10 @@
     "worktree": "qualification/promotion-clean-ca2d25e-20260909",
     "clean_before_evidence_commit": true
   },
-  "evidence_commit": {
+  "initial_evidence_commit": {
     "sha": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
     "tree": "baf69d3ac33966714aa2f96d75d40184a0281f2c",
-    "scope": "documentation-only continuation after the source freeze"
+    "scope": "initial documentation-only continuation after the source freeze"
   },
   "remote": {
     "branch": "release/greengap-1.0.0",
@@ -38,7 +38,7 @@
     "base": "main",
     "head_ref": "release/greengap-1.0.0",
     "head_sha_at_source_freeze": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
-    "evidence_head_sha": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
+    "initial_evidence_head_sha": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
     "review_decision": "REVIEW_REQUIRED",
     "merge_state": "BLOCKED",
     "latest_reviews": []

@@ -12,9 +12,9 @@
   "BASELINE_RELEASE": "0.1.3 corrective-release content is preserved; this task did not mutate, retag, recreate, or publish it",
   "PROMOTION_WORKTREE": "qualification/promotion-clean-ca2d25e-20260909",
   "PROMOTION_WORKTREE_CLEAN_BEFORE_EVIDENCE": true,
-  "EVIDENCE_COMMIT": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
-  "EVIDENCE_COMMIT_TREE": "baf69d3ac33966714aa2f96d75d40184a0281f2c",
-  "EVIDENCE_COMMIT_SCOPE": "documentation-only continuation after the source freeze",
+  "INITIAL_EVIDENCE_COMMIT": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
+  "INITIAL_EVIDENCE_COMMIT_TREE": "baf69d3ac33966714aa2f96d75d40184a0281f2c",
+  "INITIAL_EVIDENCE_COMMIT_SCOPE": "initial documentation-only continuation after the source freeze",
   "REMOTE_BRANCH": "release/greengap-1.0.0",
   "REMOTE_BRANCH_SHA_AT_SOURCE_FREEZE": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
   "PULL_REQUEST": {
@@ -25,7 +25,7 @@
     "base": "main",
     "head_ref": "release/greengap-1.0.0",
     "head_sha_at_source_freeze": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
-    "evidence_head_sha": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
+    "initial_evidence_head_sha": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
     "review_decision": "REVIEW_REQUIRED",
     "merge_state": "BLOCKED",
     "latest_reviews": []
@@ -152,7 +152,7 @@
     "hosted": {
       "receipt": "docs/evidence/hosted-ci-20260909-6f76949.json",
       "exact_source_checks": "20/20 SUCCESS",
-      "evidence_head_checks": "20/20 SUCCESS on documentation-only continuation",
+      "initial_evidence_head_checks": "20/20 SUCCESS on documentation-only continuation",
       "codeql_exact_source_head": false,
       "scheduled_default_branch_exact_source": false
     },

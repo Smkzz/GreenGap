@@ -5,10 +5,10 @@
   "candidate_version": "1.0.0rc1",
   "tested_source_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
   "tested_source_tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
-  "evidence_head": {
+  "initial_evidence_head": {
     "sha": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
     "tree": "baf69d3ac33966714aa2f96d75d40184a0281f2c",
-    "scope": "documentation-only continuation after the source freeze"
+    "scope": "initial documentation-only continuation after the source freeze"
   },
   "pull_request": "https://github.com/Smkzz/GreenGap/pull/11",
   "branch": "release/greengap-1.0.0",
@@ -61,7 +61,7 @@
       "url": "https://github.com/Smkzz/GreenGap/actions/runs/34350413608"
     }
   ],
-  "evidence_head_checks": {
+  "initial_evidence_head_checks": {
     "total": 20,
     "successful": 20,
     "failed": 0,
