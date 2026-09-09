@@ -67,7 +67,13 @@ jobs:
           test -n "${expected}"
           actual="$(sha256sum "${wheels[0]}" | cut -d ' ' -f1)"
           test "${actual}" = "${expected}"
-          python -m pip install --no-deps --force-reinstall "${wheels[0]}"
+          printf '.greengap-dist/%s --hash=sha256:%s\n' "${wheel_name}" "${expected}" > .greengap-dist/wheel-requirements.txt
+          python -m pip install \
+            --no-index \
+            --no-deps \
+            --force-reinstall \
+            --require-hashes \
+            -r .greengap-dist/wheel-requirements.txt
 
       - name: Bind the GitHub change set
         env:
