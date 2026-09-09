@@ -788,7 +788,17 @@ def test_green_gap_self_reusable_workflow_is_ignored_only_in_explicit_context(tm
     write_files(
         tmp_path,
         {
-            ".github/workflows/ci.yml": workflow("pytest tests"),
+            ".github/workflows/ci.yml": """name: CI
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: tests
+        shell: bash
+        run: |
+          pytest tests
+""",
             ".github/workflows/caller.yml": """name: caller
 on: push
 jobs:
