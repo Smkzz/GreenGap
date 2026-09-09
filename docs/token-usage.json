@@ -4,18 +4,20 @@
   "SECURITY_SCAN": {
     "model": "gpt-5.6-luna",
     "reasoning_effort": "max",
-    "thread_count": 1,
-    "input_tokens_raw": 1216294,
-    "cached_input_tokens": 1186816,
-    "uncached_input_tokens": 29478,
+    "thread_count": 2,
+    "input_tokens_raw": 2361390,
+    "cached_input_tokens": 2292992,
+    "uncached_input_tokens": 68398,
     "cache_write_input_tokens": 0,
-    "output_tokens": 5175,
-    "reasoning_output_tokens": 2204,
-    "total_tokens": 1221469,
-    "source": "Codex Security final source-only scan completion telemetry",
-    "scan_id": "a801fffc-1cac-4ff9-a273-b5e3db11313b",
-    "snapshot_digest": "codex-security-snapshot/v1:sha256:2e203a125ad6d4922d2ef593959df44e52d37bb38f03b8ef7cc231461f48e77f",
-    "finding_count": 0
+    "output_tokens": 10862,
+    "reasoning_output_tokens": 3796,
+    "total_tokens": 2372252,
+    "source": "Codex Security final post-remediation repository-wide scan completion telemetry",
+    "scan_id": "64cac254-b127-4803-9436-da53c4c55c9e",
+    "snapshot_digest": "codex-security-snapshot/v1:sha256:eef33cda160e77b852ddbaa2ba3f54571249658aeb9d090a964fd583dbc46216",
+    "finding_count": 0,
+    "tool_coverage": "complete",
+    "semantic_scope_coverage": "partial"
   },
   "SECURITY_DIFF_SCAN": {
     "model": "gpt-5.6-luna",
@@ -102,6 +104,25 @@
       "finding_count": 0,
       "severity_counts": {},
       "status": "COMPLETE_NO_REPORTABLE_FINDINGS_WORKING_TREE_DIFF_COMPLETE_CHANGED_COVERAGE"
+    },
+    {
+      "scan_id": "64cac254-b127-4803-9436-da53c4c55c9e",
+      "snapshot_digest": "codex-security-snapshot/v1:sha256:eef33cda160e77b852ddbaa2ba3f54571249658aeb9d090a964fd583dbc46216",
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "max",
+      "thread_count": 2,
+      "input_tokens_raw": 2361390,
+      "cached_input_tokens": 2292992,
+      "uncached_input_tokens": 68398,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 10862,
+      "reasoning_output_tokens": 3796,
+      "total_tokens": 2372252,
+      "finding_count": 0,
+      "severity_counts": {},
+      "tool_coverage": "complete",
+      "semantic_scope_coverage": "partial",
+      "status": "COMPLETE_NO_REPORTABLE_FINDINGS_FINAL_POST_REMEDIATION"
     }
   ],
   "PRIMARY_IMPLEMENTATION": {

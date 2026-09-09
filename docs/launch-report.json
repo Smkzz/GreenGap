@@ -3,7 +3,9 @@
   "RELEASE_VERSION": "1.0.0rc1",
   "RELEASE_SHA": null,
   "RELEASE_TREE": null,
-  "RELEASE_IDENTITY_STATUS": "LOCAL_CHECKPOINT_PENDING_FINAL_FREEZE: this mission records a local release-branch checkpoint, but stable promotion still requires final exact-head freeze and external gates",
+  "RELEASE_IDENTITY_STATUS": "LOCAL_CHECKPOINT_COMMITTED: source SHA/tree are recorded for the local release-candidate checkpoint; stable promotion still requires final exact-head freeze and external gates",
+  "LOCAL_CHECKPOINT_SHA": "2f20bcc7c1eb568d6061a1a25273896e648dd407",
+  "LOCAL_CHECKPOINT_TREE": "2a50ca4317c9692b1ecd31dfcf4bf6d2354b7552",
   "BASELINE_RELEASE": "0.1.3 corrective-release content is preserved; this task did not mutate, retag, recreate, or publish it",
   "CANDIDATE_BASE_SHA": "2de5f22a0a1fe1aa8f5e30712e96077d923b104f",
   "CANDIDATE_BASE_TREE": "c21113d1192dcd68a117c89b1805da41bc63e32d",
@@ -11,7 +13,7 @@
   "ACCEPTANCE_DOMAINS_PASSED": "4/10 local-only domains",
   "LAUNCH_CRITICAL_OPEN_ITEMS": 10,
   "LAUNCH_CRITICAL_OPEN_ITEM_DETAILS": [
-    "Freeze and commit the candidate, then record the final source SHA/tree and final artifact manifest.",
+    "The local candidate is committed and its source SHA/tree are recorded; final exact-head freeze, release manifest acceptance, and external promotion gates remain open.",
     "Retain hosted security approval as open: the delegated Daybreak review returned a read-only residual assessment, but hosted environment reviewers, branch protection, tag/ruleset immutability, and live receiver execution still require owner readback.",
     "Obtain fresh exact-head Linux and Windows release-style installation evidence.",
     "Exercise the reusable workflow on real PR, push, schedule, and branch-protection paths with the intended ref/change bindings.",
@@ -31,7 +33,7 @@
     "agent_simulations_counted_as_human": false
   },
   "MACHINE_REVIEW_COVERAGE": {
-    "local_regression": "491 passed, 1 skipped",
+    "local_regression": "492 passed, 1 skipped",
     "ruff": "PASS",
     "mypy": "PASS: no issues in 13 source files",
     "compileall": "PASS",
@@ -122,9 +124,9 @@
       "omitted_reason_code": "COLLECTED_FILE_NOT_PLANNED"
     },
     "security": {
-      "scan_id": "a801fffc-1cac-4ff9-a273-b5e3db11313b",
-      "snapshot_digest": "codex-security-snapshot/v1:sha256:2e203a125ad6d4922d2ef593959df44e52d37bb38f03b8ef7cc231461f48e77f",
-      "status": "COMPLETE_NO_REPORTABLE_FINDINGS_PARTIAL_COVERAGE",
+      "scan_id": "64cac254-b127-4803-9436-da53c4c55c9e",
+      "snapshot_digest": "codex-security-snapshot/v1:sha256:eef33cda160e77b852ddbaa2ba3f54571249658aeb9d090a964fd583dbc46216",
+      "status": "COMPLETE_NO_REPORTABLE_FINDINGS_PARTIAL_SEMANTIC_COVERAGE",
       "model": "gpt-5.6-luna",
       "reasoning_effort": "max",
       "finding_count": 0,
@@ -132,19 +134,21 @@
       "coverage": "partial",
       "targeted_remediation_applied": true,
       "post_remediation_rescan": true,
-      "scan_target_revision": "2de5f22a0a1fe1aa8f5e30712e96077d923b104f",
-      "reviewed_files": 436,
-      "reviewed_surface_groups": 8,
+      "scan_target_revision": "2f20bcc7c1eb568d6061a1a25273896e648dd407",
+      "reviewed_tree": "2a50ca4317c9692b1ecd31dfcf4bf6d2354b7552",
+      "reviewed_files": 440,
+      "reviewed_surface_groups": 10,
       "report_available": true,
-      "independent_delegated_workers": 1,
+      "independent_delegated_workers": 0,
       "independent_baseline_review": {
-        "status": "COMPLETE_BEFORE_FINAL_PATCH: delegated Daybreak reviewer returned a read-only residual assessment; it did not approve hosted configuration or the final post-review tree",
-        "approval_claim": "NONE: the completed Standard scan has no reportable findings but its coverage remains partial",
+        "status": "NOT_INCLUDED_IN_FINAL_ARTIFACT: the final authoritative scan was completed from the parent source review; no delegated review is treated as an approval",
+        "approval_claim": "NONE: the completed Standard scan has no reportable findings but its semantic coverage remains partial",
         "runtime_or_network_validation": "NOT_PERFORMED_BY_SCAN"
       },
       "limitations": [
         "No runtime, network, provider, or external-host validation was performed by the source-only scan.",
-        "The independent delegated review completed before the final receipt/ref/checksum/process/release-state patches; hosted configuration remains unverified."
+        "The prior medium quoted-secret-key redaction finding was remediated in report.py and covered by JSON diagnostic regression tests; this final scan reviewed the remediation at the exact committed head.",
+        "Hosted configuration, release policy, external schemas/cohorts, and platform-specific performance remain unverified or open."
       ]
     },
     "current_working_tree_diff_scan": {
@@ -187,6 +191,7 @@
   "NOTES": [
     "The report deliberately does not claim stable 1.0.0 launch completion.",
     "The release-candidate artifacts were built and installed locally only; no merge, tag movement, registry upload, release recreation, or public verification was performed.",
-    "The completed current-candidate Standard scan reported no reportable findings with partial coverage. The delegated Daybreak review returned a residual assessment before the final targeted patches; it did not provide hosted-configuration approval."
+    "The final post-remediation repository-wide Standard scan at 2f20bcc7c1eb568d6061a1a25273896e648dd407 reported no reportable findings; tool coverage was complete while semantic coverage remains partial because hosted and platform-dependent gates are outside this local task.",
+    "The prior medium quoted-secret-key redaction finding was remediated and regression-tested; no stable launch, publication, or hosted-configuration approval is claimed."
   ]
 }
