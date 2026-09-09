@@ -1,0 +1,50 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-10",
+  "repository": "https://github.com/Smkzz/greengap-launch-probe-20260910",
+  "repository_visibility": "private_disposable_synthetic_only",
+  "workflow": ".github/workflows/probe.yml",
+  "workflow_contract_source": "Smkzz/GreenGap/.github/workflows/greengap-plan.yml",
+  "current_workflow_fix_sha": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
+  "runtime_source_ref": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
+  "release_artifact_tested": "v0.1.3",
+  "required_events": ["pull_request", "push", "schedule"],
+  "runs": [
+    {
+      "run_id": 34411916458,
+      "event": "push",
+      "head_sha": "7a32df37e4f0c9b64120cda6b382cabe32160d7e",
+      "expected": "success / exit 0",
+      "actual": "failure before analysis",
+      "finding": "The shipped workflow installed the exact v0.1.3 wheel with --no-deps but did not install its hash-locked PyYAML runtime dependency; ModuleNotFoundError: yaml.",
+      "status": "concrete_defect_repaired_by_107204bfef1b15de765804d956aa49fdab9efbef"
+    },
+    {
+      "run_id": 34412708850,
+      "event": "push",
+      "head_sha": "a605c8402df022506a09a0c179df2544646424a6",
+      "expected": "success / exit 0",
+      "actual": "failure / GreenGap exit 2",
+      "finding": "After dependency installation succeeded, immutable v0.1.3 rejected the current workflow's --trust-collection option. The released CLI predates the current 1.0 collection-control contract.",
+      "status": "concrete_compatibility_defect_repaired_in_workflow_by_83b4b59c4b9cd91481b4a2cd18a25f87e62ca656"
+    },
+    {
+      "run_id": 34413222935,
+      "event": "push",
+      "head_sha": "0453682ac600a70eb9e910bf9559f32c9ff1dda7",
+      "expected": "success / exit 0",
+      "actual": "failure / GreenGap exit 2",
+      "report": "greengap-report.json",
+      "report_sha256": "1a1f5999ac09873a9791e60907d83f16ad84cf8b297a105c64059c2fdb18bb42",
+      "finding": "The target caller workflow itself is an external reusable-workflow use; the analyzer correctly reports EXTERNAL_WORKFLOW_UNRESOLVED and refuses a complete claim. This is the remaining live reusable-workflow gate, not a confident gap.",
+      "status": "open_external_gate"
+    }
+  ],
+  "schedule": {
+    "event_requirement": "schedule, not workflow_dispatch",
+    "status": "not_yet_passed",
+    "reason": "The success/PR cases cannot be certified against the immutable pre-1.0.0 v0.1.3 artifact until a compatible final artifact exists; no schedule result is promoted to launch evidence."
+  },
+  "result": "OPEN_BLOCKER",
+  "interpretation": "This receipt records real external failures and the smallest workflow corrections without relabeling an exit-2 UNKNOWN result as success. No merge, tag, release, registry upload, or publication was performed."
+}

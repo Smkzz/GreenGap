@@ -3,7 +3,9 @@
   "RELEASE_VERSION": "1.0.0rc1",
   "RELEASE_SHA": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
   "RELEASE_TREE": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
-  "RELEASE_IDENTITY_STATUS": "SOURCE_FREEZE_RECORDED; evidence-only documentation may be committed after the frozen source without changing this release identity",
+  "RELEASE_IDENTITY_STATUS": "HISTORICAL_SOURCE_FREEZE_REOPENED_FOR_CONCRETE_EXTERNAL_WORKFLOW_DEFECTS; current candidate head is separately recorded and is not yet a stable release identity",
+  "CURRENT_CANDIDATE_SHA": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
+  "CURRENT_CANDIDATE_TREE": "a91dd5ce65a98670e070b5a54177e5804db01a67",
   "LOCAL_CHECKPOINT_SHA": "272ab74cf4416ee78f5d8b95c37bf9f88ba10f10",
   "LOCAL_CHECKPOINT_TREE": "b1ac8855e5d2e782977f26c0350ad88e85b247b2",
   "CLOSURE_DOCUMENT_SHA": "ca2d25e42b443fdda2a9ac0e3bb36e244544e529",
@@ -17,6 +19,7 @@
   "INITIAL_EVIDENCE_COMMIT_SCOPE": "initial documentation-only continuation after the source freeze",
   "REMOTE_BRANCH": "release/greengap-1.0.0",
   "REMOTE_BRANCH_SHA_AT_SOURCE_FREEZE": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "CURRENT_REMOTE_BRANCH_SHA": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
   "PULL_REQUEST": {
     "number": 11,
     "url": "https://github.com/Smkzz/GreenGap/pull/11",
@@ -25,6 +28,7 @@
     "base": "main",
     "head_ref": "release/greengap-1.0.0",
     "head_sha_at_source_freeze": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+    "current_head_sha": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
     "initial_evidence_head_sha": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
     "review_decision": "REVIEW_REQUIRED",
     "merge_state": "BLOCKED",
@@ -54,13 +58,13 @@
     },
     "5_performance": {
       "status": "BLOCKED",
-      "evidence": "docs/evidence/performance-methodology-20260909-final-6f76949.json",
-      "result": "Exact-source Windows production and startup budgets passed; Linux timing substrate was unavailable."
+      "evidence": "docs/evidence/performance-methodology-20260909-final-6f76949.json; docs/evidence/linux-performance-probe-20260910-6f76949.json",
+      "result": "Exact 6f-source Windows and hosted Linux production/startup/RSS budgets passed; the current candidate head 83b4 requires an exact-head rerun before release identity can be frozen."
     },
     "6_ci_dependency_security": {
       "status": "PASS",
-      "evidence": "docs/evidence/hosted-ci-20260909-6f76949.json; docs/evidence/independent-security-coverage-20260909-6f76949.json",
-      "result": "Observed exact-source CI, dependency review, fuzz, Scorecard, and bounded security surfaces passed; schedule/default-branch exactness remains open."
+      "evidence": "docs/evidence/hosted-ci-20260910-83b4.json; docs/evidence/independent-security-coverage-20260910-83b4.json; docs/evidence/reusable-workflow-probe-20260910-83b4.json",
+      "result": "20/20 hosted checks and bounded post-fix security review passed; the real reusable caller remains open because the immutable pre-1.0.0 artifact and external-workflow trace cannot yet produce the required success/PR/schedule exit cases."
     },
     "7_packaging_provenance": {
       "status": "PARTIAL",
@@ -85,8 +89,8 @@
   },
   "LAUNCH_CRITICAL_OPEN_ITEMS": 7,
   "LAUNCH_CRITICAL_OPEN_ITEM_DETAILS": [
-    "Linux release-style performance timing, startup, and RSS evidence is unavailable; hosted Ubuntu tests do not substitute.",
-    "The reusable workflow has no shipped in-repository caller, and exact-source schedule/CodeQL/default-branch receiver evidence is not present.",
+    "Exact Linux release-style performance timing, startup, and RSS evidence exists for the historical 6f source freeze, but the current candidate head 83b4 still needs an exact-head rerun.",
+    "The disposable real caller exposed and repaired runtime-dependency and legacy-CLI compatibility defects, but still returns fail-closed EXTERNAL_WORKFLOW_UNRESOLVED/exit 2 against immutable v0.1.3; exact success/PR/schedule and default-branch receiver evidence is not present.",
     "The frozen five-repository cohort has only safe static results: trusted collection and useful determinations are 0, and C11/C12 decisions plus holdouts remain open.",
     "Five fresh consenting human first-use sessions and four successful integrations have not been recorded.",
     "Accountable routine-maintenance, support, rollback, and publication owner confirmation is pending.",
@@ -107,6 +111,11 @@
     "source_freeze": {
       "sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
       "tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34"
+    },
+    "current_candidate_head": {
+      "sha": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
+      "tree": "a91dd5ce65a98670e070b5a54177e5804db01a67",
+      "source_reopen_reason": "two concrete hosted reusable-workflow defects"
     },
     "local_regression": "517 passed, 1 skipped",
     "ruff": "PASS",
@@ -135,10 +144,12 @@
     "performance": {
       "receipt": "docs/evidence/performance-methodology-20260909-final-6f76949.json",
       "startup_receipt": "docs/evidence/startup-20260909-6f76949.json",
+      "linux_probe_receipt": "docs/evidence/linux-performance-probe-20260910-6f76949.json",
       "windows_large_production_p95_seconds": 4.174669199999698,
       "windows_large_peak_rss_bytes": 79388672,
       "windows_large_production_status": "PASS",
-      "linux_status": "BLOCKED",
+      "linux_historical_freeze_status": "PASS",
+      "linux_current_candidate_status": "PENDING_EXACT_HEAD_RERUN",
       "startup_status": "PASS"
     },
     "evaluation_cohort": {
@@ -157,19 +168,19 @@
       "scheduled_default_branch_exact_source": false
     },
     "security": {
-      "receipt": "docs/evidence/independent-security-coverage-20260909-6f76949.json",
+      "receipt": "docs/evidence/independent-security-coverage-20260909-6f76949.json; docs/evidence/independent-security-coverage-20260910-83b4.json",
       "exact_source_standard_scan": "0 reportable findings at source checkpoint 272; tool coverage complete, semantic scope partial",
-      "final_changed_scans": "0 reportable findings across the remediation ranges through source freeze 6f76949",
+      "final_changed_scans": "0 reportable findings across the remediation ranges through source freeze 6f76949; bounded post-reopen workflow diff 74c4547..83b4 also 0",
       "delegated_follow_up": "No remaining reportable findings in the bounded final surface; no owner approval inferred"
     },
     "workflow_bindings": {
-      "receipt": "docs/evidence/workflow-bindings-20260909-6f76949.json",
-      "status": "OPEN_REAL_CALLER_AND_EXACT_SCHEDULE_RECEIVER"
+      "receipt": "docs/evidence/workflow-bindings-20260909-6f76949.json; docs/evidence/reusable-workflow-probe-20260910-83b4.json",
+      "status": "OPEN_REAL_CALLER_EXIT_CASES_AND_EXACT_SCHEDULE_RECEIVER"
     }
   },
   "DOCUMENTATION_VALIDATION": {
     "status": "PASS",
-    "json_receipts_parsed": 41,
+    "json_receipts_parsed": 45,
     "git_diff_check": "PASS",
     "codex_test_temp_tracked": false,
     "receipt_index": "docs/evidence/README.md"
@@ -185,10 +196,10 @@
   "AUTHORIZATION_BOUNDARY": "No merge, tag, release creation, registry upload, public publication, or public verification was performed.",
   "NOTES": [
     "The report deliberately does not claim stable 1.0.0 launch completion.",
-    "The final source freeze is exact and its source/tree identity is separated from evidence-only documentation changes.",
-    "The exact-source Windows production timing passed the five-second budget; the Linux performance gate remains blocked because no usable Linux execution substrate was available.",
+    "The 6f source freeze remains recorded as historical evidence; source was deliberately reopened only after hosted reusable-workflow exercises proved concrete dependency and CLI compatibility defects, with current candidate head 83b4 recorded separately.",
+    "The exact 6f-source Windows and hosted Linux production timing passed the five-second budget, startup budget, and RSS budget; an exact-head Linux rerun remains required after the workflow-only source corrections.",
     "The safe CLI receipts intentionally use --no-collect and preserve INCOMPLETE/exit-2 semantics; no target code is claimed to have executed in those runs.",
     "Independent Daybreak Blue reviews found and bounded the listed pre-remediation surfaces; final follow-up reported no remaining reportable finding in its scope. Independent review is not owner approval.",
-    "Hosted CI, package, dependency-review, fuzz, and Scorecard checks were successful at the exact source freeze, but they do not authorize merge, tag, release, or publication."
+    "Hosted CI, package, dependency-review, fuzz, and Scorecard checks were successful at current candidate head 83b4, and the bounded post-reopen security diff was clean; the real reusable caller still fails closed at exit 2 and no merge, tag, release, or publication is authorized."
   ]
 }

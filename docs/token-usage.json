@@ -227,6 +227,23 @@
       "finding_count": 0,
       "coverage": "complete_changed_coverage",
       "status": "COMPLETE_NO_REPORTABLE_FINDINGS"
+    },
+    {
+      "scan_id": "4a40b1d2-b9b7-415a-a20b-3c3da1a7107a",
+      "range": "74c4547..83b4b59",
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "max",
+      "thread_count": 1,
+      "input_tokens_raw": 4470438,
+      "cached_input_tokens": 4419328,
+      "uncached_input_tokens": 51110,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 7815,
+      "reasoning_output_tokens": 3559,
+      "total_tokens": 4478253,
+      "finding_count": 0,
+      "coverage": "complete_changed_coverage",
+      "status": "COMPLETE_NO_REPORTABLE_FINDINGS"
     }
   ],
   "DELEGATED_SECURITY_REVIEW": {
