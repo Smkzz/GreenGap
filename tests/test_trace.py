@@ -482,6 +482,38 @@ jobs:
     assert result.relevant_incomplete
 
 
+def test_reusable_workflow_missing_input_type_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+""",
+            ".github/workflows/reusable.yml": """name: reusable
+on:
+  workflow_call:
+    inputs:
+      scope:
+        required: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert not result.invocations
+    assert any(issue.code == "REUSABLE_INPUTS_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
 def test_case_walker_rejects_symlink_parent(tmp_path) -> None:
     root = tmp_path / "root"
     outside = tmp_path / "outside"
@@ -530,6 +562,43 @@ jobs:
     result = trace_github_actions(tmp_path, event="push")
 
     assert not result.invocations
+    assert not result.relevant_incomplete
+
+
+def test_composite_expression_boolean_input_is_lowercase_runtime_string(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  test:
+    strategy:
+      matrix:
+        enabled: [true]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/test
+        with:
+          enabled: ${{ matrix.enabled }}
+""",
+            ".github/actions/test/action.yml": """name: test
+inputs:
+  enabled:
+    default: false
+runs:
+  using: composite
+  steps:
+    - if: ${{ inputs.enabled == 'true' }}
+      shell: bash
+      run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert len(result.invocations) == 1
     assert not result.relevant_incomplete
 
 

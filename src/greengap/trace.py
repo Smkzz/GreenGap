@@ -284,12 +284,13 @@ def _expression_value(expression: str, context: _Context) -> str | None:
             value = _lookup(argument, context)
             if value is None:
                 return None
-            return template.replace("{0}", str(value))
+            scalar = _scalar(value)
+            return None if scalar is None else template.replace("{0}", scalar)
         if len(part) >= 2 and part[0] == part[-1] and part[0] in "'\"":
             return part[1:-1]
         value = _lookup(part, context)
         if value is not None and _github_truthy(value):
-            return str(value)
+            return _scalar(value)
     return None
 
 
@@ -1660,7 +1661,7 @@ def _startup_environment_unknown(
     core = _command_core_tokens(tokens)
     first = _basename(core[0]) if core else ""
     if any(
-        str(value).strip()
+        str(value) != ""
         for name, value in environment.items()
         if str(name).upper() in _NATIVE_LOADER_ENVIRONMENT
         or str(name).upper().startswith(_NATIVE_LOADER_PREFIXES)
@@ -3821,11 +3822,13 @@ class _Resolver:
                     context.provenance,
                 )
                 return None
-            input_type = definition.get("type", "string")
+            input_type = definition.get("type")
             required = definition.get("required", False)
-            if input_type not in {"string", "boolean", "number"} or not isinstance(
-                required, bool
-            ):
+            if not isinstance(input_type, str) or input_type not in {
+                "string",
+                "boolean",
+                "number",
+            } or not isinstance(required, bool):
                 self.issue(
                     "REUSABLE_INPUTS_UNKNOWN",
                     f"input definition {key!r} in {target} has an unsupported type or required flag",

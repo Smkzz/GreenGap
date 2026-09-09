@@ -166,6 +166,7 @@ def test_package_install_from_repository_invalidates_later_test_inference(tmp_pa
     [
         ("BASH_ENV", "scripts/bootstrap.sh", "echo setup", "BASH_STARTUP_ENV_UNKNOWN"),
         ("LD_PRELOAD", "./scripts/preload.so", "pytest tests", "NATIVE_LOADER_ENV_UNKNOWN"),
+        ("LD_LIBRARY_PATH", "' '", "pytest tests", "NATIVE_LOADER_ENV_UNKNOWN"),
         ("DYLD_ROOT_PATH", "./alternate-root", "pytest tests", "NATIVE_LOADER_ENV_UNKNOWN"),
         ("DYLD_IMAGE_SUFFIX", ".debug", "pytest tests", "NATIVE_LOADER_ENV_UNKNOWN"),
         ("PYTHONPATH", "scripts", "python -m pytest", "PYTHON_MODULE_PATH_UNKNOWN"),
