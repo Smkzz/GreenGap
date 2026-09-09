@@ -4941,7 +4941,7 @@ class _Resolver:
         entries_seen = 0
         try:
             while pending:
-                if time.monotonic() > self._pytest_discovery_deadline:
+                if time.monotonic() >= self._pytest_discovery_deadline:
                     self._pytest_discovery_error = (
                         "pytest discovery exceeded its bounded deadline"
                     )
@@ -4951,7 +4951,7 @@ class _Resolver:
                 with os.scandir(directory) as iterator:
                     entries = []
                     for entry in iterator:
-                        if time.monotonic() > self._pytest_discovery_deadline:
+                        if time.monotonic() >= self._pytest_discovery_deadline:
                             self._pytest_discovery_error = (
                                 "pytest discovery exceeded its bounded deadline"
                             )
@@ -4966,14 +4966,14 @@ class _Resolver:
                             return None
                         entries.append(entry)
                     entries.sort(key=lambda entry: entry.name.casefold())
-                    if time.monotonic() > self._pytest_discovery_deadline:
+                    if time.monotonic() >= self._pytest_discovery_deadline:
                         self._pytest_discovery_error = (
                             "pytest discovery exceeded its bounded deadline"
                         )
                         self._pytest_discovery_paths_value = None
                         return None
                     for entry in entries:
-                        if time.monotonic() > self._pytest_discovery_deadline:
+                        if time.monotonic() >= self._pytest_discovery_deadline:
                             self._pytest_discovery_error = (
                                 "pytest discovery exceeded its bounded deadline"
                             )
@@ -5008,7 +5008,7 @@ class _Resolver:
         return self._pytest_discovery_paths_value
 
     def _account_pytest_discovery_bytes(self, amount: int) -> None:
-        if time.monotonic() > self._pytest_discovery_deadline:
+        if time.monotonic() >= self._pytest_discovery_deadline:
             raise OSError("pytest discovery exceeded its bounded deadline")
         if self._pytest_discovery_bytes_read + amount > _MAX_PYTEST_DISCOVERY_BYTES:
             raise OSError("pytest discovery exceeded its bounded byte budget")
