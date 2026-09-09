@@ -21,8 +21,16 @@ _ABSOLUTE_PATH = re.compile(
 )
 _SECRET_REFERENCE = re.compile(r"(?i)\$\{\{\s*secrets\.[^}\s]+\s*\}\}")
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(?:api[_-]?(?:key|token)|access[_-]?token|auth(?:orization)?|"
-    r"password|passwd|private[_-]?key|secret|token)\b(\s*[:=]\s*)[^\s,;]+"
+    r"""(?ix)
+    (
+        ["']?\b(?:api[_-]?(?:key|token)|access[_-]?token|auth(?:orization)?|
+        password|passwd|private[_-]?key|secret|token)\b["']?\s*[:=]\s*
+    )
+    (
+        "(?:\\.|[^"\\])*"
+        | '(?:\\.|[^'\\])*'
+        | [^\s,;}\]]+
+    )"""
 )
 _BEARER_CREDENTIAL = re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]+")
 _BASIC_AUTH_URL = re.compile(r"(?i)\b(https?://)[^/\s:@]+:[^@\s]+@")

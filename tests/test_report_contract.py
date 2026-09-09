@@ -171,7 +171,8 @@ def test_shareable_redaction_removes_secret_shaped_diagnostics(tmp_path) -> None
         "TOKEN=literal-token Bearer bearer-token "
         "https://user:basic-password@example.test/path "
         "$" + "{{ secrets.API_KEY }} "
-        "-----BEGIN PRIVATE KEY-----\nprivate-bytes\n-----END PRIVATE KEY-----"
+        "-----BEGIN PRIVATE KEY-----\nprivate-bytes\n-----END PRIVATE KEY----- "
+        '{"token":"quoted-token", "apiKey": "quoted-api-key"}'
     )
 
     redacted = redact_shareable(value, tmp_path)
@@ -180,8 +181,26 @@ def test_shareable_redaction_removes_secret_shaped_diagnostics(tmp_path) -> None
     assert "bearer-token" not in redacted
     assert "basic-password" not in redacted
     assert "private-bytes" not in redacted
+    assert "quoted-token" not in redacted
+    assert "quoted-api-key" not in redacted
     assert "<secret-reference>" in redacted
     assert "<redacted-secret-block>" in redacted
+
+
+def test_verify_json_redacts_quoted_secret_keys(capsys, tmp_path) -> None:
+    junit = tmp_path / "results.xml"
+    junit.write_text(
+        '<testsuite><testcase classname="suite" name="case">'
+        '<failure message="&quot;token&quot;:&quot;quoted-secret&quot;"/>'
+        "</testcase></testsuite>",
+        encoding="utf-8",
+    )
+
+    code = main(["verify", str(tmp_path), "--junitxml", str(junit), "--json"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert "quoted-secret" not in json.dumps(output)
 
 
 def test_reusable_plan_workflow_keeps_github_context_out_of_shell() -> None:
