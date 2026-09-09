@@ -113,6 +113,7 @@ def run_plan(
         changed_file_count,
         diff_timed_out,
         workspace_clean=workspace_clean,
+        discovery_timeout=min(timeout, 10.0),
     )
     final = workspace_snapshot(
         root,

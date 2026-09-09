@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
+import greengap.trace as trace_module
 from greengap.trace import (
     _github_path_pattern_regex,
     _path_patterns_match,
@@ -46,6 +48,75 @@ def test_direct_runner_shapes_are_traced(
     assert len(result.invocations) == 1
     assert result.invocations[0].kind == kind
     assert result.invocations[0].paths == paths
+
+
+def test_pytest_discovery_prunes_ignored_directories(tmp_path, monkeypatch) -> None:
+    ignored = tmp_path / "node_modules"
+    ignored.mkdir()
+    (ignored / "nested").mkdir()
+    (ignored / "nested" / "conftest.py").write_text(
+        "pytest_plugins = ['hostile_plugin']\n", encoding="utf-8"
+    )
+    write_files(tmp_path, {".github/workflows/ci.yml": workflow("pytest tests")})
+
+    original_scandir = trace_module.os.scandir
+    visited: list[Path] = []
+
+    def recording_scandir(path):
+        visited.append(Path(path))
+        return original_scandir(path)
+
+    monkeypatch.setattr(trace_module.os, "scandir", recording_scandir)
+    result = trace_github_actions(tmp_path)
+
+    assert result.invocations[0].paths == ("tests",)
+    assert not result.relevant_incomplete
+    assert ignored not in visited
+
+
+def test_pytest_discovery_deadline_fails_closed(tmp_path) -> None:
+    write_files(tmp_path, {".github/workflows/ci.yml": workflow("pytest tests")})
+
+    result = trace_github_actions(tmp_path, discovery_timeout=0.0)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+    assert any("deadline" in issue.message for issue in result.issues)
+
+
+def test_pytest_discovery_entry_limit_stops_scandir_incrementally(
+    tmp_path, monkeypatch
+) -> None:
+    for index in range(10):
+        (tmp_path / f"file-{index}.py").write_text("", encoding="utf-8")
+
+    original_scandir = trace_module.os.scandir
+    yielded = 0
+
+    class CountingScanner:
+        def __init__(self, path):
+            self._iterator = original_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            self._iterator.close()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal yielded
+            yielded += 1
+            return next(self._iterator)
+
+    monkeypatch.setattr(trace_module, "_MAX_PYTEST_DISCOVERY_ENTRIES", 2)
+    monkeypatch.setattr(trace_module.os, "scandir", CountingScanner)
+
+    resolver = trace_module._Resolver(tmp_path, discovery_timeout=10.0)
+    assert resolver._pytest_discovery_paths() is None
+    assert yielded == 3
 
 
 @pytest.mark.parametrize(

@@ -199,9 +199,66 @@ class PathReadContext:
     def prepare(self, paths: Sequence[Path]) -> str | None:
         """Validate and remember every parent and selected file in ``paths``."""
 
+        paths = tuple(paths)
+        root = self.root
+        if self._files:
+            active_parent_names: dict[Path, set[str]] = {}
+            reusable = True
+            for path in paths:
+                try:
+                    path.relative_to(root)
+                except ValueError:
+                    return f"path escapes repository root: {path}"
+                active_parent_names.setdefault(path.parent, set()).add(path.name)
+                reusable = reusable and path in self._files
+            if reusable:
+                active_parents: set[Path] = set()
+                for path in paths:
+                    current = path.parent
+                    while True:
+                        active_parents.add(current)
+                        if current == root:
+                            break
+                        parent = current.parent
+                        if parent == current:
+                            reusable = False
+                            break
+                        current = parent
+                    if not reusable:
+                        break
+                reusable_parent_files: dict[Path, dict[str, _PathRecord]] = {}
+                active_parent_identities: dict[Path, tuple[int, int, int, int, int]] = {}
+                if reusable:
+                    if not active_parents.issubset(self._parents):
+                        reusable = False
+                    else:
+                        for parent in active_parents:
+                            try:
+                                info = parent.lstat()
+                            except OSError:
+                                reusable = False
+                                break
+                            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                                reusable = False
+                                break
+                            active_parent_identities[parent] = _file_identity(info)
+                if reusable:
+                    for parent, names in active_parent_names.items():
+                        records = self._parent_files.get(parent)
+                        if records is None or not names.issubset(records):
+                            reusable = False
+                            break
+                            reusable_parent_files[parent] = {
+                                name: records[name] for name in names
+                            }
+                if reusable:
+                    self._parents = active_parent_identities
+                    self._files = {path: self._files[path] for path in paths}
+                    self._parent_files = reusable_parent_files
+                    return None
+
         parents: set[Path] = set()
         selected_names: dict[Path, set[str]] = {}
-        root = self.root
         for path in paths:
             try:
                 path.relative_to(root)

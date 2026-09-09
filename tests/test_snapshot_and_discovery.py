@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
+import greengap.util as util_module
 from greengap.pytest_adapter import discover_candidates, scan_pytest
 from greengap.snapshot import workspace_snapshot
 from greengap.util import PathReadContext, read_limited_bytes
@@ -38,6 +40,26 @@ def test_prepared_batch_read_fails_closed_when_file_changes(tmp_path) -> None:
     with pytest.raises(ValueError, match="changed during inspection"):
         read_limited_bytes(path, 1024, parent_context=context)
     assert context.verify() is not None
+
+
+def test_prepared_context_reuses_a_safe_subset(monkeypatch, tmp_path) -> None:
+    paths = tuple(tmp_path / name for name in ("first.py", "second.py", "third.py"))
+    for path in paths:
+        path.write_text("def test_case():\n    pass\n", encoding="utf-8")
+    context = PathReadContext(tmp_path)
+    calls: list[tuple[Path, frozenset[str]]] = []
+    original = util_module._scan_selected_entries
+
+    def counted_scan(parent, names, device):
+        calls.append((parent, frozenset(names)))
+        return original(parent, names, device)
+
+    monkeypatch.setattr(util_module, "_scan_selected_entries", counted_scan)
+
+    assert context.prepare(paths) is None
+    assert context.prepare((paths[0],)) is None
+    assert read_limited_bytes(paths[0], 1024, parent_context=context)
+    assert calls == [(tmp_path, frozenset(path.name for path in paths))]
 
 
 def test_snapshot_ignores_ignored_cache_bytes(tmp_path) -> None:

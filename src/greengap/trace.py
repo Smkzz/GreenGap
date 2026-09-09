@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import time
 import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -187,6 +188,23 @@ _PYTEST_CONFIG_NAMES = (
     "setup.cfg",
 )
 _PYTEST_CONFIG_IGNORED_PARTS = {".git", ".venv", ".tox", ".nox", "venv"}
+_PYTEST_DISCOVERY_IGNORED_PARTS = {
+    ".git",
+    ".mypy_cache",
+    ".nox",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+}
+_MAX_PYTEST_DISCOVERY_ENTRIES = 50_000
+_MAX_PYTEST_DISCOVERY_BYTES = 64 * 1024 * 1024
+_MAX_PYTEST_DISCOVERY_SECONDS = 10.0
 
 
 def _merge_workspace_state(left: WorkspaceState, right: WorkspaceState) -> WorkspaceState:
@@ -2849,6 +2867,7 @@ class _Resolver:
         changed_file_count: int | None = None,
         diff_timed_out: bool = False,
         workspace_clean: bool | None = None,
+        discovery_timeout: float | None = None,
     ) -> None:
         self.root = root.resolve()
         self.event_context = event_context
@@ -2860,6 +2879,12 @@ class _Resolver:
         self.changed_file_count = changed_file_count
         self.diff_timed_out = diff_timed_out
         self.workspace_clean = workspace_clean
+        budget_seconds = (
+            _MAX_PYTEST_DISCOVERY_SECONDS
+            if discovery_timeout is None
+            else min(max(discovery_timeout, 0.0), _MAX_PYTEST_DISCOVERY_SECONDS)
+        )
+        self._pytest_discovery_deadline = time.monotonic() + budget_seconds
         self.invocations: list[PytestInvocation] = []
         self.issues: list[TraceIssue] = []
         self.workflows: list[str] = []
@@ -2912,6 +2937,10 @@ class _Resolver:
         self._pytest_context_config_error: str | None = None
         self._pytest_portable_paths_checked = False
         self._pytest_portable_paths_issue: str | None = None
+        self._pytest_discovery_checked = False
+        self._pytest_discovery_paths_value: tuple[Path, ...] | None = ()
+        self._pytest_discovery_error: str | None = None
+        self._pytest_discovery_bytes_read = 0
 
     def issue(
         self, code: str, message: str, provenance: tuple[str, ...], relevant: bool = True
@@ -4901,6 +4930,102 @@ class _Resolver:
             return None, "only uv run is supported"
         return None, "uv run may synchronize project-controlled code before the command"
 
+    def _pytest_discovery_paths(self) -> tuple[Path, ...] | None:
+        """Enumerate pytest-relevant paths once with pruning and hard budgets."""
+
+        if self._pytest_discovery_checked:
+            return self._pytest_discovery_paths_value
+        self._pytest_discovery_checked = True
+        paths: list[Path] = []
+        pending = [self.root]
+        entries_seen = 0
+        try:
+            while pending:
+                if time.monotonic() > self._pytest_discovery_deadline:
+                    self._pytest_discovery_error = (
+                        "pytest discovery exceeded its bounded deadline"
+                    )
+                    self._pytest_discovery_paths_value = None
+                    return None
+                directory = pending.pop()
+                with os.scandir(directory) as iterator:
+                    entries = []
+                    for entry in iterator:
+                        if time.monotonic() > self._pytest_discovery_deadline:
+                            self._pytest_discovery_error = (
+                                "pytest discovery exceeded its bounded deadline"
+                            )
+                            self._pytest_discovery_paths_value = None
+                            return None
+                        entries_seen += 1
+                        if entries_seen > _MAX_PYTEST_DISCOVERY_ENTRIES:
+                            self._pytest_discovery_error = (
+                                "pytest discovery exceeded its bounded entry limit"
+                            )
+                            self._pytest_discovery_paths_value = None
+                            return None
+                        entries.append(entry)
+                    entries.sort(key=lambda entry: entry.name.casefold())
+                    if time.monotonic() > self._pytest_discovery_deadline:
+                        self._pytest_discovery_error = (
+                            "pytest discovery exceeded its bounded deadline"
+                        )
+                        self._pytest_discovery_paths_value = None
+                        return None
+                    for entry in entries:
+                        if time.monotonic() > self._pytest_discovery_deadline:
+                            self._pytest_discovery_error = (
+                                "pytest discovery exceeded its bounded deadline"
+                            )
+                            self._pytest_discovery_paths_value = None
+                            return None
+                        try:
+                            is_symlink = entry.is_symlink()
+                            is_directory = entry.is_dir(follow_symlinks=False)
+                        except OSError as exc:
+                            self._pytest_discovery_error = (
+                                f"pytest discovery could not inspect {entry.name!r}: {exc}"
+                            )
+                            self._pytest_discovery_paths_value = None
+                            return None
+                        if (
+                            is_directory
+                            and entry.name.casefold() in _PYTEST_DISCOVERY_IGNORED_PARTS
+                        ):
+                            continue
+                        path = Path(entry.path)
+                        paths.append(path)
+                        if is_directory:
+                            pending.append(path)
+                            continue
+                        if is_symlink:
+                            continue
+        except OSError as exc:
+            self._pytest_discovery_error = f"pytest discovery could not be completed safely: {exc}"
+            self._pytest_discovery_paths_value = None
+            return None
+        self._pytest_discovery_paths_value = tuple(paths)
+        return self._pytest_discovery_paths_value
+
+    def _account_pytest_discovery_bytes(self, amount: int) -> None:
+        if time.monotonic() > self._pytest_discovery_deadline:
+            raise OSError("pytest discovery exceeded its bounded deadline")
+        if self._pytest_discovery_bytes_read + amount > _MAX_PYTEST_DISCOVERY_BYTES:
+            raise OSError("pytest discovery exceeded its bounded byte budget")
+        self._pytest_discovery_bytes_read += amount
+
+    def _pytest_read_limited_text(self, path: Path) -> str:
+        self._account_pytest_discovery_bytes(MAX_CONFIG_BYTES)
+        text = read_limited_text(path, MAX_CONFIG_BYTES)
+        self._account_pytest_discovery_bytes(0)
+        return text
+
+    def _pytest_config_addopts_bounded(self, path: Path) -> tuple[bool, Any]:
+        self._account_pytest_discovery_bytes(MAX_CONFIG_BYTES)
+        result = _pytest_config_addopts(path)
+        self._account_pytest_discovery_bytes(0)
+        return result
+
     def _pytest_project_plugin_error(self) -> str | None:
         """Find repository-declared plugin surfaces that change pytest execution.
 
@@ -4946,7 +5071,7 @@ class _Resolver:
                     return self._pytest_plugin_declaration_error
                 if not path.is_file():
                     continue
-                text = read_limited_text(path, MAX_CONFIG_BYTES)
+                text = self._pytest_read_limited_text(path)
             except (OSError, ValueError, UnicodeError):
                 self._pytest_plugin_declaration_error = (
                     f"pytest plugin configuration {name!r} could not be read safely"
@@ -4974,8 +5099,15 @@ class _Resolver:
             "setup.py",
         }
         inspected_configs = 0
+        discovery_paths = self._pytest_discovery_paths()
+        if discovery_paths is None:
+            self._pytest_plugin_declaration_error = (
+                self._pytest_discovery_error
+                or "pytest plugin discovery could not be completed safely"
+            )
+            return self._pytest_plugin_declaration_error
         try:
-            for path in self.root.rglob("*"):
+            for path in discovery_paths:
                 if path.name.lower() not in config_names:
                     continue
                 if path.is_symlink():
@@ -4995,7 +5127,7 @@ class _Resolver:
                     )
                     return self._pytest_plugin_declaration_error
                 try:
-                    text = read_limited_text(path, MAX_CONFIG_BYTES)
+                    text = self._pytest_read_limited_text(path)
                 except (OSError, ValueError, UnicodeError):
                     self._pytest_plugin_declaration_error = (
                         f"pytest plugin configuration {relative.as_posix()!r} could not be read safely"
@@ -5014,7 +5146,9 @@ class _Resolver:
 
         inspected = 0
         try:
-            for path in self.root.rglob("*.py"):
+            for path in discovery_paths:
+                if path.suffix.casefold() != ".py":
+                    continue
                 try:
                     relative = path.relative_to(self.root)
                 except ValueError:
@@ -5036,7 +5170,7 @@ class _Resolver:
                     )
                     return self._pytest_plugin_declaration_error
                 try:
-                    text = read_limited_text(path, MAX_CONFIG_BYTES)
+                    text = self._pytest_read_limited_text(path)
                 except (OSError, ValueError, UnicodeError):
                     self._pytest_plugin_declaration_error = (
                         f"pytest plugin source {relative.as_posix()!r} could not be read safely"
@@ -5086,8 +5220,15 @@ class _Resolver:
         self._pytest_context_config_checked = True
         candidates: list[Path] = []
         inspected = 0
+        discovery_paths = self._pytest_discovery_paths()
+        if discovery_paths is None:
+            self._pytest_context_config_error = (
+                self._pytest_discovery_error
+                or "pytest configuration discovery could not be completed safely"
+            )
+            return None
         try:
-            for path in self.root.rglob("*"):
+            for path in discovery_paths:
                 if path.name.casefold() not in _PYTEST_CONFIG_NAMES:
                     continue
                 if path.name not in _PYTEST_CONFIG_NAMES:
@@ -5121,7 +5262,7 @@ class _Resolver:
                         "pytest configuration discovery is not safely bounded"
                     )
                     return None
-                recognized, _ = _pytest_config_addopts(path)
+                recognized, _ = self._pytest_config_addopts_bounded(path)
                 if recognized:
                     candidates.append(path.resolve())
         except OSError:
@@ -5149,8 +5290,15 @@ class _Resolver:
         self._pytest_portable_paths_checked = True
         seen: dict[str, str] = {}
         inspected = 0
+        discovery_paths = self._pytest_discovery_paths()
+        if discovery_paths is None:
+            self._pytest_portable_paths_issue = (
+                self._pytest_discovery_error
+                or "pytest path discovery could not be completed safely"
+            )
+            return self._pytest_portable_paths_issue
         try:
-            for path in self.root.rglob("*"):
+            for path in discovery_paths:
                 try:
                     relative = path.relative_to(self.root)
                 except ValueError:
@@ -5550,7 +5698,7 @@ class _Resolver:
                         return (), f"pytest configuration {name!r} is a symlink"
                     if not path.is_file():
                         continue
-                    recognized, addopts = _pytest_config_addopts(path)
+                    recognized, addopts = self._pytest_config_addopts_bounded(path)
                 except OSError:
                     return (), f"pytest configuration {name!r} could not be read safely"
                 if not recognized:
@@ -5590,8 +5738,14 @@ class _Resolver:
         # active for a selected target.  Refuse that ambiguity rather than
         # silently reconstructing argv from the wrong rootdir.
         inspected = 0
+        discovery_paths = self._pytest_discovery_paths()
+        if discovery_paths is None:
+            return (), (
+                self._pytest_discovery_error
+                or "pytest configuration discovery could not be completed safely"
+            )
         try:
-            for path in self.root.rglob("*"):
+            for path in discovery_paths:
                 if path.name.lower() not in config_names:
                     continue
                 if path.is_symlink():
@@ -5603,7 +5757,7 @@ class _Resolver:
                 inspected += 1
                 if inspected > 4096:
                     return (), "pytest configuration discovery is not safely bounded"
-                recognized, addopts = _pytest_config_addopts(path)
+                recognized, addopts = self._pytest_config_addopts_bounded(path)
                 if not recognized:
                     continue
                 try:
@@ -6508,6 +6662,7 @@ def trace_github_actions(
     diff_timed_out: bool = False,
     *,
     workspace_clean: bool | None = None,
+    discovery_timeout: float | None = None,
 ) -> TraceResult:
     return _Resolver(
         root,
@@ -6521,4 +6676,5 @@ def trace_github_actions(
         changed_file_count,
         diff_timed_out,
         workspace_clean,
+        discovery_timeout,
     ).trace()
