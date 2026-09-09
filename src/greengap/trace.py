@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import time
 import tomllib
 from collections.abc import Sequence
@@ -26,6 +27,7 @@ from .util import (
     MAX_MATRIX_ROWS,
     MAX_WORKFLOW_FILES,
     PathSafetyError,
+    _is_reparse_point,
     normalize_repo_path,
     read_limited_text,
     safe_resolve,
@@ -222,6 +224,7 @@ _NATIVE_LOADER_ENVIRONMENT = frozenset(
         "DYLD_FALLBACK_FRAMEWORK_PATH",
     }
 )
+_NATIVE_LOADER_PREFIXES = ("LD_", "DYLD_")
 _MAX_PATH_CASE_ENTRIES = 4_096
 
 
@@ -1096,6 +1099,13 @@ def _casefold_repo_matches(root: Path, relative: str) -> tuple[Path, ...] | None
         next_paths: list[Path] = []
         for parent in current:
             try:
+                info = parent.lstat()
+                if (
+                    stat.S_ISLNK(info.st_mode)
+                    or _is_reparse_point(info)
+                    or not stat.S_ISDIR(info.st_mode)
+                ):
+                    return None
                 entries = parent.iterdir()
                 for inspected, entry in enumerate(entries, start=1):
                     if inspected > _MAX_PATH_CASE_ENTRIES:
@@ -1130,6 +1140,13 @@ def _portable_path_case_error(root: Path, relative: str) -> str | None:
         next_paths: list[Path] = []
         for parent in current:
             try:
+                info = parent.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    return "pytest path component directory is a symlink"
+                if _is_reparse_point(info):
+                    return "pytest path component directory is a Windows reparse point"
+                if not stat.S_ISDIR(info.st_mode):
+                    return "pytest path component parent is not a directory"
                 matches: list[Path] = []
                 for inspected, entry in enumerate(parent.iterdir(), start=1):
                     if inspected > _MAX_PATH_CASE_ENTRIES:
@@ -1642,7 +1659,12 @@ def _startup_environment_unknown(
 
     core = _command_core_tokens(tokens)
     first = _basename(core[0]) if core else ""
-    if any(environment.get(name, "").strip() for name in _NATIVE_LOADER_ENVIRONMENT):
+    if any(
+        str(value).strip()
+        for name, value in environment.items()
+        if str(name).upper() in _NATIVE_LOADER_ENVIRONMENT
+        or str(name).upper().startswith(_NATIVE_LOADER_PREFIXES)
+    ):
         return (
             "NATIVE_LOADER_ENV_UNKNOWN",
             "native loader environment can preload or redirect code before the command runs",
@@ -2885,6 +2907,31 @@ def _env_mapping(value: Any, context: _Context) -> tuple[dict[str, str], bool]:
     return result, complete
 
 
+def _static_workflow_input(value: Any, context: _Context) -> tuple[Any, bool]:
+    if isinstance(value, bool | int | float):
+        return value, True
+    text = _scalar(value)
+    if text is None:
+        return None, False
+    return resolve_expressions(text, context)
+
+
+def _coerce_workflow_input(value: Any, input_type: str) -> Any | None:
+    if input_type == "string":
+        if isinstance(value, bool | int | float):
+            return _scalar(value)
+        return value if isinstance(value, str) else None
+    if input_type == "boolean":
+        return value if isinstance(value, bool) else None
+    if input_type == "number":
+        return value if isinstance(value, int | float) and not isinstance(value, bool) else None
+    return None
+
+
+def _workflow_input_default(input_type: str) -> Any:
+    return {"string": "", "boolean": False, "number": 0}[input_type]
+
+
 def _relative_matrix(row: dict[str, Any]) -> str:
     if not row:
         return "default"
@@ -3713,23 +3760,9 @@ class _Resolver:
                 context.provenance,
             )
             return
-        inputs: dict[str, Any] = {}
-        raw_with = job.get("with", {})
-        if isinstance(raw_with, dict):
-            for key, raw in raw_with.items():
-                if isinstance(raw, bool | int | float):
-                    inputs[str(key)] = raw
-                    continue
-                text = _scalar(raw)
-                if text is not None:
-                    resolved, known = resolve_expressions(text, context)
-                    if not known:
-                        self.issue(
-                            "REUSABLE_INPUT_UNRESOLVED",
-                            f"input {key!r} is dynamic",
-                            context.provenance,
-                        )
-                    inputs[str(key)] = resolved
+        inputs = self._reusable_input_values(target, context, job)
+        if inputs is None:
+            return
         self._resolve_workflow(
             target,
             replace(
@@ -3741,6 +3774,134 @@ class _Resolver:
                 provenance=context.provenance + (f"uses:{normalize_repo_path(self.root, target)}",),
             ),
         )
+
+    def _reusable_input_values(
+        self, target: Path, context: _Context, job: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Validate a local reusable workflow call before tracing its steps."""
+
+        data = self._load_yaml(target, context.provenance)
+        if data is None:
+            return None
+        yaml_data = cast(dict[Any, Any], data)
+        raw_events = yaml_data["on"] if "on" in yaml_data else yaml_data.get(True)
+        if not isinstance(raw_events, dict) or "workflow_call" not in raw_events:
+            self.issue(
+                "REUSABLE_WORKFLOW_CONTRACT_UNKNOWN",
+                f"reusable workflow {target} has no workflow_call declaration",
+                context.provenance,
+            )
+            return None
+        raw_call = raw_events.get("workflow_call")
+        if raw_call is None:
+            raw_call = {}
+        if not isinstance(raw_call, dict):
+            self.issue(
+                "REUSABLE_INPUTS_UNKNOWN",
+                f"workflow_call declaration in {target} is not statically enumerable",
+                context.provenance,
+            )
+            return None
+        raw_inputs = raw_call.get("inputs", {})
+        if raw_inputs is None:
+            raw_inputs = {}
+        if not isinstance(raw_inputs, dict):
+            self.issue(
+                "REUSABLE_INPUTS_UNKNOWN",
+                f"workflow_call inputs in {target} are not statically enumerable",
+                context.provenance,
+            )
+            return None
+        contracts: dict[str, tuple[str, bool, bool, Any]] = {}
+        for key, definition in raw_inputs.items():
+            if not isinstance(key, str) or not isinstance(definition, dict):
+                self.issue(
+                    "REUSABLE_INPUTS_UNKNOWN",
+                    f"input definition {key!r} in {target} is not a mapping",
+                    context.provenance,
+                )
+                return None
+            input_type = definition.get("type", "string")
+            required = definition.get("required", False)
+            if input_type not in {"string", "boolean", "number"} or not isinstance(
+                required, bool
+            ):
+                self.issue(
+                    "REUSABLE_INPUTS_UNKNOWN",
+                    f"input definition {key!r} in {target} has an unsupported type or required flag",
+                    context.provenance,
+                )
+                return None
+            default_present = "default" in definition
+            default_value: Any = None
+            if default_present:
+                default_value, known = _static_workflow_input(definition["default"], context)
+                if not known:
+                    self.issue(
+                        "REUSABLE_INPUT_UNRESOLVED",
+                        f"default for input {key!r} in {target} is dynamic",
+                        context.provenance,
+                    )
+                    return None
+                default_value = _coerce_workflow_input(default_value, input_type)
+                if default_value is None:
+                    self.issue(
+                        "REUSABLE_INPUT_TYPE_MISMATCH",
+                        f"default for input {key!r} in {target} does not match type {input_type!r}",
+                        context.provenance,
+                    )
+                    return None
+            contracts[key] = (input_type, required, default_present, default_value)
+
+        raw_with = job.get("with", {})
+        if not isinstance(raw_with, dict):
+            self.issue(
+                "REUSABLE_INPUTS_UNKNOWN",
+                f"with values for {target} are not statically enumerable",
+                context.provenance,
+            )
+            return None
+        for key in raw_with:
+            if not isinstance(key, str) or key not in contracts:
+                self.issue(
+                    "REUSABLE_INPUT_UNKNOWN",
+                    f"caller supplied undeclared reusable input {key!r}",
+                    context.provenance,
+                )
+                return None
+
+        inputs: dict[str, Any] = {}
+        for key, (input_type, required, default_present, default_value) in contracts.items():
+            if key in raw_with:
+                value, known = _static_workflow_input(raw_with[key], context)
+                if not known:
+                    self.issue(
+                        "REUSABLE_INPUT_UNRESOLVED",
+                        f"input {key!r} is dynamic",
+                        context.provenance,
+                    )
+                    return None
+                value = _coerce_workflow_input(value, input_type)
+                if value is None:
+                    self.issue(
+                        "REUSABLE_INPUT_TYPE_MISMATCH",
+                        f"input {key!r} does not match reusable type {input_type!r}",
+                        context.provenance,
+                    )
+                    return None
+            elif default_present:
+                value = default_value
+            elif required:
+                self.issue(
+                    "REUSABLE_INPUT_REQUIRED_MISSING",
+                    f"required reusable input {key!r} was not supplied",
+                    context.provenance,
+                )
+                return None
+            else:
+                value = _workflow_input_default(input_type)
+            inputs[key] = value
+        return inputs
 
     def _resolve_steps(
         self,
@@ -4279,7 +4440,7 @@ class _Resolver:
                 continue
             default = definition["default"]
             if isinstance(default, bool | int | float):
-                inputs[str(key)] = default
+                inputs[str(key)] = _scalar(default)
                 continue
             text = _scalar(default)
             if text is None:
@@ -4300,7 +4461,7 @@ class _Resolver:
             inputs[str(key)] = resolved
         for key, raw in raw_with.items():
             if isinstance(raw, bool | int | float):
-                inputs[str(key)] = raw
+                inputs[str(key)] = _scalar(raw)
                 continue
             text = _scalar(raw)
             if text is None:

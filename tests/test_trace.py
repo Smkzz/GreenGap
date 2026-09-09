@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import greengap.trace as trace_module
 from greengap.trace import (
     _github_path_pattern_regex,
     _path_patterns_match,
+    _portable_path_case_error,
     trace_github_actions,
 )
 
@@ -374,6 +376,126 @@ runs:
 
     assert len(result.invocations) == 1
     assert result.invocations[0].paths == ("tests/unit",)
+
+
+@pytest.mark.parametrize("value", ["false", "0", "-0"])
+def test_local_composite_action_treats_scalar_inputs_as_runtime_strings(tmp_path, value: str) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: caller
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/test
+        with:
+          enabled: {value}
+""",
+            ".github/actions/test/action.yml": """name: test
+inputs:
+  enabled:
+    default: false
+runs:
+  using: composite
+  steps:
+    - if: ${{ inputs.enabled }}
+      shell: bash
+      run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert len(result.invocations) == 1
+    assert not result.relevant_incomplete
+
+
+def test_reusable_workflow_missing_required_input_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+""",
+            ".github/workflows/reusable.yml": """name: reusable
+on:
+  workflow_call:
+    inputs:
+      scope:
+        required: true
+        type: string
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert not result.invocations
+    assert any(issue.code == "REUSABLE_INPUT_REQUIRED_MISSING" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_reusable_workflow_type_mismatch_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      enabled: not-a-bool
+""",
+            ".github/workflows/reusable.yml": """name: reusable
+on:
+  workflow_call:
+    inputs:
+      enabled:
+        required: true
+        type: boolean
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - if: ${{ inputs.enabled }}
+        run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert not result.invocations
+    assert any(issue.code == "REUSABLE_INPUT_TYPE_MISMATCH" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_case_walker_rejects_symlink_parent(tmp_path) -> None:
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("external", encoding="utf-8")
+    try:
+        os.symlink(outside, root / "linked", target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    assert _portable_path_case_error(root, "linked/SECRET.TXT") == (
+        "pytest path component directory is a symlink"
+    )
 
 
 def test_reusable_workflow_boolean_input_false_skips_test_step(tmp_path) -> None:
