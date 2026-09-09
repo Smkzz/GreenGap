@@ -645,6 +645,46 @@ runs:
     assert not result.relevant_incomplete
 
 
+def test_composite_dynamic_expression_fallback_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/test
+        with:
+          enabled: ${{ needs.prepare.outputs.run_tests || 'false' }}
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo prepare
+""",
+            ".github/actions/test/action.yml": """name: test
+inputs:
+  enabled:
+    default: false
+runs:
+  using: composite
+  steps:
+    - if: ${{ inputs.enabled == 'false' }}
+      shell: bash
+      run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert not result.invocations
+    assert any(issue.code == "COMPOSITE_INPUT_UNRESOLVED" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
 def test_local_composite_action_cycle_is_unknown(tmp_path) -> None:
     write_files(
         tmp_path,

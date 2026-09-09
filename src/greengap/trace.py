@@ -272,6 +272,24 @@ def _lookup(name: str, context: _Context) -> Any | None:
     return None
 
 
+def _expression_lookup(name: str, context: _Context) -> tuple[Any | None, bool]:
+    """Return a statically supported expression value and its support status."""
+
+    pieces = name.strip().split(".")
+    if len(pieces) != 2:
+        return None, False
+    scope, key = pieces
+    if scope == "matrix":
+        return context.matrix.get(key), True
+    if scope == "env":
+        return context.env.get(key), True
+    if scope == "inputs":
+        return context.inputs.get(key), True
+    if scope == "github" and key == "event_name":
+        return context.event_context, True
+    return None, False
+
+
 def _expression_value(expression: str, context: _Context) -> str | None:
     expression = expression.strip()
     parts = [part.strip() for part in expression.split("||")]
@@ -282,8 +300,8 @@ def _expression_value(expression: str, context: _Context) -> str | None:
             if not match:
                 return None
             template, argument = match.group(2), match.group(3)
-            value = _lookup(argument, context)
-            if value is None:
+            value, supported = _expression_lookup(argument, context)
+            if not supported or value is None:
                 return None
             scalar = _scalar(value)
             return None if scalar is None else template.replace("{0}", scalar)
@@ -292,7 +310,9 @@ def _expression_value(expression: str, context: _Context) -> str | None:
             if _github_truthy(scalar) or index == len(parts) - 1:
                 return scalar
             continue
-        value = _lookup(part, context)
+        value, supported = _expression_lookup(part, context)
+        if not supported:
+            return None
         if value is None:
             if index < len(parts) - 1:
                 continue
@@ -4442,6 +4462,7 @@ class _Resolver:
             )
             return UNKNOWN_SIDE_EFFECT
         inputs: dict[str, Any] = {}
+        inputs_complete = True
         for key, definition in action_inputs.items():
             if not isinstance(definition, dict):
                 self.issue(
@@ -4463,6 +4484,7 @@ class _Resolver:
                     f"default for composite input {key!r} is not static",
                     context.provenance,
                 )
+                inputs_complete = False
                 continue
             resolved, known = resolve_expressions(text, context)
             if not known:
@@ -4471,6 +4493,7 @@ class _Resolver:
                     f"default for composite input {key!r} is dynamic",
                     context.provenance,
                 )
+                inputs_complete = False
                 continue
             inputs[str(key)] = resolved
         for key, raw in raw_with.items():
@@ -4484,6 +4507,7 @@ class _Resolver:
                     f"value for composite input {key!r} is not static",
                     context.provenance,
                 )
+                inputs_complete = False
                 continue
             resolved, known = resolve_expressions(text, context)
             if not known:
@@ -4492,8 +4516,11 @@ class _Resolver:
                     f"value for composite input {key!r} is dynamic",
                     context.provenance,
                 )
+                inputs_complete = False
                 continue
             inputs[str(key)] = resolved
+        if not inputs_complete:
+            return UNKNOWN_SIDE_EFFECT
         return self._resolve_steps(
             runs.get("steps", []),
             replace(
