@@ -1,0 +1,26 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-10",
+  "repository": "https://github.com/Smkzz/greengap-launch-probe-20260910",
+  "pull_request": 1,
+  "branch": "gap-case",
+  "head_sha": "8b3e3a3fcc8a6dfdaff8fe61f99b6f7d04d2a6a6",
+  "workflow": ".github/workflows/probe.yml",
+  "event": "pull_request",
+  "run_id": 34414638205,
+  "run_url": "https://github.com/Smkzz/greengap-launch-probe-20260910/actions/runs/34414638205",
+  "exact_greengap_workflow_sha": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
+  "mutation": "ci.yml runs only tests/test_present.py; tests/test_omitted.py is collected but omitted from the CI command",
+  "expected_exit": 1,
+  "actual_exit": 2,
+  "report_sha256": "a190a2048250dc2b745aa8625b2b7d91c487470be8af77006e1a7ad7d8f517ba",
+  "report": {
+    "complete": false,
+    "collection_complete": true,
+    "finding_states": ["UNKNOWN", "UNKNOWN"],
+    "trace_complete": false,
+    "trace_issue_codes": ["EXTERNAL_WORKFLOW_UNRESOLVED"],
+    "changed_files": [".github/workflows/ci.yml"]
+  },
+  "interpretation": "The real pull-request path preserved fail-closed semantics and did not turn the omitted test into a confident NOT_PLANNED claim. The expected exit-1 case remains open because the caller's external reusable-workflow edge is unresolved by the analyzer."
+}

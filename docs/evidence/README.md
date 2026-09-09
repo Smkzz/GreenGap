@@ -23,9 +23,11 @@ gates close.
 | Hosted checks after workflow corrections | [`hosted-ci-20260910-83b4.json`](hosted-ci-20260910-83b4.json) |
 | Workflow event and reusable-workflow bindings | [`workflow-bindings-20260909-6f76949.json`](workflow-bindings-20260909-6f76949.json) |
 | Real disposable reusable-workflow probe | [`reusable-workflow-probe-20260910-83b4.json`](reusable-workflow-probe-20260910-83b4.json) |
+| Real disposable pull-request gap case | [`reusable-workflow-pr-gap-20260910-83b4.json`](reusable-workflow-pr-gap-20260910-83b4.json) |
 | Source, closure, branch, and PR identity | [`release-identity-20260909-6f76949.json`](release-identity-20260909-6f76949.json) |
 | Bounded independent security coverage | [`independent-security-coverage-20260909-6f76949.json`](independent-security-coverage-20260909-6f76949.json) |
 | Bounded review of post-freeze workflow corrections | [`independent-security-coverage-20260910-83b4.json`](independent-security-coverage-20260910-83b4.json) |
+| Isolated trusted collection for three frozen holdouts | [`cohort-trusted-20260910-6f76949.json`](cohort-trusted-20260910-6f76949.json) |
 | Human usability gate | [`human-usability-20260909-6f76949.json`](human-usability-20260909-6f76949.json) |
 | Owner confirmation gate | [`owner-confirmation-20260909-pending.json`](owner-confirmation-20260909-pending.json) |
 

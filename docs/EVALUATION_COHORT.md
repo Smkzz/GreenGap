@@ -17,11 +17,11 @@ target is therefore not claimed complete.
 | --- | --- | --- | --- | --- | --- |
 | C01 | encode/httpcore | `10a658221deb38a4c5b16db55ab554b0bf731707` | matrix + scripts | no | acquired |
 | C02 | pytest-dev/iniconfig | `00e7d87c7353b1ffecc4cd55f19acfffedd5233e` | pre-commit + pytest | no | acquired |
-| C03 | pytest-dev/iniconfig historical checkout | `a0cd289631bd5b6b4b4c9dac5f524e798a0fc8c5` | historical workflow | yes | acquired |
+| C03 | pytest-dev/iniconfig historical checkout | `a0cd289631bd5b6b4b4c9dac5f524e798a0fc8c5` | historical workflow | yes | acquired; isolated trusted run recorded |
 | C04 | pallets/itsdangerous | `672971d66a2ef9f85151e53283113f33d642dabd` | tox + matrix | no | acquired |
-| C05 | pallets/markupsafe | `b2e4d9c7687be25695fffbe93a37622302b24fb1` | tox + publish | yes | acquired |
+| C05 | pallets/markupsafe | `b2e4d9c7687be25695fffbe93a37622302b24fb1` | tox + publish | yes | acquired; isolated trusted run recorded |
 | C06 | python-trio/outcome | `03ed6218b08001877745bb1a9e180c8c5cf7c903` | reusable CI | no | acquired |
-| C07 | psf/requests | `8f8b212de8c2129d7954c6cd373762880375620a` | multiple workflows | yes | acquired |
+| C07 | psf/requests | `8f8b212de8c2129d7954c6cd373762880375620a` | multiple workflows | yes | acquired; isolated trusted run recorded |
 | C08 | pydantic/pydantic | `2261ae19e2e09f792f06613360c83fc829238111` | matrix + reusable workflows | no | acquired; safe static-only run |
 | C09 | pallets/flask | `d318b683471101618febed18996405ad26462110` | tox + scripts | no | acquired; safe static-only run |
 | C10 | pytest-dev/pytest | `0fabaa620d204fd040066eefd2a3ea2aad8d84cc` | matrix + plugins | yes | acquired; safe static-only run |
@@ -56,3 +56,21 @@ The full machine-readable receipt is the candidate-local
 
 These results are acquisition and safe-boundary evidence, not a claim that the
 12-repository useful-determination or trusted-collection target has passed.
+
+## Isolated trusted-collection follow-up
+
+Three preselected holdouts (C03, C05, and C07) were run at their frozen SHAs
+on disposable GitHub-hosted Ubuntu 24.04 runners with workflow permissions
+empty, checkout credentials disabled, no target dependencies installed, and
+only GreenGap's hash-locked collection environment. The exact machine receipt
+is [`docs/evidence/cohort-trusted-20260910-6f76949.json`](evidence/cohort-trusted-20260910-6f76949.json).
+
+| Cohort | Collection | GreenGap result | Useful determination | False confident conclusion |
+| --- | --- | --- | ---: | ---: |
+| C03 | complete, 42 nodes | exit 2; one `UNKNOWN` / `TRACE_INCOMPLETE` | 0 | 0 |
+| C05 | complete, 80 nodes | exit 2; five `UNKNOWN` / `TRACE_INCOMPLETE` | 0 | 0 |
+| C07 | incomplete, 0 nodes | exit 2; nine `UNKNOWN` / `COLLECTION_INCOMPLETE` | 0 | 0 |
+
+The three holdouts remain untouched and the false-confident-conclusion count
+is zero. The usefulness threshold is still open because all three results
+correctly remained UNKNOWN rather than producing a useful determination.

@@ -75,8 +75,10 @@ candidate for stable status.
    returns fail-closed `EXTERNAL_WORKFLOW_UNRESOLVED`/exit 2 against immutable
    v0.1.3, and no schedule case has been promoted. Obtain exact source-head
    schedule/CodeQL/default-branch receiver evidence.
-3. Complete trusted collection/useful determinations for the frozen cohort,
-   including the C11/C12 exclusion decisions and at least three holdouts.
+3. The three untouched holdouts now have isolated trusted-collection receipts
+   with `FALSE_CONFIDENT_CONCLUSIONS=0`, but all remain UNKNOWN/exit 2 and
+   produced zero useful determinations. Complete the usefulness threshold and
+   the C11/C12 exclusion decisions for the frozen cohort.
 4. Run five fresh consenting human first-use sessions with at least four
    successful integrations; agent simulations do not count.
 5. Obtain accountable maintenance, support, rollback, and publication owner
