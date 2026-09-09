@@ -798,11 +798,11 @@ jobs:
         },
     )
 
-    default_result = trace_github_actions(tmp_path)
+    default_result = trace_github_actions(tmp_path, event="push")
     assert default_result.relevant_incomplete
     assert any(issue.code == "EXTERNAL_WORKFLOW_UNRESOLVED" for issue in default_result.issues)
 
-    result = trace_github_actions(tmp_path, inside_reusable_workflow=True)
+    result = trace_github_actions(tmp_path, event="push", inside_reusable_workflow=True)
     assert result.invocations[0].paths == ("tests",)
     assert not result.relevant_incomplete
     assert any(issue.code == "SELF_REUSABLE_WORKFLOW_IGNORED" for issue in result.issues)
@@ -821,7 +821,7 @@ jobs:
 """,
         },
     )
-    result = trace_github_actions(tmp_path, inside_reusable_workflow=True)
+    result = trace_github_actions(tmp_path, event="push", inside_reusable_workflow=True)
     assert result.relevant_incomplete
     assert result.issues[0].code == "EXTERNAL_WORKFLOW_UNRESOLVED"
 
