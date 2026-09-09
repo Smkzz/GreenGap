@@ -107,6 +107,7 @@ jobs:
     uses: Smkzz/GreenGap/.github/workflows/greengap-plan.yml@<approved-immutable-release-tag>
     with:
       release-tag: <approved-release-tag>
+      green-gap-source-ref: <approved-40-character-source-sha>
       python-version: "3.12"
       trust-collection: false
       fail-on-gap: false
@@ -114,7 +115,9 @@ jobs:
 
 The angle-bracket values are publication-bound inputs, not a claim that a
 future tag is already live. Do not replace them with `main` or a floating
-major alias. The workflow is advisory by default; `fail-on-gap: true`
+major alias. `green-gap-source-ref` must be the exact 40-character GreenGap
+commit whose hash-locked runtime dependencies are installed. The workflow is
+advisory by default; `fail-on-gap: true`
 propagates `1` for a proven gap and `2` for incomplete evidence.
 
 ## Install, upgrade, verify, and uninstall

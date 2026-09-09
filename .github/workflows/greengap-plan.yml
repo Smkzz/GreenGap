@@ -7,6 +7,10 @@ on:
         description: "Exact immutable GreenGap release tag to install"
         required: true
         type: string
+      green-gap-source-ref:
+        description: "Exact 40-character GreenGap source commit whose runtime lock is installed"
+        required: true
+        type: string
       python-version:
         description: "Python used for the analyzed project's pytest collection"
         required: false
@@ -74,6 +78,24 @@ jobs:
             --force-reinstall \
             --require-hashes \
             -r .greengap-dist/wheel-requirements.txt
+
+      - name: Download and install the exact GreenGap runtime lock
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GREENGAP_SOURCE_REF: ${{ inputs.green-gap-source-ref }}
+          GREENGAP_RELEASE_REPOSITORY: Smkzz/GreenGap
+        run: |
+          set -euo pipefail
+          [[ "${GREENGAP_SOURCE_REF}" =~ ^[0-9a-fA-F]{40}$ ]]
+          runtime_lock=.greengap-dist/runtime-requirements.txt
+          gh api "repos/${GREENGAP_RELEASE_REPOSITORY}/contents/.github/requirements-runtime.txt?ref=${GREENGAP_SOURCE_REF}" \
+            --jq '.content' | tr -d '\n' | base64 --decode > "${runtime_lock}"
+          test -s "${runtime_lock}"
+          grep -Eq '^pyyaml==' "${runtime_lock}"
+          python -m pip install \
+            --no-deps \
+            --require-hashes \
+            -r "${runtime_lock}"
 
       - name: Bind the GitHub change set
         env:
