@@ -66,8 +66,30 @@ Receipts: [`performance-small-20260909.json`](evidence/performance-small-2026090
 [`performance-medium-20260909.json`](evidence/performance-medium-20260909.json),
 [`performance-large-20260909.json`](evidence/performance-large-20260909.json),
 and the aggregate [`performance-20260909.json`](evidence/performance-20260909.json).
-The algorithmic pass reduced large-fixture p95 from 57.926 s to 14.419 s and
-preserved the 512 MiB memory budget, but it did not meet the frozen 5.0 s
-target. No unilateral exception is accepted; the performance blocker remains
-open pending a qualifying further optimization or the master prompt's
-independent rebaseline conditions, plus Ubuntu evidence.
+The 2026-09-09 methodology closure separates production timing from the
+legacy harness. [`performance-methodology-20260909.json`](evidence/performance-methodology-20260909.json)
+used the same deterministic 10,000-test/4-workflow fixture with one warmup and
+five measured runs: uninstrumented production p95 was 6.841 s, while the
+unchanged tracemalloc method reported 27.928 s. Instrumentation materially
+distorted the old measurement, but the production path still missed the
+frozen target at that stage.
+
+The final hardened receipt is
+[`performance-methodology-20260909-final2.json`](evidence/performance-methodology-20260909-final2.json),
+measured on Windows 11 AMD64 with Python 3.13.3, one warmup, and five fresh
+child-process runs per method:
+
+| Method | p50 wall | p95 wall | Separate evidence |
+| --- | ---: | ---: | --- |
+| Production, no instrumentation | 3.496 s | 3.725 s | peak parent RSS 81,481,728 B; disk delta 0 B |
+| Legacy, tracemalloc unchanged | 12.149 s | 19.601 s | peak parent RSS 125,214,720 B |
+| Harness report serialization | 0.398 s | 9.024 s | one scheduler outlier retained, not added to production timing |
+| Harness filesystem/RSS measurement | 0.732 s | 1.412 s | measured separately from analysis |
+
+The production large-fixture SLO now passes. The fixture intentionally disables
+pytest collection and has no proven clean checkout, so all five public report
+outcomes are `INCOMPLETE`; this is expected harness state, not a claim of a
+complete target qualification. The traversal hardening also prunes transient
+directories, enforces incremental entry/deadline limits, and keeps configuration
+inspection byte-bounded. Linux evidence and the remaining owner/hosted gates
+are still required before stable launch.

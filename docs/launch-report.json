@@ -3,22 +3,21 @@
   "RELEASE_VERSION": "1.0.0rc1",
   "RELEASE_SHA": null,
   "RELEASE_TREE": null,
-  "RELEASE_IDENTITY_STATUS": "LOCAL_CHECKPOINT_COMMITTED: source SHA/tree are recorded for the local release-candidate checkpoint; stable promotion still requires final exact-head freeze and external gates",
-  "LOCAL_CHECKPOINT_SHA": "2f20bcc7c1eb568d6061a1a25273896e648dd407",
-  "LOCAL_CHECKPOINT_TREE": "2a50ca4317c9692b1ecd31dfcf4bf6d2354b7552",
+  "RELEASE_IDENTITY_STATUS": "LOCAL_CHECKPOINT_COMMITTED: source SHA/tree are recorded for the final local release-candidate checkpoint; stable promotion still requires external gates",
+  "LOCAL_CHECKPOINT_SHA": "272ab74cf4416ee78f5d8b95c37bf9f88ba10f10",
+  "LOCAL_CHECKPOINT_TREE": "b1ac8855e5d2e782977f26c0350ad88e85b247b2",
   "BASELINE_RELEASE": "0.1.3 corrective-release content is preserved; this task did not mutate, retag, recreate, or publish it",
   "CANDIDATE_BASE_SHA": "2de5f22a0a1fe1aa8f5e30712e96077d923b104f",
   "CANDIDATE_BASE_TREE": "c21113d1192dcd68a117c89b1805da41bc63e32d",
   "CANDIDATE_WORKTREE": "qualification/post-hotfix-main-2de5f22-20260907",
-  "ACCEPTANCE_DOMAINS_PASSED": "4/10 local-only domains",
-  "LAUNCH_CRITICAL_OPEN_ITEMS": 10,
+  "ACCEPTANCE_DOMAINS_PASSED": "5/10 local-only domains",
+  "LAUNCH_CRITICAL_OPEN_ITEMS": 9,
   "LAUNCH_CRITICAL_OPEN_ITEM_DETAILS": [
     "The local candidate is committed and its source SHA/tree are recorded; final exact-head freeze, release manifest acceptance, and external promotion gates remain open.",
-    "Retain hosted security approval as open: the delegated Daybreak review returned a read-only residual assessment, but hosted environment reviewers, branch protection, tag/ruleset immutability, and live receiver execution still require owner readback.",
+    "Retain hosted security approval as open: the local exact-head source scans reported no reportable findings, but hosted environment reviewers, branch protection, tag/ruleset immutability, and live receiver execution still require owner readback.",
     "Obtain fresh exact-head Linux and Windows release-style installation evidence.",
     "Exercise the reusable workflow on real PR, push, schedule, and branch-protection paths with the intended ref/change bindings.",
     "Complete trusted collection and useful determinations for the five acquired repositories, resolve C11/C12 exclusion decisions, and close the frozen-cohort requirement with at least three holdouts.",
-    "Resolve the measured performance budget miss: the five-run 10,000-file static matrix is complete with RSS/disk evidence, and the algorithmic optimization reduced p95 from 57.926 seconds to 14.419 seconds against the frozen five-second target; no unilateral exception is accepted, so a qualifying further optimization or the master prompt's independent rebaseline conditions and Linux evidence remain required.",
     "Run five consenting fresh first-run usability sessions and record at least four successful integrations.",
     "Obtain an accountable routine-maintenance, support, and rollback owner confirmation.",
     "Perform independent machine-consumer/schema validation where the local suite only checks contract shape; the documentation relative-link check is complete at 15/15.",
@@ -33,7 +32,7 @@
     "agent_simulations_counted_as_human": false
   },
   "MACHINE_REVIEW_COVERAGE": {
-    "local_regression": "492 passed, 1 skipped",
+    "local_regression": "496 passed, 1 skipped",
     "ruff": "PASS",
     "mypy": "PASS: no issues in 13 source files",
     "compileall": "PASS",
@@ -56,44 +55,44 @@
       "hosted_attestation": "NOT_AVAILABLE: explicit receipt at docs/evidence/attestation-20260908.json"
     },
     "performance": {
-      "receipt": "docs/evidence/performance-20260909.json",
-      "baseline_receipt": "docs/evidence/performance-20260908.json",
-      "fixture_receipts": [
-        "docs/evidence/performance-small-20260909.json",
-        "docs/evidence/performance-medium-20260909.json",
-        "docs/evidence/performance-large-20260909.json"
-      ],
+      "receipt": "docs/evidence/performance-methodology-20260909-final2.json",
+      "initial_methodology_receipt": "docs/evidence/performance-methodology-20260909.json",
+      "baseline_receipt": "docs/evidence/performance-20260909.json",
       "startup_receipt": "docs/evidence/startup-20260908.json",
       "reference_machine": "Windows 11 AMD64, Python 3.13.3",
-      "runs_per_fixture": 5,
-      "warmup_runs_per_fixture": 1,
-      "collection_enabled": false,
-      "fixture_matrix": {
-        "small": {
-          "p50_wall_seconds": 0.14581670000916347,
-          "p95_wall_seconds": 0.21367019999888726,
-          "peak_process_rss_bytes": 34918400,
-          "disk_delta_bytes": 0,
-          "status": "MEASURED"
-        },
-        "medium": {
-          "p50_wall_seconds": 1.3901844000210986,
-          "p95_wall_seconds": 1.5209751999936998,
-          "peak_process_rss_bytes": 45436928,
-          "disk_delta_bytes": 0,
-          "status": "TIMING_BUDGET_MISS"
-        },
-        "large": {
-          "p50_wall_seconds": 13.473204000008991,
-          "p95_wall_seconds": 14.418952799984254,
-          "peak_process_rss_bytes": 129724416,
-          "disk_delta_bytes": 0,
-          "status": "TIMING_BUDGET_MISS"
-        }
+      "runs_per_method": 5,
+      "warmup_runs_per_method": 1,
+      "fixture": {
+        "test_files": 10000,
+        "workflow_shapes": 4,
+        "collection_enabled": false,
+        "clean_checkout": false
       },
-      "startup_p95_seconds": {
-        "version": 0.390333,
-        "help": 0.290641
+      "production": {
+        "p50_wall_seconds": 3.49599510000007,
+        "p95_wall_seconds": 3.72522609999987,
+        "peak_process_rss_bytes": 81481728,
+        "disk_delta_bytes": 0,
+        "status": "MEASURED"
+      },
+      "legacy_instrumented": {
+        "method": "scripts/measure_performance.py with tracemalloc unchanged",
+        "p50_wall_seconds": 15.610176199999842,
+        "p95_wall_seconds": 19.600580000000264,
+        "peak_process_rss_bytes": 125210624,
+        "status": "MEASURED_INSTRUMENTATION_DISTORTED"
+      },
+      "harness_overhead": {
+        "report_serialization": {
+          "p50_wall_seconds": 0.3984064999999646,
+          "p95_wall_seconds": 9.023688600000241,
+          "status": "MEASURED_WITH_ONE_SCHEDULER_OUTLIER"
+        },
+        "filesystem_and_rss": {
+          "p50_wall_seconds": 0.7317275999998856,
+          "p95_wall_seconds": 1.4119604000002255,
+          "status": "MEASURED_SEPARATELY"
+        }
       },
       "budgets": {
         "startup_seconds": 1.0,
@@ -101,8 +100,8 @@
         "large_process_memory_bytes": 536870912
       },
       "memory_budget_passed": true,
-      "timing_budget_passed": false,
-      "budget_decision": "OPEN_PERFORMANCE_BLOCKER: preserve exact fail-closed workspace binding; algorithmic optimization reduced large-fixture p95 from 57.926 seconds to 14.419 seconds, but the frozen five-second target remains unmet; no unilateral exception is accepted, and further qualifying optimization or independent rebaseline conditions plus Linux evidence are required before stable launch"
+      "timing_budget_passed": true,
+      "budget_decision": "PASS_LOCAL_PRODUCTION_SLO: uninstrumented large-fixture p95 is 3.725 seconds, below the five-second target; the unchanged tracemalloc result is reported separately as instrumentation-distorted, and Linux plus external release gates remain open"
     },
     "evaluation_cohort": {
       "receipt": "docs/evidence/cohort-static-20260908.json",
@@ -124,44 +123,51 @@
       "omitted_reason_code": "COLLECTED_FILE_NOT_PLANNED"
     },
     "security": {
-      "scan_id": "64cac254-b127-4803-9436-da53c4c55c9e",
-      "snapshot_digest": "codex-security-snapshot/v1:sha256:eef33cda160e77b852ddbaa2ba3f54571249658aeb9d090a964fd583dbc46216",
-      "status": "COMPLETE_NO_REPORTABLE_FINDINGS_PARTIAL_SEMANTIC_COVERAGE",
+      "scan_id": "798de3ea-7921-4834-816e-6e824bbfe8b9",
+      "snapshot_digest": "codex-security-snapshot/v1:sha256:519e640ccf236b4da58456f2c1521fa95d46cb2d1477094a6125138d2536f234",
+      "status": "COMPLETE_NO_REPORTABLE_FINDINGS_EXACT_HEAD_PARTIAL_SEMANTIC_COVERAGE",
       "model": "gpt-5.6-luna",
       "reasoning_effort": "max",
       "finding_count": 0,
       "severity_counts": {},
       "coverage": "partial",
-      "targeted_remediation_applied": true,
+      "tool_coverage": "complete",
+      "semantic_scope_coverage": "partial",
+      "targeted_remediation_applied": false,
       "post_remediation_rescan": true,
-      "scan_target_revision": "2f20bcc7c1eb568d6061a1a25273896e648dd407",
-      "reviewed_tree": "2a50ca4317c9692b1ecd31dfcf4bf6d2354b7552",
-      "reviewed_files": 440,
-      "reviewed_surface_groups": 10,
+      "scan_target_revision": "272ab74cf4416ee78f5d8b95c37bf9f88ba10f10",
+      "reviewed_tree": "b1ac8855e5d2e782977f26c0350ad88e85b247b2",
+      "reviewed_files": 13,
+      "tool_inventory_files": 448,
+      "reviewed_surface_groups": 6,
       "report_available": true,
+      "report": "C:/Users/samis/AppData/Local/Temp/codex-security-scans-brvYyf/post-hotfix-main-2de5f22-20260907/272ab74cf4416ee78f5d8b95c37bf9f88ba10f10_20260909T093221Z_n5qrzn9e/report.md",
+      "sarif": "C:/Users/samis/AppData/Local/Temp/codex-security-scans-brvYyf/post-hotfix-main-2de5f22-20260907/272ab74cf4416ee78f5d8b95c37bf9f88ba10f10_20260909T093221Z_n5qrzn9e/exports/results.sarif",
       "independent_delegated_workers": 0,
       "independent_baseline_review": {
-        "status": "NOT_INCLUDED_IN_FINAL_ARTIFACT: the final authoritative scan was completed from the parent source review; no delegated review is treated as an approval",
-        "approval_claim": "NONE: the completed Standard scan has no reportable findings but its semantic coverage remains partial",
+        "status": "NOT_AVAILABLE: three read-only independent workers timed out before returning results",
+        "approval_claim": "NONE: no delegated review is treated as an approval; semantic coverage remains partial",
         "runtime_or_network_validation": "NOT_PERFORMED_BY_SCAN"
       },
       "limitations": [
-        "No runtime, network, provider, or external-host validation was performed by the source-only scan.",
-        "The prior medium quoted-secret-key redaction finding was remediated in report.py and covered by JSON diagnostic regression tests; this final scan reviewed the remediation at the exact committed head.",
-        "Hosted configuration, release policy, external schemas/cohorts, and platform-specific performance remain unverified or open."
+        "The source-only scan reported no reportable findings, but the independent architecture/filesystem worker results were unavailable after bounded timeouts; no approval is inferred from their absence.",
+        "No runtime, network, provider, hosted-environment, or external-host validation was performed by the scan.",
+        "Linux evidence, hosted configuration, release policy, external schemas/cohorts, and human usability/owner gates remain unverified or open."
       ]
     },
     "current_working_tree_diff_scan": {
-      "scan_id": "849c6050-cb45-45a1-a2a9-e444ccb944ae",
+      "scan_id": "3580dfa6-ea3b-4d85-9822-a524d7a00700",
       "status": "COMPLETE_NO_REPORTABLE_FINDINGS_CHANGED_DIFF",
       "coverage": "COMPLETE_CHANGED_DIFF_NOT_REPOSITORY",
       "finding_count": 0,
-      "base_revision": "aee76fb7bd9a0be4a1a98bff179ba23d9361d541",
-      "snapshot_digest": "codex-security-snapshot/v1:sha256:f624706b06f492b69b4b1afbb09fd1aa66322c45867ff8ac076219740f8cd318",
-      "report": "C:/Users/samis/AppData/Local/Temp/codex-security-scans-MebUqz/post-hotfix-main-2de5f22-20260907/aee76fb7bd9a0be4a1a98bff179ba23d9361d541_20260909T005910Z_kihkcim7/report.md",
+      "base_revision": "e691419c66ee9190b523c0262c5163653c64e332",
+      "snapshot_digest": "codex-security-snapshot/v1:sha256:ef9d7205a55b0081acbe7425346299c081acb8b63ab73872a129aa36354583a2",
+      "report": "C:/Users/samis/AppData/Local/Temp/codex-security-scans-brvYyf/post-hotfix-main-2de5f22-20260907/e691419c66ee9190b523c0262c5163653c64e332_20260909T090445Z_4lvgouzm/report.md",
+      "residual_candidate": "pytest-discovery:src/greengap/trace.py:4953",
+      "residual_candidate_status": "ROBUSTNESS_CANDIDATE_IGNORED_BY_POLICY_AND_FIXED_BEFORE_FINAL_EXACT_HEAD_SCAN",
       "limitations": [
-        "This is exact changed-diff coverage, not a replacement for a final repository-wide or hosted security closure.",
-        "No independent delegated architecture result was available; parent source review and focused regression tests are the recorded basis."
+        "This is exact changed-diff coverage, not a replacement for the final repository-wide or hosted security closure.",
+        "The scan identified no reportable findings; the temporary sorted-directory materialization candidate was corrected with incremental enforcement before the final exact-head scan."
       ]
     },
     "hosted_platform_and_workflow_validation": "UNKNOWN",
@@ -191,7 +197,8 @@
   "NOTES": [
     "The report deliberately does not claim stable 1.0.0 launch completion.",
     "The release-candidate artifacts were built and installed locally only; no merge, tag movement, registry upload, release recreation, or public verification was performed.",
-    "The final post-remediation repository-wide Standard scan at 2f20bcc7c1eb568d6061a1a25273896e648dd407 reported no reportable findings; tool coverage was complete while semantic coverage remains partial because hosted and platform-dependent gates are outside this local task.",
-    "The prior medium quoted-secret-key redaction finding was remediated and regression-tested; no stable launch, publication, or hosted-configuration approval is claimed."
+    "The final exact-head repository-wide Standard scan at 272ab74cf4416ee78f5d8b95c37bf9f88ba10f10 reported no reportable findings; tool coverage was complete while semantic coverage remains partial because independent workers timed out and hosted/platform-dependent gates are outside this local task.",
+    "The focused working-tree diff scan closed the bounded pytest-discovery change with no reportable findings; a temporary oversized-directory robustness candidate was fixed before the final exact-head scan.",
+    "The uninstrumented production performance p95 is 3.725 seconds on the frozen 10,000-file fixture, below the five-second local SLO; no stable launch, publication, or hosted-configuration approval is claimed."
   ]
 }
