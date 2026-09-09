@@ -1,0 +1,82 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-09",
+  "candidate_version": "1.0.0rc1",
+  "tested_source_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "tested_source_tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
+  "local_workflow_contract": {
+    "reusable_workflow": ".github/workflows/greengap-plan.yml",
+    "trigger": "workflow_call",
+    "caller_search": "No shipped caller was found in .github/workflows or repository source.",
+    "status": "NOT_EXERCISED_REAL_CALLER"
+  },
+  "real_events_observed": [
+    {
+      "workflow": "GreenGap CI",
+      "event": "pull_request",
+      "run_id": "34350413766",
+      "head_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+      "status": "success"
+    },
+    {
+      "workflow": "GreenGap CI",
+      "event": "push",
+      "run_id": "34350407630",
+      "head_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+      "status": "success"
+    },
+    {
+      "workflow": "OpenSSF Scorecard",
+      "event": "pull_request",
+      "run_id": "34350413514",
+      "head_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+      "status": "success"
+    },
+    {
+      "workflow": "ClusterFuzzLite fuzzing",
+      "event": "pull_request",
+      "run_id": "34350413526",
+      "head_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+      "status": "success"
+    },
+    {
+      "workflow": "Dependency review",
+      "event": "pull_request",
+      "run_id": "34350413608",
+      "head_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+      "status": "success"
+    }
+  ],
+  "schedule_bindings": {
+    "codeql": {
+      "latest_observed_run_id": "34100688332",
+      "event": "schedule",
+      "head_branch": "main",
+      "head_sha": "2de5f22a0a1fe1aa8f5e30712e96077d923b104f",
+      "status": "success",
+      "exact_rc_head": false
+    },
+    "scorecard": {
+      "latest_observed_run_id": "34107714183",
+      "event": "schedule",
+      "head_branch": "main",
+      "head_sha": "2de5f22a0a1fe1aa8f5e30712e96077d923b104f",
+      "status": "success",
+      "exact_rc_head": false
+    },
+    "fuzz": {
+      "schedule_declared": true,
+      "exact_rc_schedule_run": false
+    }
+  },
+  "branch_protection": {
+    "required_approving_review_count": 1,
+    "require_last_push_approval": true,
+    "enforce_admins": true,
+    "allow_force_pushes": false,
+    "allow_deletions": false,
+    "pr_review_decision": "REVIEW_REQUIRED",
+    "pr_merge_state": "BLOCKED"
+  },
+  "launch_interpretation": "PR/push evidence is fresh at the exact source freeze. The reusable workflow has no in-repository caller, and schedule/default-branch evidence is not exact-head evidence; the intended binding gate remains open."
+}

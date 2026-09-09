@@ -1,0 +1,58 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-09",
+  "repository": "Smkzz/GreenGap",
+  "candidate_version": "1.0.0rc1",
+  "candidate_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "candidate_tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
+  "consumer": {
+    "json_consumer": "Node.js JSON.parse",
+    "schema_consumer": "Python jsonschema.validator_for/check_schema/validate",
+    "node_version": "v24.18.0",
+    "jsonschema_version": "4.26.0"
+  },
+  "schemas": {
+    "greengap_json": {
+      "path": "schemas/greengap-report-v1.json",
+      "sha256": "c5cbcc1000d39b332ce8e35f60c99b715059ff92d2986f66a2b285930f5c4dd2"
+    },
+    "sarif": {
+      "source": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+      "local_copy": "C:/Users/samis/AppData/Local/Temp/sarif-schema-2.1.0-oasis.json",
+      "sha256": "c3b4bb2d6093897483348925aaa73af03b3e3f4bd4ca38cef26dcb4212a2682e"
+    }
+  },
+  "checked": {
+    "representative_json_examples": 4,
+    "live_json": true,
+    "live_sarif": true,
+    "node_json_parse_documents": 6,
+    "python_json_schema_documents": 5,
+    "python_sarif_schema_documents": 1,
+    "status": "PASS"
+  },
+  "live_outputs": {
+    "json": {
+      "path": "C:/Users/samis/AppData/Local/Temp/greengap-live-6f76949.json",
+      "sha256": "b66e23a4ea09556240666d968ac4247483184b9b70b46b45facd24629a3c40d4",
+      "bytes": 61156,
+      "exit_code": 2,
+      "outcome": "INCOMPLETE",
+      "report_complete": false,
+      "analysis_complete": false,
+      "collection_complete": false
+    },
+    "sarif": {
+      "path": "C:/Users/samis/AppData/Local/Temp/greengap-live-6f76949.sarif",
+      "sha256": "a14351b7078c3240ec690124bef4f3017440174935ab5e5c899d00ff56f23ad3",
+      "bytes": 15652,
+      "execution_successful": false,
+      "analysis_complete": false,
+      "collection_complete": false
+    }
+  },
+  "limitations": [
+    "This validates independent syntax and schema consumers, not GitHub Advanced Security ingestion or a public hosted upload.",
+    "The live reports intentionally use safe non-executing collection and therefore remain INCOMPLETE."
+  ]
+}

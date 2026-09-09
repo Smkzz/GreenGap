@@ -163,6 +163,89 @@
       "status": "COMPLETE_NO_REPORTABLE_FINDINGS_EXACT_HEAD_PARTIAL_SEMANTIC_COVERAGE"
     }
   ],
+  "FINAL_SOURCE_DIFF_SCANS": [
+    {
+      "scan_id": "721df8b6-d697-46b6-ba66-e26295d86544",
+      "range": "8cf8647..7b790e0",
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "max",
+      "thread_count": 1,
+      "input_tokens_raw": 1423781,
+      "cached_input_tokens": 1407232,
+      "uncached_input_tokens": 16549,
+      "output_tokens": 3517,
+      "reasoning_output_tokens": 623,
+      "total_tokens": 1427298,
+      "finding_count": 0,
+      "coverage": "complete_changed_coverage",
+      "status": "COMPLETE_NO_REPORTABLE_FINDINGS"
+    },
+    {
+      "scan_id": "76cb0165-d11f-4b82-b5b5-9d380053e345",
+      "range": "7b790e0..22412b2",
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "max",
+      "thread_count": 1,
+      "input_tokens_raw": 805340,
+      "cached_input_tokens": 799488,
+      "uncached_input_tokens": 5852,
+      "output_tokens": 1017,
+      "reasoning_output_tokens": 58,
+      "total_tokens": 806357,
+      "finding_count": 0,
+      "coverage": "complete_changed_coverage",
+      "status": "COMPLETE_NO_REPORTABLE_FINDINGS"
+    },
+    {
+      "scan_id": "330310cc-67b0-4309-be95-0ceb72ef24a5",
+      "range": "22412b2..cebc4c4",
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "max",
+      "thread_count": 1,
+      "input_tokens_raw": 977728,
+      "cached_input_tokens": 971520,
+      "uncached_input_tokens": 6208,
+      "output_tokens": 1018,
+      "reasoning_output_tokens": 41,
+      "total_tokens": 978746,
+      "finding_count": 0,
+      "coverage": "complete_changed_coverage",
+      "status": "COMPLETE_NO_REPORTABLE_FINDINGS"
+    },
+    {
+      "scan_id": "46bfa65d-b087-405b-bc61-23d75d3e66ed",
+      "range": "cebc4c4..6f76949",
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "max",
+      "thread_count": 1,
+      "input_tokens_raw": 1191418,
+      "cached_input_tokens": 1186560,
+      "uncached_input_tokens": 4858,
+      "output_tokens": 1028,
+      "reasoning_output_tokens": 39,
+      "total_tokens": 1192446,
+      "finding_count": 0,
+      "coverage": "complete_changed_coverage",
+      "status": "COMPLETE_NO_REPORTABLE_FINDINGS"
+    }
+  ],
+  "DELEGATED_SECURITY_REVIEW": {
+    "model": "gpt-daybreak-blue-latest",
+    "reasoning_effort": "high",
+    "agent_count": 7,
+    "agent_ids": [
+      "01a085b0-1662-7642-9e78-558cb7e584d2",
+      "01a085b0-1815-7b80-ac65-7d0ffbba226e",
+      "01a085b0-19cd-7122-bced-7bc8c170383f",
+      "01a085b0-1b5e-7af1-b46c-7708f0ce40f2",
+      "01a085b0-1d4c-78b2-bc2c-271a284b8cc4",
+      "01a085b5-bb50-7103-a289-ee931be6a216",
+      "01a085ef-12c0-7813-9f88-8e32d37b5032"
+    ],
+    "usage_status": "not_exposed_by_subagent_tool",
+    "finding_summary": "Five bounded pre-remediation surfaces were confirmed and remediated; final follow-up at source freeze reported no remaining reportable finding in its scope.",
+    "approval_claim": "NONE"
+  },
   "PRIMARY_IMPLEMENTATION": {
     "model": "HOST_SELECTED",
     "input_tokens_raw": null,

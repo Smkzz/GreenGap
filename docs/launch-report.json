@@ -1,107 +1,141 @@
 {
   "STATUS": "GREENGAP_STABLE_LAUNCH_BLOCKED",
   "RELEASE_VERSION": "1.0.0rc1",
-  "RELEASE_SHA": null,
-  "RELEASE_TREE": null,
-  "RELEASE_IDENTITY_STATUS": "LOCAL_CHECKPOINT_COMMITTED: source SHA/tree are recorded for the final local release-candidate checkpoint; stable promotion still requires external gates",
+  "RELEASE_SHA": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "RELEASE_TREE": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
+  "RELEASE_IDENTITY_STATUS": "SOURCE_FREEZE_RECORDED; evidence-only documentation may be committed after the frozen source without changing this release identity",
   "LOCAL_CHECKPOINT_SHA": "272ab74cf4416ee78f5d8b95c37bf9f88ba10f10",
   "LOCAL_CHECKPOINT_TREE": "b1ac8855e5d2e782977f26c0350ad88e85b247b2",
+  "CLOSURE_DOCUMENT_SHA": "ca2d25e42b443fdda2a9ac0e3bb36e244544e529",
+  "CLOSURE_DOCUMENT_TREE": "0870a442f35f7af084afa96f28311e85be482906",
+  "SOURCE_IS_CLOSURE_ANCESTOR": true,
   "BASELINE_RELEASE": "0.1.3 corrective-release content is preserved; this task did not mutate, retag, recreate, or publish it",
-  "CANDIDATE_BASE_SHA": "2de5f22a0a1fe1aa8f5e30712e96077d923b104f",
-  "CANDIDATE_BASE_TREE": "c21113d1192dcd68a117c89b1805da41bc63e32d",
-  "CANDIDATE_WORKTREE": "qualification/post-hotfix-main-2de5f22-20260907",
-  "ACCEPTANCE_DOMAINS_PASSED": "5/10 local-only domains",
-  "LAUNCH_CRITICAL_OPEN_ITEMS": 9,
+  "PROMOTION_WORKTREE": "qualification/promotion-clean-ca2d25e-20260909",
+  "PROMOTION_WORKTREE_CLEAN_BEFORE_EVIDENCE": true,
+  "REMOTE_BRANCH": "release/greengap-1.0.0",
+  "REMOTE_BRANCH_SHA_AT_SOURCE_FREEZE": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "PULL_REQUEST": {
+    "number": 11,
+    "url": "https://github.com/Smkzz/GreenGap/pull/11",
+    "state": "OPEN",
+    "is_draft": false,
+    "base": "main",
+    "head_ref": "release/greengap-1.0.0",
+    "head_sha_at_observation": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+    "review_decision": "REVIEW_REQUIRED",
+    "merge_state": "BLOCKED",
+    "latest_reviews": []
+  },
+  "ACCEPTANCE_DOMAINS_PASSED": "6/10",
+  "ACCEPTANCE_DOMAINS": {
+    "1_correct_product": {
+      "status": "PASS",
+      "evidence": "docs/evidence/local-gates-20260909-6f76949.json",
+      "result": "517 passed, 1 skipped"
+    },
+    "2_safe_execution_fail_closed": {
+      "status": "PASS",
+      "evidence": "docs/evidence/local-gates-20260909-6f76949.json",
+      "result": "Safe default uses --no-collect; JSON and SARIF report INCOMPLETE with exit code 2."
+    },
+    "3_cli_agent_interface": {
+      "status": "PASS",
+      "evidence": "docs/evidence/contract-consumer-20260909-6f76949.json",
+      "result": "Six JSON documents parse; five report documents and one SARIF document validate independently."
+    },
+    "4_platform_reliability": {
+      "status": "PASS",
+      "evidence": "docs/evidence/hosted-ci-20260909-6f76949.json",
+      "result": "20/20 exact-source hosted checks passed across Ubuntu and Windows lanes. Linux performance remains a separate open gate."
+    },
+    "5_performance": {
+      "status": "BLOCKED",
+      "evidence": "docs/evidence/performance-methodology-20260909-final-6f76949.json",
+      "result": "Exact-source Windows production and startup budgets passed; Linux timing substrate was unavailable."
+    },
+    "6_ci_dependency_security": {
+      "status": "PASS",
+      "evidence": "docs/evidence/hosted-ci-20260909-6f76949.json; docs/evidence/independent-security-coverage-20260909-6f76949.json",
+      "result": "Observed exact-source CI, dependency review, fuzz, Scorecard, and bounded security surfaces passed; schedule/default-branch exactness remains open."
+    },
+    "7_packaging_provenance": {
+      "status": "PARTIAL",
+      "evidence": "docs/evidence/hosted-ci-20260909-6f76949.json",
+      "result": "Hosted package job passed, but final-source local artifacts and hosted attestation were not retained in this worktree."
+    },
+    "8_documentation_onboarding": {
+      "status": "PASS",
+      "evidence": "docs/START_HERE.md; docs/evidence/README.md",
+      "result": "Handoff and evidence index bind historical and final-source receipts and preserve UNKNOWN/blocking semantics."
+    },
+    "9_operations_maintenance": {
+      "status": "BLOCKED",
+      "evidence": "docs/evidence/owner-confirmation-20260909-pending.json",
+      "result": "No accountable maintenance, support, rollback, or publication owner confirmation is recorded."
+    },
+    "10_authorized_launch": {
+      "status": "BLOCKED",
+      "evidence": "docs/evidence/release-identity-20260909-6f76949.json; docs/evidence/human-usability-20260909-6f76949.json",
+      "result": "Human sessions are 0/5 and no merge, tag, release, upload, or publication authorization was given."
+    }
+  },
+  "LAUNCH_CRITICAL_OPEN_ITEMS": 7,
   "LAUNCH_CRITICAL_OPEN_ITEM_DETAILS": [
-    "The local candidate is committed and its source SHA/tree are recorded; final exact-head freeze, release manifest acceptance, and external promotion gates remain open.",
-    "Retain hosted security approval as open: the local exact-head source scans reported no reportable findings, but hosted environment reviewers, branch protection, tag/ruleset immutability, and live receiver execution still require owner readback.",
-    "Obtain fresh exact-head Linux and Windows release-style installation evidence.",
-    "Exercise the reusable workflow on real PR, push, schedule, and branch-protection paths with the intended ref/change bindings.",
-    "Complete trusted collection and useful determinations for the five acquired repositories, resolve C11/C12 exclusion decisions, and close the frozen-cohort requirement with at least three holdouts.",
-    "Run five consenting fresh first-run usability sessions and record at least four successful integrations.",
-    "Obtain an accountable routine-maintenance, support, and rollback owner confirmation.",
-    "Perform independent machine-consumer/schema validation where the local suite only checks contract shape; the documentation relative-link check is complete at 15/15.",
-    "Receive explicit publication approval, publish once through authorized channels, and verify public download, installation, and attestations."
+    "Linux release-style performance timing, startup, and RSS evidence is unavailable; hosted Ubuntu tests do not substitute.",
+    "The reusable workflow has no shipped in-repository caller, and exact-source schedule/CodeQL/default-branch receiver evidence is not present.",
+    "The frozen five-repository cohort has only safe static results: trusted collection and useful determinations are 0, and C11/C12 decisions plus holdouts remain open.",
+    "Five fresh consenting human first-use sessions and four successful integrations have not been recorded.",
+    "Accountable routine-maintenance, support, rollback, and publication owner confirmation is pending.",
+    "The hosted package job passed, but final-source local artifact bytes and hosted provenance/attestation were not retained for independent readback.",
+    "Explicit authorization for merge, tag, release creation, registry/PyPI upload, publication, and public verification remains absent."
   ],
   "STANDARDS_PROFILE": "docs/STANDARDS_PROFILE.md",
   "HUMAN_REVIEW_COVERAGE": {
     "fresh_sessions_completed": 0,
     "fresh_sessions_required": 5,
     "required_successes": 4,
-    "status": "UNKNOWN",
-    "agent_simulations_counted_as_human": false
+    "successful_integrations": 0,
+    "status": "NOT_RUN_EXTERNAL_BLOCKER",
+    "agent_simulations_counted_as_human": false,
+    "receipt": "docs/evidence/human-usability-20260909-6f76949.json"
   },
   "MACHINE_REVIEW_COVERAGE": {
-    "local_regression": "496 passed, 1 skipped",
+    "source_freeze": {
+      "sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+      "tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34"
+    },
+    "local_regression": "517 passed, 1 skipped",
     "ruff": "PASS",
-    "mypy": "PASS: no issues in 13 source files",
+    "mypy": "PASS: no issues found in 13 source files",
     "compileall": "PASS",
-    "cli_smoke": "PASS: JSON and SARIF safe-default outputs, version 1.0.0rc1",
+    "cli_smoke": {
+      "status": "PASS_FAIL_CLOSED",
+      "json_exit": 2,
+      "json_outcome": "INCOMPLETE",
+      "sarif_exit": 2,
+      "sarif_execution_successful": false,
+      "receipt": "docs/evidence/local-gates-20260909-6f76949.json"
+    },
+    "external_consumer_validation": {
+      "status": "PASS",
+      "receipt": "docs/evidence/contract-consumer-20260909-6f76949.json"
+    },
     "packaging": {
-      "reproducible": true,
-      "builds_compared": 2,
-        "wheel_sha256": "8b75cd9132e2c4f2a26372f54baeba4600e1a991ca8f95e6248f99502ea3cf0c",
-        "sdist_sha256": "bfc454da462a92fbd0ec1c666e2e628c7be7c82bf6a2aa6277cfb3dc321c03db",
-      "wheel_install_smoke": "PASS",
-      "sdist_install_smoke": "PASS",
-      "wheel_from_sdist_install_smoke": "PASS",
-      "artifact_version": "1.0.0rc1",
-      "twine_check": "NOT_RUN: twine was unavailable in the managed audit environment",
-      "checksum_receipt": "docs/evidence/SHA256SUMS-20260908",
-      "sbom_receipt": "docs/evidence/sbom-20260908.spdx.json",
-      "sbom_format": "SPDX-2.3",
-      "sbom_scope": "declared runtime dependency scope: greengap plus PyYAML 6.0.3 in the audit environment",
-      "provenance_receipt": "docs/evidence/provenance-20260908.json",
-      "hosted_attestation": "NOT_AVAILABLE: explicit receipt at docs/evidence/attestation-20260908.json"
+      "hosted_package_job": "PASS",
+      "local_final_artifacts": "NOT_RETAINED",
+      "local_reason": "The managed audit environment did not have the setuptools build backend available for a final local build.",
+      "old_artifacts": "Historical receipts remain separate and are not claimed for the final source freeze.",
+      "publication_status": "NOT_AUTHORIZED",
+      "receipt": "docs/evidence/hosted-ci-20260909-6f76949.json"
     },
     "performance": {
-      "receipt": "docs/evidence/performance-methodology-20260909-final2.json",
-      "initial_methodology_receipt": "docs/evidence/performance-methodology-20260909.json",
-      "baseline_receipt": "docs/evidence/performance-20260909.json",
-      "startup_receipt": "docs/evidence/startup-20260908.json",
-      "reference_machine": "Windows 11 AMD64, Python 3.13.3",
-      "runs_per_method": 5,
-      "warmup_runs_per_method": 1,
-      "fixture": {
-        "test_files": 10000,
-        "workflow_shapes": 4,
-        "collection_enabled": false,
-        "clean_checkout": false
-      },
-      "production": {
-        "p50_wall_seconds": 3.49599510000007,
-        "p95_wall_seconds": 3.72522609999987,
-        "peak_process_rss_bytes": 81481728,
-        "disk_delta_bytes": 0,
-        "status": "MEASURED"
-      },
-      "legacy_instrumented": {
-        "method": "scripts/measure_performance.py with tracemalloc unchanged",
-        "p50_wall_seconds": 15.610176199999842,
-        "p95_wall_seconds": 19.600580000000264,
-        "peak_process_rss_bytes": 125210624,
-        "status": "MEASURED_INSTRUMENTATION_DISTORTED"
-      },
-      "harness_overhead": {
-        "report_serialization": {
-          "p50_wall_seconds": 0.3984064999999646,
-          "p95_wall_seconds": 9.023688600000241,
-          "status": "MEASURED_WITH_ONE_SCHEDULER_OUTLIER"
-        },
-        "filesystem_and_rss": {
-          "p50_wall_seconds": 0.7317275999998856,
-          "p95_wall_seconds": 1.4119604000002255,
-          "status": "MEASURED_SEPARATELY"
-        }
-      },
-      "budgets": {
-        "startup_seconds": 1.0,
-        "large_static_analysis_seconds": 5.0,
-        "large_process_memory_bytes": 536870912
-      },
-      "memory_budget_passed": true,
-      "timing_budget_passed": true,
-      "budget_decision": "PASS_LOCAL_PRODUCTION_SLO: uninstrumented large-fixture p95 is 3.725 seconds, below the five-second target; the unchanged tracemalloc result is reported separately as instrumentation-distorted, and Linux plus external release gates remain open"
+      "receipt": "docs/evidence/performance-methodology-20260909-final-6f76949.json",
+      "startup_receipt": "docs/evidence/startup-20260909-6f76949.json",
+      "windows_large_production_p95_seconds": 4.174669199999698,
+      "windows_large_peak_rss_bytes": 79388672,
+      "windows_large_production_status": "PASS",
+      "linux_status": "BLOCKED",
+      "startup_status": "PASS"
     },
     "evaluation_cohort": {
       "receipt": "docs/evidence/cohort-static-20260908.json",
@@ -109,96 +143,47 @@
       "safe_static_only_runs": 5,
       "trusted_collection_runs": 0,
       "useful_determinations_from_new_repositories": 0,
-      "status": "OPEN: trusted collection/useful-determination target and C11/C12 exclusion decisions remain outstanding"
+      "status": "OPEN"
     },
-    "demo": {
-      "fixture": "examples/demo-fixture",
-      "transcript": "docs/evidence/demo-transcript-20260908.txt",
-      "packaged_wheel_install": "PASS",
-      "safe_default_exit": 2,
-      "safe_default_outcome": "INCOMPLETE",
-      "trusted_collection_exit": 1,
-      "trusted_collection_outcome": "BLOCKED",
-      "omitted_path": "tests/test_database.py",
-      "omitted_reason_code": "COLLECTED_FILE_NOT_PLANNED"
+    "hosted": {
+      "receipt": "docs/evidence/hosted-ci-20260909-6f76949.json",
+      "exact_source_checks": "20/20 SUCCESS",
+      "codeql_exact_source_head": false,
+      "scheduled_default_branch_exact_source": false
     },
     "security": {
-      "scan_id": "798de3ea-7921-4834-816e-6e824bbfe8b9",
-      "snapshot_digest": "codex-security-snapshot/v1:sha256:519e640ccf236b4da58456f2c1521fa95d46cb2d1477094a6125138d2536f234",
-      "status": "COMPLETE_NO_REPORTABLE_FINDINGS_EXACT_HEAD_PARTIAL_SEMANTIC_COVERAGE",
-      "model": "gpt-5.6-luna",
-      "reasoning_effort": "max",
-      "finding_count": 0,
-      "severity_counts": {},
-      "coverage": "partial",
-      "tool_coverage": "complete",
-      "semantic_scope_coverage": "partial",
-      "targeted_remediation_applied": false,
-      "post_remediation_rescan": true,
-      "scan_target_revision": "272ab74cf4416ee78f5d8b95c37bf9f88ba10f10",
-      "reviewed_tree": "b1ac8855e5d2e782977f26c0350ad88e85b247b2",
-      "reviewed_files": 13,
-      "tool_inventory_files": 448,
-      "reviewed_surface_groups": 6,
-      "report_available": true,
-      "report": "C:/Users/samis/AppData/Local/Temp/codex-security-scans-brvYyf/post-hotfix-main-2de5f22-20260907/272ab74cf4416ee78f5d8b95c37bf9f88ba10f10_20260909T093221Z_n5qrzn9e/report.md",
-      "sarif": "C:/Users/samis/AppData/Local/Temp/codex-security-scans-brvYyf/post-hotfix-main-2de5f22-20260907/272ab74cf4416ee78f5d8b95c37bf9f88ba10f10_20260909T093221Z_n5qrzn9e/exports/results.sarif",
-      "independent_delegated_workers": 0,
-      "independent_baseline_review": {
-        "status": "NOT_AVAILABLE: three read-only independent workers timed out before returning results",
-        "approval_claim": "NONE: no delegated review is treated as an approval; semantic coverage remains partial",
-        "runtime_or_network_validation": "NOT_PERFORMED_BY_SCAN"
-      },
-      "limitations": [
-        "The source-only scan reported no reportable findings, but the independent architecture/filesystem worker results were unavailable after bounded timeouts; no approval is inferred from their absence.",
-        "No runtime, network, provider, hosted-environment, or external-host validation was performed by the scan.",
-        "Linux evidence, hosted configuration, release policy, external schemas/cohorts, and human usability/owner gates remain unverified or open."
-      ]
+      "receipt": "docs/evidence/independent-security-coverage-20260909-6f76949.json",
+      "exact_source_standard_scan": "0 reportable findings at source checkpoint 272; tool coverage complete, semantic scope partial",
+      "final_changed_scans": "0 reportable findings across the remediation ranges through source freeze 6f76949",
+      "delegated_follow_up": "No remaining reportable findings in the bounded final surface; no owner approval inferred"
     },
-    "current_working_tree_diff_scan": {
-      "scan_id": "3580dfa6-ea3b-4d85-9822-a524d7a00700",
-      "status": "COMPLETE_NO_REPORTABLE_FINDINGS_CHANGED_DIFF",
-      "coverage": "COMPLETE_CHANGED_DIFF_NOT_REPOSITORY",
-      "finding_count": 0,
-      "base_revision": "e691419c66ee9190b523c0262c5163653c64e332",
-      "snapshot_digest": "codex-security-snapshot/v1:sha256:ef9d7205a55b0081acbe7425346299c081acb8b63ab73872a129aa36354583a2",
-      "report": "C:/Users/samis/AppData/Local/Temp/codex-security-scans-brvYyf/post-hotfix-main-2de5f22-20260907/e691419c66ee9190b523c0262c5163653c64e332_20260909T090445Z_4lvgouzm/report.md",
-      "residual_candidate": "pytest-discovery:src/greengap/trace.py:4953",
-      "residual_candidate_status": "ROBUSTNESS_CANDIDATE_IGNORED_BY_POLICY_AND_FIXED_BEFORE_FINAL_EXACT_HEAD_SCAN",
-      "limitations": [
-        "This is exact changed-diff coverage, not a replacement for the final repository-wide or hosted security closure.",
-        "The scan identified no reportable findings; the temporary sorted-directory materialization candidate was corrected with incremental enforcement before the final exact-head scan."
-      ]
-    },
-    "hosted_platform_and_workflow_validation": "UNKNOWN",
-    "external_consumer_validation": "PARTIAL_PASS: Node structural smoke checked live JSON, live SARIF, and four examples; full schema/ingestion validation remains open",
-    "documentation_link_validation": "PASS: 15 relative links checked, 0 missing; docs/evidence/docs-validation-20260908.json"
+    "workflow_bindings": {
+      "receipt": "docs/evidence/workflow-bindings-20260909-6f76949.json",
+      "status": "OPEN_REAL_CALLER_AND_EXACT_SCHEDULE_RECEIVER"
+    }
+  },
+  "DOCUMENTATION_VALIDATION": {
+    "status": "PASS",
+    "json_receipts_parsed": 41,
+    "git_diff_check": "PASS",
+    "codex_test_temp_tracked": false,
+    "receipt_index": "docs/evidence/README.md"
   },
   "PUBLISHED_CHANNELS": [],
   "UNAUTHORIZED_CHANNELS_PUBLISHED": 0,
   "V0_1_3_MUTATED": 0,
-  "ROUTINE_MAINTENANCE_OWNER": "UNKNOWN: owner confirmation required",
+  "ROUTINE_MAINTENANCE_OWNER": "PENDING_OWNER_CONFIRMATION",
   "EVIDENCE_REPORT": "docs/launch-report.json",
   "TOKEN_USAGE_REPORT": "docs/token-usage.json",
-  "ARTIFACTS": [
-    {
-      "name": "greengap-1.0.0rc1-py3-none-any.whl",
-      "sha256": "8b75cd9132e2c4f2a26372f54baeba4600e1a991ca8f95e6248f99502ea3cf0c",
-      "bytes": 92186,
-      "publication_status": "LOCAL_UNPUBLISHED"
-    },
-    {
-      "name": "greengap-1.0.0rc1.tar.gz",
-      "sha256": "bfc454da462a92fbd0ec1c666e2e628c7be7c82bf6a2aa6277cfb3dc321c03db",
-      "bytes": 158471,
-      "publication_status": "LOCAL_UNPUBLISHED"
-    }
-  ],
+  "ARTIFACTS": [],
+  "ARTIFACT_STATUS": "NOT_RETAINED_FOR_FINAL_SOURCE; no stale artifact hashes are claimed",
+  "AUTHORIZATION_BOUNDARY": "No merge, tag, release creation, registry upload, public publication, or public verification was performed.",
   "NOTES": [
     "The report deliberately does not claim stable 1.0.0 launch completion.",
-    "The release-candidate artifacts were built and installed locally only; no merge, tag movement, registry upload, release recreation, or public verification was performed.",
-    "The final exact-head repository-wide Standard scan at 272ab74cf4416ee78f5d8b95c37bf9f88ba10f10 reported no reportable findings; tool coverage was complete while semantic coverage remains partial because independent workers timed out and hosted/platform-dependent gates are outside this local task.",
-    "The focused working-tree diff scan closed the bounded pytest-discovery change with no reportable findings; a temporary oversized-directory robustness candidate was fixed before the final exact-head scan.",
-    "The uninstrumented production performance p95 is 3.725 seconds on the frozen 10,000-file fixture, below the five-second local SLO; no stable launch, publication, or hosted-configuration approval is claimed."
+    "The final source freeze is exact and its source/tree identity is separated from evidence-only documentation changes.",
+    "The exact-source Windows production timing passed the five-second budget; the Linux performance gate remains blocked because no usable Linux execution substrate was available.",
+    "The safe CLI receipts intentionally use --no-collect and preserve INCOMPLETE/exit-2 semantics; no target code is claimed to have executed in those runs.",
+    "Independent Daybreak Blue reviews found and bounded the listed pre-remediation surfaces; final follow-up reported no remaining reportable finding in its scope. Independent review is not owner approval.",
+    "Hosted CI, package, dependency-review, fuzz, and Scorecard checks were successful at the exact source freeze, but they do not authorize merge, tag, release, or publication."
   ]
 }

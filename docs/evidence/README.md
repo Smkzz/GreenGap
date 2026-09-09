@@ -1,27 +1,39 @@
-# Candidate evidence
+# GreenGap evidence
 
-Generated evidence is kept small and linked from the launch handoff. Missing
-measurements are represented as `null`/UNKNOWN rather than estimated. The
-performance receipts are five-run non-executing static-plan measurements; they
-are not proof of target pytest collection or dependency-install cost. The
-2026-09-08 matrix includes process RSS and fixture-root disk deltas, plus a
-separate help/version startup receipt.
+This directory contains evidence receipts for the `1.0.0rc1` release
+candidate. Receipts named with `6f76949` are bound to the final source freeze
+`6f76949c47535a203ddb5a78a1f038afaecd6e88` and tree
+`bf8a2da0ac70a797c2dce32f5771edac8b501c34`. Earlier receipts are retained as
+historical records and must not be read as evidence for that source freeze.
 
-The 2026-09-08 candidate also has an artifact checksum receipt, a minimal
-SPDX-2.3 runtime SBOM for the declared `greengap`/PyYAML dependency scope, a
-dirty-candidate provenance binding, and an explicit unavailable-attestation
-receipt. The latter is retained to prevent unsigned local evidence from being
-mistaken for a hosted build attestation.
+## Final source-freeze receipts
 
-The candidate was also installed from a wheel built from the exact recorded
-sdist; that smoke result is recorded in the candidate-local
-`provenance-20260908.json` receipt and the launch report.
+| Area | Receipt |
+| --- | --- |
+| Local regression, static checks, and safe CLI | [`local-gates-20260909-6f76949.json`](local-gates-20260909-6f76949.json) |
+| Independent JSON/SARIF consumers | [`contract-consumer-20260909-6f76949.json`](contract-consumer-20260909-6f76949.json) |
+| Startup timing | [`startup-20260909-6f76949.json`](startup-20260909-6f76949.json) |
+| Windows/Linux performance | [`performance-methodology-20260909-final-6f76949.json`](performance-methodology-20260909-final-6f76949.json) |
+| Hosted CI, package, audit, fuzz, and Scorecard checks | [`hosted-ci-20260909-6f76949.json`](hosted-ci-20260909-6f76949.json) |
+| Workflow event and reusable-workflow bindings | [`workflow-bindings-20260909-6f76949.json`](workflow-bindings-20260909-6f76949.json) |
+| Source, closure, branch, and PR identity | [`release-identity-20260909-6f76949.json`](release-identity-20260909-6f76949.json) |
+| Bounded independent security coverage | [`independent-security-coverage-20260909-6f76949.json`](independent-security-coverage-20260909-6f76949.json) |
+| Human usability gate | [`human-usability-20260909-6f76949.json`](human-usability-20260909-6f76949.json) |
+| Owner confirmation gate | [`owner-confirmation-20260909-pending.json`](owner-confirmation-20260909-pending.json) |
 
-The candidate-local `cohort-static-20260908.json` acquisition receipt records
-the five newly acquired public checkouts, exact commits, licenses,
-workflow-shape inspection, safe static-only results, and the reason trusted
-collection was not performed.
+The canonical aggregate is [`../launch-report.json`](../launch-report.json).
+The release candidate remains `GREENGAP_STABLE_LAUNCH_BLOCKED`. A passing
+receipt is evidence for its stated scope; it is not owner approval, merge
+authorization, publication authorization, or proof of hosted ingestion unless
+the receipt explicitly says so.
 
-The candidate-local `contract-consumer-20260908.json` receipt checks live
-JSON/SARIF output and all four representative reports with a separate Node.js
-parser; it does not claim full schema-validator or ingestion coverage.
+The performance receipts use five timed runs and one warmup against fresh,
+non-executing static fixtures. Production timing measures `run_plan` without
+tracemalloc, profiling, debugging, or coverage instrumentation. The live CLI
+receipts intentionally use `--no-collect`, so `INCOMPLETE` and exit code `2`
+are expected fail-closed results.
+
+The older 2026-09-08/early-2026-09-09 receipts document prior candidate
+states, package experiments, cohort acquisition, and historical measurements.
+They are preserved for traceability and are not silently upgraded to final
+source evidence.

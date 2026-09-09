@@ -1,0 +1,42 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-09",
+  "repository": "Smkzz/GreenGap",
+  "candidate_version": "1.0.0rc1",
+  "source_checkpoint": {
+    "sha": "272ab74cf4416ee78f5d8b95c37bf9f88ba10f10",
+    "tree": "b1ac8855e5d2e782977f26c0350ad88e85b247b2"
+  },
+  "closure_document_checkpoint": {
+    "sha": "ca2d25e42b443fdda2a9ac0e3bb36e244544e529",
+    "tree": "0870a442f35f7af084afa96f28311e85be482906",
+    "source_is_ancestor": true
+  },
+  "source_freeze": {
+    "sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+    "tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
+    "worktree": "qualification/promotion-clean-ca2d25e-20260909",
+    "clean_before_evidence_commit": true
+  },
+  "remote": {
+    "branch": "release/greengap-1.0.0",
+    "branch_sha_at_source_freeze": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+    "candidate_tag_present": false,
+    "candidate_release_present": false,
+    "published_channels": []
+  },
+  "pull_request": {
+    "number": 11,
+    "url": "https://github.com/Smkzz/GreenGap/pull/11",
+    "state": "OPEN",
+    "is_draft": false,
+    "base": "main",
+    "head_ref": "release/greengap-1.0.0",
+    "head_sha_at_observation": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+    "review_decision": "REVIEW_REQUIRED",
+    "merge_state": "BLOCKED",
+    "latest_reviews": []
+  },
+  "evidence_commit_boundary": "Evidence-only documentation may be committed after this source freeze; source identity and hosted/local source receipts remain bound to the SHA/tree above.",
+  "authorization_boundary": "No merge, tag, release creation, registry upload, public publication, or public verification was performed."
+}
