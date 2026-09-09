@@ -24,9 +24,9 @@ launch, merge, tagging, registry upload, and public publication.
 The 6f source freeze is retained as historical evidence. Two real hosted
 workflow exercises then exposed concrete reusable-workflow defects, so source
 was deliberately reopened and the current candidate head is 83b4b59. The
-workflow-only corrections are not yet a new release identity: exact-head
-performance, reusable-workflow success/PR/schedule cases, final artifacts, and
-the remaining human/owner/authorization gates still require closure.
+workflow-only corrections are not yet a new release identity: reusable-workflow
+success/PR/schedule cases, final artifacts, and the remaining
+human/owner/authorization gates still require closure.
 
 ## Fast verification
 
@@ -54,38 +54,35 @@ indexed in [`evidence/README.md`](evidence/README.md).
 | 1. Correct product | Full local regression and final source freeze | PASS |
 | 2. Safe execution/fail-closed | Safe default, explicit consent boundary, bounded tracing | PASS |
 | 3. CLI/agent interface | Independent JSON/SARIF parsing and schema validation | PASS |
-| 4. Platform reliability | Hosted Ubuntu/Windows matrix, audit, package, fuzz, and review checks | PASS; current-head Linux rerun is still required |
-| 5. Performance | Exact 6f-source Windows and hosted Linux timing/startup pass; current candidate-head rerun is pending | BLOCKED |
+| 4. Platform reliability | Hosted Ubuntu/Windows matrix, audit, package, fuzz, and review checks | PASS |
+| 5. Performance | Exact-current-head hosted Linux timing/startup/RSS and exact 6f-source Windows timing pass | PASS |
 | 6. CI/dependency security | Exact-source hosted checks plus bounded independent/security scans | PASS for observed scope; schedule/exact CodeQL scope open |
 | 7. Packaging/provenance | Hosted package job passed; final local artifact/attestation not retained | PARTIAL |
 | 8. Documentation/onboarding | Updated handoff, evidence index, and launch report | PASS |
 | 9. Operations/maintenance | Owner confirmation is pending | BLOCKED |
 | 10. Authorized launch | No human sign-off or publication authorization | BLOCKED |
 
-The aggregate count is `6/10` domains passed; this does not qualify the
+The aggregate count is `7/10` domains passed; this does not qualify the
 candidate for stable status.
 
 ## Open launch gates
 
-1. Re-run Linux release-style performance against the current candidate head;
-   the exact 6f probe passed, but the later workflow corrections changed the
-   release identity.
-2. Complete the real disposable caller gate for `greengap-plan.yml`: the
+1. Complete the real disposable caller gate for `greengap-plan.yml`: the
    current probe records concrete dependency/compatibility repairs but still
    returns fail-closed `EXTERNAL_WORKFLOW_UNRESOLVED`/exit 2 against immutable
    v0.1.3, and no schedule case has been promoted. Obtain exact source-head
    schedule/CodeQL/default-branch receiver evidence.
-3. The three untouched holdouts now have isolated trusted-collection receipts
+2. The three untouched holdouts now have isolated trusted-collection receipts
    with `FALSE_CONFIDENT_CONCLUSIONS=0`, but all remain UNKNOWN/exit 2 and
    produced zero useful determinations. Complete the usefulness threshold and
    the C11/C12 exclusion decisions for the frozen cohort.
-4. Run five fresh consenting human first-use sessions with at least four
+3. Run five fresh consenting human first-use sessions with at least four
    successful integrations; agent simulations do not count.
-5. Obtain accountable maintenance, support, rollback, and publication owner
+4. Obtain accountable maintenance, support, rollback, and publication owner
    confirmation.
-6. Retain a final-source package artifact and hosted provenance/attestation
+5. Retain a final-source package artifact and hosted provenance/attestation
    evidence, with independent verification of the exact bytes.
-7. Obtain explicit authorization before any merge, tag, release, registry
+6. Obtain explicit authorization before any merge, tag, release, registry
    upload, PyPI publication, or public verification.
 
 No credential request, spending, merge bypass, tag movement, release

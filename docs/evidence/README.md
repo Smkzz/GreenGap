@@ -6,9 +6,9 @@ candidate. Receipts named with `6f76949` are bound to the final source freeze
 `bf8a2da0ac70a797c2dce32f5771edac8b501c34`. Earlier receipts are retained as
 historical records and must not be read as evidence for that source freeze.
 Receipts named with `83b4` bind the current workflow-correction candidate
-head; they do not supersede the historical 6f product receipts until exact-
-head performance, reusable-workflow, artifact, human, owner, and authorization
-gates close.
+head. The exact-head Linux performance receipt now closes that timing gate;
+reusable-workflow, artifact, human, owner, and authorization gates remain
+separate and open.
 
 ## Final source-freeze receipts
 
@@ -19,6 +19,7 @@ gates close.
 | Startup timing | [`startup-20260909-6f76949.json`](startup-20260909-6f76949.json) |
 | Windows/Linux performance | [`performance-methodology-20260909-final-6f76949.json`](performance-methodology-20260909-final-6f76949.json) |
 | Hosted Linux exact-source performance probe | [`linux-performance-probe-20260910-6f76949.json`](linux-performance-probe-20260910-6f76949.json) |
+| Hosted Linux exact-current-head performance probe | [`linux-performance-probe-20260910-83b4.json`](linux-performance-probe-20260910-83b4.json) |
 | Hosted CI, package, audit, fuzz, and Scorecard checks | [`hosted-ci-20260909-6f76949.json`](hosted-ci-20260909-6f76949.json) |
 | Hosted checks after workflow corrections | [`hosted-ci-20260910-83b4.json`](hosted-ci-20260910-83b4.json) |
 | Workflow event and reusable-workflow bindings | [`workflow-bindings-20260909-6f76949.json`](workflow-bindings-20260909-6f76949.json) |

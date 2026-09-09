@@ -1,0 +1,47 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-10",
+  "repository": "Smkzz/greengap-launch-probe-20260910",
+  "workflow": "GreenGap Linux Performance Probe",
+  "event": "push",
+  "run_id": 34415960238,
+  "run_url": "https://github.com/Smkzz/greengap-launch-probe-20260910/actions/runs/34415960238",
+  "exact_greengap_sha": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
+  "exact_greengap_tree": "a91dd5ce65a98670e070b5a54177e5804db01a67",
+  "runner_image": "ubuntu-24.04",
+  "architecture": "x86_64",
+  "python": "3.13.15",
+  "fixture": {
+    "name": "large",
+    "test_files": 10000,
+    "workflow_files": 4,
+    "collection_enabled": false
+  },
+  "method": {
+    "warmup_runs": 1,
+    "timed_runs": 5,
+    "production_instrumentation": "none",
+    "fresh_process_startup": true,
+    "tracemalloc": false,
+    "profiler": false,
+    "coverage": false
+  },
+  "measurements": {
+    "production_p95_seconds": 2.546733476,
+    "startup_p95_seconds": {
+      "version": 0.07423817599999438,
+      "help": 0.08323488799999268
+    },
+    "peak_rss_bytes": 80605184,
+    "peak_rss_status": "PASS; peak process RSS remained below the 512 MiB budget",
+    "production_slo_seconds": 5.0,
+    "startup_budget_seconds": 1.0
+  },
+  "receipts": {
+    "performance_json_sha256": "09917a01dadf7bfe23ccc87701129dee2a506ca498dc4c434e8248fb7c6303d",
+    "startup_json_sha256": "40477179500ac012f4f1f946f7e47acc2ac044cfab8946b937fabba1dff23d5",
+    "runner_receipt_sha256": "883af7d66567ddee6070473419eb93053b9437226566786c4cbf6a47b5b50e5a"
+  },
+  "result": "PASS",
+  "interpretation": "Independent Linux evidence closes the exact-current-head platform timing gate for candidate 83b4. The reusable-workflow, schedule, cohort-usefulness, human, owner, artifact/provenance, and authorization gates remain separate and open."
+}
