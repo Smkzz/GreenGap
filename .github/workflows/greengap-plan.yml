@@ -171,6 +171,9 @@ jobs:
         run: |
           set -uo pipefail
           args=(plan . --json --event "${GREENGAP_EVENT_NAME}" --ref "${GREENGAP_REF}" --base-ref "${GREENGAP_BASE_REF}" --change-set-complete)
+          if greengap plan --help 2>&1 | grep -q -- '--inside-greengap-reusable-workflow'; then
+            args+=(--inside-greengap-reusable-workflow)
+          fi
           args+=(--changed-file-count "$(< .greengap-changed-file-count)")
           while IFS= read -r changed_file; do
             [[ -z "${changed_file}" ]] || args+=(--changed-file "${changed_file}")

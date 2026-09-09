@@ -78,6 +78,7 @@ def run_plan(
     *,
     python_executable: str | None = None,
     collect: bool = False,
+    inside_greengap_reusable_workflow: bool = False,
 ) -> PlanReport:
     from .model import PlanReport
     from .pytest_adapter import scan_pytest
@@ -114,6 +115,7 @@ def run_plan(
         diff_timed_out,
         workspace_clean=workspace_clean,
         discovery_timeout=min(timeout, 10.0),
+        inside_reusable_workflow=inside_greengap_reusable_workflow,
     )
     final = workspace_snapshot(
         root,
@@ -256,6 +258,11 @@ def _build_parser() -> argparse.ArgumentParser:
             help="disable terminal color in any target pytest diagnostics",
         )
         if name == "plan":
+            command.add_argument(
+                "--inside-greengap-reusable-workflow",
+                action="store_true",
+                help="ignore GreenGap's canonical external self-call while tracing the caller's CI",
+            )
             command.add_argument(
                 "--changed-file",
                 action="append",
@@ -474,6 +481,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.diff_timed_out,
         python_executable=args.python_executable,
         collect=args.trust_collection,
+        inside_greengap_reusable_workflow=args.inside_greengap_reusable_workflow,
     )
     if args.as_sarif:
         print(

@@ -784,6 +784,48 @@ jobs:
     assert result.issues[0].code == "EXTERNAL_WORKFLOW_UNRESOLVED"
 
 
+def test_green_gap_self_reusable_workflow_is_ignored_only_in_explicit_context(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": workflow("pytest tests"),
+            ".github/workflows/caller.yml": """name: caller
+on: push
+jobs:
+  green-gap:
+    uses: Smkzz/GreenGap/.github/workflows/greengap-plan.yml@v1.0.0
+""",
+        },
+    )
+
+    default_result = trace_github_actions(tmp_path)
+    assert default_result.relevant_incomplete
+    assert any(issue.code == "EXTERNAL_WORKFLOW_UNRESOLVED" for issue in default_result.issues)
+
+    result = trace_github_actions(tmp_path, inside_reusable_workflow=True)
+    assert result.invocations[0].paths == ("tests",)
+    assert not result.relevant_incomplete
+    assert any(issue.code == "SELF_REUSABLE_WORKFLOW_IGNORED" for issue in result.issues)
+    assert all(not issue.relevant for issue in result.issues)
+
+
+def test_noncanonical_external_reusable_workflow_remains_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  green-gap:
+    uses: another-owner/GreenGap/.github/workflows/greengap-plan.yml@v1.0.0
+""",
+        },
+    )
+    result = trace_github_actions(tmp_path, inside_reusable_workflow=True)
+    assert result.relevant_incomplete
+    assert result.issues[0].code == "EXTERNAL_WORKFLOW_UNRESOLVED"
+
+
 def test_matrix_axes_include_and_exclude_expand(tmp_path) -> None:
     write_files(
         tmp_path,

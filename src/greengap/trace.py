@@ -36,6 +36,8 @@ from .util import (
 MAX_DEPTH = 12
 MAX_YAML_DEPTH = 64
 _NEUTRAL_SHELL = "neutral"
+_GREENGAP_REUSABLE_REPOSITORY = ("smkzz", "greengap")
+_GREENGAP_REUSABLE_WORKFLOW_PATH = (".github", "workflows", "greengap-plan.yml")
 _EXPRESSION = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 _ASSIGNMENT = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:=)\s*(.*)$")
 _VARIABLE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
@@ -2975,6 +2977,21 @@ def _relative_matrix(row: dict[str, Any]) -> str:
     return ",".join(f"{key}={row[key]}" for key in sorted(row))
 
 
+def _is_greengap_self_reusable_workflow(uses: str) -> bool:
+    """Recognize only GreenGap's canonical external self-call."""
+
+    reference = uses.split("@")
+    if len(reference) != 2 or not reference[1]:
+        return False
+    path = reference[0].split("/")
+    return (
+        len(path) == 5
+        and tuple(part.casefold() for part in path[:2]) == _GREENGAP_REUSABLE_REPOSITORY
+        and tuple(part.casefold() for part in path[2:])
+        == _GREENGAP_REUSABLE_WORKFLOW_PATH
+    )
+
+
 class _Resolver:
     def __init__(
         self,
@@ -2990,6 +3007,7 @@ class _Resolver:
         diff_timed_out: bool = False,
         workspace_clean: bool | None = None,
         discovery_timeout: float | None = None,
+        inside_reusable_workflow: bool = False,
     ) -> None:
         self.root = root.resolve()
         self.event_context = event_context
@@ -3001,6 +3019,7 @@ class _Resolver:
         self.changed_file_count = changed_file_count
         self.diff_timed_out = diff_timed_out
         self.workspace_clean = workspace_clean
+        self.inside_reusable_workflow = inside_reusable_workflow
         budget_seconds = (
             _MAX_PYTEST_DISCOVERY_SECONDS
             if discovery_timeout is None
@@ -3044,6 +3063,7 @@ class _Resolver:
                     )
             self.changed_files = tuple(dict.fromkeys(normalized))
         self._workflow_stack: set[Path] = set()
+        self._self_reusable_workflow_ignored = False
         self._script_stack: set[Path] = set()
         self._make_stack: set[tuple[Path, str]] = set()
         self._package_stack: set[tuple[Path, str]] = set()
@@ -3777,6 +3797,19 @@ class _Resolver:
             )
             return
         if not uses.startswith("./"):
+            if (
+                self.inside_reusable_workflow
+                and not self._self_reusable_workflow_ignored
+                and _is_greengap_self_reusable_workflow(uses)
+            ):
+                self._self_reusable_workflow_ignored = True
+                self.issue(
+                    "SELF_REUSABLE_WORKFLOW_IGNORED",
+                    "GreenGap's canonical external reusable-workflow self-call is the active analyzer",
+                    context.provenance,
+                    relevant=False,
+                )
+                return
             self.issue(
                 "EXTERNAL_WORKFLOW_UNRESOLVED",
                 f"external reusable workflow {uses!r} was not fetched",
@@ -7002,6 +7035,7 @@ def trace_github_actions(
     *,
     workspace_clean: bool | None = None,
     discovery_timeout: float | None = None,
+    inside_reusable_workflow: bool = False,
 ) -> TraceResult:
     return _Resolver(
         root,
@@ -7016,4 +7050,5 @@ def trace_github_actions(
         diff_timed_out,
         workspace_clean,
         discovery_timeout,
+        inside_reusable_workflow,
     ).trace()

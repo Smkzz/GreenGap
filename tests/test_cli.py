@@ -41,6 +41,41 @@ def test_cli_plan_green_returns_zero_and_json(capsys, tmp_path) -> None:
     assert output["blocker_count"] == 0
 
 
+def test_cli_plan_inside_green_gap_reusable_workflow_ignores_self_call(capsys, tmp_path) -> None:
+    basic_repo(tmp_path, "pytest")
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/caller.yml": """name: caller
+on: push
+jobs:
+  green-gap:
+    uses: Smkzz/GreenGap/.github/workflows/greengap-plan.yml@v1.0.0
+""",
+        },
+    )
+
+    code = main(
+        [
+            "plan",
+            str(tmp_path),
+            "--json",
+            "--trust-collection",
+            "--inside-greengap-reusable-workflow",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert output["complete"]
+    assert output["blocker_count"] == 0
+    assert any(
+        issue["code"] == "SELF_REUSABLE_WORKFLOW_IGNORED"
+        and not issue["relevant"]
+        for issue in output["trace"]["issues"]
+    )
+
+
 def test_human_plan_redacts_paths_and_secret_shaped_diagnostics(tmp_path) -> None:
     leaked_path = str(tmp_path / "private" / "test.py")
     report = PlanReport(

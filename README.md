@@ -84,7 +84,10 @@ wrappers, explicitly invoked local shell scripts, Make/npm/uv/tox paths,
 local composite/reusable workflows, and static matrix rows. Dynamic selectors,
 unknown executables, external test actions, shell control flow, unresolved
 event/path metadata, runner-specific filesystem assumptions, and changed
-workspaces abstain.
+workspaces abstain. External reusable workflows remain UNKNOWN because their
+remote contents are not fetched; the official GreenGap reusable workflow makes
+one explicit exception for its canonical external self-call while it traces
+the caller's local CI graph. Other external reusable workflows still abstain.
 
 Go, Jest/Vitest, Cargo/nextest, Gradle/JUnit, CTest, TAP/prove, SaaS
 dashboards, telemetry, and runtime execution research are outside this
