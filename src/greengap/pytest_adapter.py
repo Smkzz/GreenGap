@@ -426,6 +426,10 @@ _PYTEST_PLUGIN_MANIFEST_MARKER = "GREENGAP_PYTEST_PLUGIN_MANIFEST="
 _TARGET_PYTEST_PLUGIN_METADATA = r"""
 import importlib.metadata as metadata
 import json
+import sys
+
+if sys.version_info < (3, 11):
+    raise RuntimeError("target Python is outside the GreenGap 1.0 eligibility boundary")
 
 entries = metadata.entry_points()
 if hasattr(entries, "select"):
@@ -433,7 +437,7 @@ if hasattr(entries, "select"):
 elif isinstance(entries, dict):
     entries = entries.get("pytest11", ())
 else:
-    entries = ()
+    raise RuntimeError("pytest11 entry points could not be enumerated")
 records = []
 for entry in entries:
     distribution = getattr(entry, "dist", None)
@@ -820,6 +824,10 @@ def collect_pytest(
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     environment["NO_COLOR"] = "1"
     environment["PY_COLORS"] = "0"
+    # Keep the target interpreter's user site out of both metadata inspection
+    # and collection.  Only the selected environment's normal distributions
+    # are bound explicitly below; user-site plugins are ambient pollution.
+    environment["PYTHONNOUSERSITE"] = "1"
     plugin_manifest, manifest_error = _target_pytest_plugin_manifest(
         selected_python, root, environment, timeout
     )

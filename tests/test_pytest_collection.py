@@ -8,6 +8,7 @@ import pytest
 from greengap.environment import collection_environment
 from greengap.model import PytestPlugin
 from greengap.pytest_adapter import (
+    _TARGET_PYTEST_PLUGIN_METADATA,
     _BoundedProcessResult,
     _parse_plugin_manifest,
     _plugin_args_from_manifest,
@@ -230,6 +231,16 @@ def test_plugin_manifest_inspection_uses_selected_interpreter(monkeypatch, tmp_p
     assert observed["environment"]["PYTHONNOUSERSITE"] == "1"
 
 
+def test_target_plugin_manifest_script_is_fail_closed_and_does_not_load_plugins() -> None:
+    assert "target Python is outside the GreenGap 1.0 eligibility boundary" in (
+        _TARGET_PYTEST_PLUGIN_METADATA
+    )
+    assert 'raise RuntimeError("pytest11 entry points could not be enumerated")' in (
+        _TARGET_PYTEST_PLUGIN_METADATA
+    )
+    assert ".load(" not in _TARGET_PYTEST_PLUGIN_METADATA
+
+
 def test_collection_explicitly_loads_selected_target_plugins(monkeypatch, tmp_path) -> None:
     write_files(tmp_path, {"tests/test_a.py": "def test_a():\n    pass\n"})
     manifest = (
@@ -262,6 +273,7 @@ def test_collection_explicitly_loads_selected_target_plugins(monkeypatch, tmp_pa
     assert result.plugin_manifest == manifest
     assert result.plugin_manifest_complete
     assert observed["environment"]["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    assert observed["environment"]["PYTHONNOUSERSITE"] == "1"
     args = observed["args"]
     assert args[args.index("-p") + 1 : args.index("--rootdir")] == [
         "greengap._collection_plugin",
