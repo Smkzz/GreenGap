@@ -2,8 +2,9 @@
 
 Find what your green CI never ran.
 
-GreenGap is a local, read-only Plan-mode analyzer for GitHub Actions and
-pytest. It compares three distinct surfaces:
+GreenGap provides a read-only static Plan analyzer and an opt-in native pytest
+Runtime Witness path for GitHub Actions and pytest. Plan mode compares three
+distinct surfaces:
 
 ```text
 repository test candidates -> real pytest collection -> proven CI pytest plan
@@ -11,8 +12,10 @@ repository test candidates -> real pytest collection -> proven CI pytest plan
 
 It can prove that a collected test file is outside the union of the safe CI
 pytest scopes it traced. It does not measure code coverage, infer runtime
-execution, or certify that a JUnit testcase is the same object as a pytest
-node.
+execution in Plan mode, or certify that a JUnit testcase is the same object as
+a pytest node. Runtime Witness mode observes execution directly and has a
+separate schema and result contract; see
+[`docs/RUNTIME_WITNESS.md`](docs/RUNTIME_WITNESS.md).
 
 ## First run
 
@@ -33,6 +36,27 @@ greengap plan . --trust-collection --python .venv/Scripts/python.exe
 greengap plan . --trust-collection --python .venv/Scripts/python.exe --json > greengap-report.json
 greengap plan . --trust-collection --python .venv/Scripts/python.exe --sarif > greengap.sarif
 ```
+
+When workflow control flow is too dynamic for static tracing, explicitly load
+the native witness plugin in the test job and upload its JSON artifact:
+
+```powershell
+pytest -p greengap._runtime_plugin `
+  --greengap-witness "$env:RUNNER_TEMP\greengap-witness.json"
+```
+
+Aggregate only after supplying a complete denominator and a predeclared list
+of expected job/shard identities:
+
+```powershell
+greengap witness . --denominator greengap-scan.json `
+  --witness "$env:RUNNER_TEMP\greengap-witness.json" `
+  --expected-witness '123456|1|pytest|-|-' `
+  --source-commit "$env:GITHUB_SHA" --json
+```
+
+The runtime witness contract and identity format are documented in
+[`docs/RUNTIME_WITNESS.md`](docs/RUNTIME_WITNESS.md).
 
 GreenGap never installs target dependencies, invokes package-manager hooks, or
 changes a global environment. A subprocess, virtual environment, or warning
@@ -77,7 +101,7 @@ Representative reports are in [`schemas/examples`](schemas/examples/).
 | Target test framework | pytest collection, caller-selected interpreter | Real `--collect-only` adapter and fail-closed tests |
 | Target pytest | Caller supplies dependencies; pytest 9.0.3 is the release-test lane | Other versions require separate qualification |
 | Workflow model | GitHub Actions Plan mode | Static bounded resolver with UNKNOWN on unsupported edges |
-| Runtime witness | Not certified | `greengap verify` remains evidence parsing only |
+| Runtime witness | Native pytest witness and conservative aggregator | Explicit plugin opt-in; incomplete sets remain UNKNOWN |
 
 Supported workflow paths include direct pytest, bounded Python/coverage
 wrappers, explicitly invoked local shell scripts, Make/npm/uv/tox paths,
@@ -90,8 +114,8 @@ one explicit exception for its canonical external self-call while it traces
 the caller's local CI graph. Other external reusable workflows still abstain.
 
 Go, Jest/Vitest, Cargo/nextest, Gradle/JUnit, CTest, TAP/prove, SaaS
-dashboards, telemetry, and runtime execution research are outside this
-release's contract.
+dashboards, and telemetry are outside this release's contract. Runtime
+execution is covered only by the explicit pytest Runtime Witness contract.
 
 ## CI integration
 

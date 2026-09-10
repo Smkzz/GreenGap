@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+Adds the opt-in native pytest Runtime Witness plugin and conservative JSON
+aggregator. Runtime evidence is source-bound, bounded, and incomplete on
+missing jobs, shards, or conflicting observations; static Plan mode remains
+advisory and fail-closed.
+
 ## 1.0.0rc1 - launch candidate
 
 Adds the stable report contract, SARIF 2.1.0 export, explicit target-Python

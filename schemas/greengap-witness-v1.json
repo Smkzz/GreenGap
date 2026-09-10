@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Smkzz/GreenGap/blob/main/schemas/greengap-witness-v1.json",
+  "title": "GreenGap pytest runtime witness v1",
+  "description": "Bounded inert JSON evidence emitted by the explicitly loaded GreenGap pytest plugin.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "greengap_version",
+    "source_commit",
+    "repository",
+    "workspace_fingerprint",
+    "workspace_fingerprint_final",
+    "workspace_stable",
+    "pytest_root",
+    "github",
+    "collection",
+    "executed",
+    "session",
+    "complete",
+    "errors"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "artifact_type": { "const": "greengap_pytest_runtime_witness" },
+    "greengap_version": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "source_commit": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "repository": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Za-z0-9_.:/-]{1,256}$"
+    },
+    "workspace_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "workspace_fingerprint_final": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "workspace_stable": { "type": "boolean" },
+    "pytest_root": {
+      "type": "string",
+      "pattern": "^(?:\\.|(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\r\\n]+)$"
+    },
+    "github": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "run_attempt", "job", "matrix", "shard", "repository"],
+      "properties": {
+        "run_id": { "type": ["string", "null"], "pattern": "^[0-9]+$" },
+        "run_attempt": { "type": ["string", "null"], "pattern": "^[0-9]+$" },
+        "job": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_.:/-]{1,256}$" },
+        "matrix": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_.:/-]{1,256}$" },
+        "shard": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_.:/-]{1,256}$" },
+        "repository": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_.:/-]{1,256}$" }
+      }
+    },
+    "collection": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" },
+      "maxItems": 250000
+    },
+    "executed": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/executed" },
+      "maxItems": 250000
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exit_status", "collection_complete", "session_complete"],
+      "properties": {
+        "exit_status": { "type": "integer" },
+        "collection_complete": { "type": "boolean" },
+        "session_complete": { "type": "boolean" }
+      }
+    },
+    "complete": { "type": "boolean" },
+    "errors": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]{1,256}$" }
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeid", "path"],
+      "properties": {
+        "nodeid": { "type": "string", "minLength": 3, "maxLength": 8192 },
+        "path": {
+          "type": "string",
+          "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\r\\n]+$"
+        }
+      }
+    },
+    "executed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeid", "path", "started", "finished", "reports"],
+      "properties": {
+        "nodeid": { "type": "string", "minLength": 3, "maxLength": 8192 },
+        "path": {
+          "type": "string",
+          "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\r\\n]+$"
+        },
+        "started": { "type": "boolean" },
+        "finished": { "type": "boolean" },
+        "reports": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["when", "outcome"],
+            "properties": {
+              "when": { "enum": ["setup", "call", "teardown"] },
+              "outcome": { "enum": ["passed", "failed", "skipped"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

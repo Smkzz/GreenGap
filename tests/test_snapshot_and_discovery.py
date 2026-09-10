@@ -59,6 +59,24 @@ def test_checkout_source_equivalence_ignores_transient_dependency_and_cache_path
     assert checkout_source_equivalent_to_head(tmp_path) is True
 
 
+def test_checkout_source_equivalence_ignores_common_tool_output_paths(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".gitignore": ".coverage*\n*.egg-info/\ntest-results/\n",
+            "README.md": "base\n",
+        },
+    )
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    for relative in (".coverage", ".coverage.123", "src/example.egg-info/PKG-INFO", "test-results/result.xml"):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("generated\n", encoding="utf-8")
+
+    assert checkout_source_equivalent_to_head(tmp_path) is True
+
+
 def test_checkout_source_equivalence_rejects_nonignored_source_drift(tmp_path) -> None:
     write_files(tmp_path, {"README.md": "base\n"})
     git_init(tmp_path)

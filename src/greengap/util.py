@@ -32,6 +32,8 @@ MAX_CHANGED_FILES = 3_000
 MAX_CHANGED_FILE_BYTES = 4 * 1024 * 1024
 MAX_PATH_INVENTORY_BYTES = 64 * 1024 * 1024
 MAX_PATH_INVENTORY_ITEMS = MAX_WORKSPACE_FILES
+MAX_RUNTIME_WITNESS_BYTES = 16 * 1024 * 1024
+MAX_RUNTIME_WITNESS_NODES = 250_000
 
 _TRANSIENT_PATHS = frozenset(
     {
@@ -59,6 +61,23 @@ _TRANSIENT_PATHS = frozenset(
 _TRANSIENT_COMPONENTS = frozenset(
     item for item in _TRANSIENT_PATHS if "/" not in item
 )
+
+
+def _is_transient_basename(value: str) -> bool:
+    """Recognize bounded tool output without hiding source/config files."""
+
+    basename = value.rsplit("/", 1)[-1]
+    lowered = basename.casefold()
+    if lowered == ".coverage" or lowered.startswith(".coverage."):
+        return True
+    if lowered.endswith(".egg-info"):
+        return True
+    return lowered in {
+        "test-results",
+        "playwright-report",
+        "blob-report",
+        "allure-results",
+    }
 
 
 class PathSafetyError(ValueError):
@@ -519,6 +538,8 @@ def is_transient_path(path: str | Path) -> bool:
     if lowered & _TRANSIENT_COMPONENTS:
         return True
     normalized = "/".join(part.lower() for part in parts)
+    if any(_is_transient_basename(part) for part in parts):
+        return True
     if normalized.startswith("qualification/stage0f"):
         return True
     return any(
@@ -533,6 +554,8 @@ def _is_transient_relative_text(path: str) -> bool:
     normalized = path.replace("\\", "/").lower()
     parts = normalized.split("/")
     if any(part in _TRANSIENT_COMPONENTS for part in parts):
+        return True
+    if any(_is_transient_basename(part) for part in parts):
         return True
     if normalized.startswith("qualification/stage0f"):
         return True

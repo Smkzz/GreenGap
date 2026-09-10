@@ -11,7 +11,8 @@ maintainer or maintained team before public launch.
 ## Support and security
 
 The supported stable scope is the documented GitHub Actions + pytest Plan mode
-on Linux and Windows with Python 3.11–3.14. Security reports go through the
+and the opt-in native pytest Runtime Witness mode on Linux and Windows with
+Python 3.11–3.14. Security reports go through the
 private GitHub advisory form linked in `SECURITY.md`; the response windows
 there remain the project commitment. Public issues are for non-sensitive
 defects.
