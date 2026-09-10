@@ -229,7 +229,8 @@ def _validate_github(value: Any) -> dict[str, str | None]:
     for key in keys:
         result[key] = _optional_string(value[key], identifier=True)
     for key in ("run_id", "run_attempt"):
-        if result[key] is not None and not result[key].isdigit():
+        candidate = result[key]
+        if candidate is not None and not candidate.isdigit():
             raise RuntimeWitnessError("WITNESS_RUN_IDENTITY_INVALID")
     return result
 

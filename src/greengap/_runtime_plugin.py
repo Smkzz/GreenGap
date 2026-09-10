@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .model import WorkspaceSnapshot
 from .runtime import (
     RUNTIME_WITNESS_ARTIFACT_TYPE,
     RUNTIME_WITNESS_SCHEMA_VERSION,
@@ -139,8 +140,8 @@ class _Witness:
         self.executed: dict[str, dict[str, Any]] = {}
         self.collection_complete = False
         self.session_complete = False
-        self.start_snapshot = None
-        self.final_snapshot = None
+        self.start_snapshot: WorkspaceSnapshot | None = None
+        self.final_snapshot: WorkspaceSnapshot | None = None
         self.source_commit = _source_commit(config, self.errors)
         self.github = _github_identity(config, self.errors)
         self.pytest_root = "."
@@ -238,8 +239,9 @@ class _Witness:
                 record["reports"].append(report_record)
 
     def session_finish(self, session: Any, exitstatus: Any) -> None:
-        self.final_snapshot = workspace_snapshot(self.root, timeout=10.0)
-        if not self.final_snapshot.complete:
+        snapshot = workspace_snapshot(self.root, timeout=10.0)
+        self.final_snapshot = snapshot
+        if not snapshot.complete:
             self.errors.append("WORKSPACE_FINGERPRINT_INCOMPLETE")
         self.session_complete = True
         self._write(exitstatus)

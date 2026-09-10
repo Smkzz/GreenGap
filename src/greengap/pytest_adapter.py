@@ -489,10 +489,23 @@ def _parse_plugin_manifest(stdout: str) -> tuple[tuple[PytestPlugin, ...] | None
     for record in records:
         if not isinstance(record, dict):
             return None, "selected pytest environment plugin manifest was missing or malformed"
-        values = tuple(record.get(key) for key in ("distribution", "version", "entry_point", "module"))
-        if not all(isinstance(value, str) and value.strip() for value in values):
+        values: list[str] = []
+        for key in ("distribution", "version", "entry_point", "module"):
+            value = record.get(key)
+            if not isinstance(value, str) or not value.strip():
+                return None, "selected pytest environment plugin manifest was missing or malformed"
+            values.append(value.strip())
+        distribution, version, entry_point, module = values
+        if not all((distribution, version, entry_point, module)):
             return None, "selected pytest environment plugin manifest was missing or malformed"
-        plugins.append(PytestPlugin(*(value.strip() for value in values)))
+        plugins.append(
+            PytestPlugin(
+                distribution=distribution.strip(),
+                version=version.strip(),
+                entry_point=entry_point.strip(),
+                module=module.strip(),
+            )
+        )
     plugins.sort(
         key=lambda item: (
             item.distribution.casefold(),
@@ -846,10 +859,6 @@ def collect_pytest(
             plugin_manifest_complete=True,
             error="pytest addopts could not be parsed safely",
         )
-    manifest_fields = {
-        "plugin_manifest": plugin_manifest,
-        "plugin_manifest_complete": True,
-    }
     src = root / "src"
     analyzer_src = Path(__file__).resolve().parents[1]
     if src.is_dir():
@@ -889,7 +898,8 @@ def collect_pytest(
                 complete=False,
                 environment_valid=False,
                 error=f"could not start pytest: {exc}",
-                **manifest_fields,
+                plugin_manifest=plugin_manifest,
+                plugin_manifest_complete=True,
             )
         witness_nodes, witness_error = _parse_collection_witness(root, collection_file)
 
@@ -903,7 +913,8 @@ def collect_pytest(
             stderr=stderr[:MAX_COLLECTION_OUTPUT_BYTES],
             returncode=completed.returncode,
             error=f"pytest collection output exceeds limit of {MAX_COLLECTION_OUTPUT_BYTES} bytes",
-            **manifest_fields,
+            plugin_manifest=plugin_manifest,
+            plugin_manifest_complete=True,
         )
     if completed.timed_out:
         nodes = _parse_nodes(root, stdout, stderr)
@@ -916,7 +927,8 @@ def collect_pytest(
             stderr=stderr,
             error=f"pytest collection timed out after {min(max(timeout, 0.01), MAX_COLLECTION_SECONDS):g}s",
             timed_out=True,
-            **manifest_fields,
+            plugin_manifest=plugin_manifest,
+            plugin_manifest_complete=True,
         )
     if witness_nodes is None:
         return CollectionResult(
@@ -926,7 +938,8 @@ def collect_pytest(
             stderr=stderr,
             returncode=completed.returncode,
             error=witness_error,
-            **manifest_fields,
+            plugin_manifest=plugin_manifest,
+            plugin_manifest_complete=True,
         )
     nodes = witness_nodes
     combined = stdout + "\n" + stderr
@@ -943,7 +956,8 @@ def collect_pytest(
         stdout=stdout,
         stderr=stderr,
         error=error,
-        **manifest_fields,
+        plugin_manifest=plugin_manifest,
+        plugin_manifest_complete=True,
     )
 
 
