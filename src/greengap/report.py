@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from . import __version__
 from .model import FindingState, PlanReport, ScanReport
+from .util import pytest_node_identity
 
 REPORT_VERSION = "1.0"
 SARIF_VERSION = "2.1.0"
@@ -88,6 +89,27 @@ def redact_shareable(value: Any, root: Path) -> Any:
     return _redact(value, _redaction_replacements(root))
 
 
+def _attach_collection_identities(
+    payload: dict[str, Any], report: PlanReport | ScanReport
+) -> None:
+    """Keep exact node binding available after public string redaction.
+
+    Parameter values are part of pytest's node ID and may contain paths or
+    secret-shaped text.  The public report redacts those values, but the
+    identity hash is calculated from the exact pre-redaction node and path so
+    a runtime witness can still be reconciled without publishing the raw
+    value.
+    """
+
+    collection = payload.get("collection")
+    rendered_nodes = collection.get("nodes") if isinstance(collection, dict) else None
+    if not isinstance(rendered_nodes, list) or len(rendered_nodes) != len(report.collection.nodes):
+        return
+    for rendered, exact in zip(rendered_nodes, report.collection.nodes, strict=True):
+        if isinstance(rendered, dict):
+            rendered["node_identity"] = pytest_node_identity(exact.nodeid, exact.path)
+
+
 def _environment_identity(python_executable: str, collection_enabled: bool) -> dict[str, Any]:
     interpreter = Path(python_executable).name or "python"
     return {
@@ -160,6 +182,7 @@ def public_report(
     payload = report.to_dict()
     replacements = _redaction_replacements(root)
     payload = cast(dict[str, Any], _redact(payload, replacements))
+    _attach_collection_identities(payload, report)
     payload["repository"] = "."
     payload["report_version"] = REPORT_VERSION
     payload["tool"] = {

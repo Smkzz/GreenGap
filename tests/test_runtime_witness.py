@@ -8,12 +8,20 @@ import pytest
 import greengap._runtime_plugin as runtime_plugin
 import greengap.runtime as runtime_module
 from greengap.cli import main
-from greengap.model import FindingState
+from greengap.model import (
+    CollectedNode,
+    CollectionResult,
+    FindingState,
+    ScanReport,
+    WorkspaceSnapshot,
+)
+from greengap.report import public_report
 from greengap.runtime import (
     RuntimeWitnessError,
     aggregate_runtime_witnesses,
     load_runtime_witness,
 )
+from greengap.util import pytest_node_identity
 
 SOURCE = "a" * 40
 FINGERPRINT = "b" * 64
@@ -90,6 +98,16 @@ def test_runtime_witness_validation_is_strict_and_normalized(tmp_path: Path) -> 
     with pytest.raises(RuntimeWitnessError) as error:
         load_runtime_witness(_write(tmp_path / "secret.json", secret_payload))
     assert error.value.code == "WITNESS_SCHEMA_INVALID"
+
+
+def test_runtime_witness_rejects_conflicting_node_identity(tmp_path: Path) -> None:
+    payload = _witness()
+    payload["collection"][0]["node_identity"] = "c" * 64
+
+    with pytest.raises(RuntimeWitnessError) as error:
+        load_runtime_witness(_write(tmp_path / "conflict.json", payload))
+
+    assert error.value.code == "WITNESS_NODE_IDENTITY_CONFLICT"
 
 
 def test_runtime_aggregate_reports_observed_and_unseen_nodes(tmp_path: Path) -> None:
@@ -275,6 +293,30 @@ def test_runtime_witness_cli_preserves_runtime_contract(capsys, tmp_path: Path) 
     assert output["mode"] == "witness"
     assert output["runtime_execution_identity"] == "CERTIFIED"
     assert output["findings"][1]["state"] == "NOT_SEEN"
+
+
+def test_public_collection_redaction_preserves_exact_node_identity(tmp_path: Path) -> None:
+    nodeid = "tests/test_a.py::test_case[pytest /home/alice/private]"
+    path = "tests/test_a.py"
+    report = ScanReport(
+        repository=str(tmp_path),
+        snapshot=WorkspaceSnapshot(FINGERPRINT, (path,), "filesystem"),
+        final_fingerprint=FINGERPRINT,
+        candidates=(),
+        collection=CollectionResult(
+            complete=True,
+            environment_valid=True,
+            nodes=(CollectedNode(nodeid, path),),
+            paths=(path,),
+        ),
+        stable=True,
+    )
+
+    payload = public_report(report, root=tmp_path, collection_enabled=True)
+    rendered = payload["collection"]["nodes"][0]
+
+    assert rendered["nodeid"] != nodeid
+    assert rendered["node_identity"] == pytest_node_identity(nodeid, path)
 
 
 @pytest.mark.parametrize(

@@ -25,6 +25,7 @@ from .util import (
     MAX_RUNTIME_WITNESS_BYTES,
     MAX_RUNTIME_WITNESS_NODES,
     MAX_RUNTIME_WITNESSES,
+    pytest_node_identity,
     read_limited_bytes,
 )
 
@@ -57,6 +58,7 @@ class RuntimeFinding:
     blocking: bool
     reason: str
     evidence: tuple[str, ...] = ()
+    node_identity: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +68,7 @@ class RuntimeFinding:
             "blocking": self.blocking,
             "reason": self.reason,
             "evidence": list(self.evidence),
+            "node_identity": self.node_identity or pytest_node_identity(self.nodeid, self.path),
         }
 
 
@@ -182,14 +185,36 @@ def _fingerprint(value: Any) -> str:
     return value.lower()
 
 
-def _validate_node_record(record: Any) -> tuple[str, str]:
-    if not isinstance(record, dict) or set(record) != {"nodeid", "path"}:
+def _node_identity(value: Any) -> str:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise RuntimeWitnessError("WITNESS_NODE_IDENTITY_INVALID")
+    return value.lower()
+
+
+def _record_node_identity(
+    record: dict[str, Any], nodeid: str, path: str, *, verify: bool
+) -> str:
+    expected = pytest_node_identity(nodeid, path)
+    if "node_identity" not in record:
+        return expected
+    identity = _node_identity(record["node_identity"])
+    if verify and identity != expected:
+        raise RuntimeWitnessError("WITNESS_NODE_IDENTITY_CONFLICT")
+    return identity
+
+
+def _validate_node_record(record: Any, *, verify_identity: bool = False) -> tuple[str, str, str]:
+    if not isinstance(record, dict) or set(record) not in (
+        {"nodeid", "path"},
+        {"nodeid", "path", "node_identity"},
+    ):
         raise RuntimeWitnessError("WITNESS_COLLECTION_RECORD_INVALID")
     nodeid = _nodeid(record["nodeid"])
     path = _relative_path(record["path"])
     if nodeid.split("::", 1)[0].replace("\\", "/") != path:
         raise RuntimeWitnessError("WITNESS_NODE_PATH_CONFLICT")
-    return nodeid, path
+    identity = _record_node_identity(record, nodeid, path, verify=verify_identity)
+    return nodeid, path, identity
 
 
 def _validate_report(record: Any) -> dict[str, str]:
@@ -203,18 +228,16 @@ def _validate_report(record: Any) -> dict[str, str]:
 
 
 def _validate_executed_record(record: Any) -> tuple[str, str, dict[str, Any]]:
-    if not isinstance(record, dict) or set(record) != {
-        "nodeid",
-        "path",
-        "started",
-        "finished",
-        "reports",
-    }:
+    if not isinstance(record, dict) or set(record) not in (
+        {"nodeid", "path", "started", "finished", "reports"},
+        {"nodeid", "path", "node_identity", "started", "finished", "reports"},
+    ):
         raise RuntimeWitnessError("WITNESS_EXECUTION_RECORD_INVALID")
     nodeid = _nodeid(record["nodeid"])
     path = _relative_path(record["path"])
     if nodeid.split("::", 1)[0].replace("\\", "/") != path:
         raise RuntimeWitnessError("WITNESS_NODE_PATH_CONFLICT")
+    identity = _record_node_identity(record, nodeid, path, verify=True)
     if not isinstance(record["started"], bool) or not isinstance(record["finished"], bool):
         raise RuntimeWitnessError("WITNESS_EXECUTION_RECORD_INVALID")
     reports = record["reports"]
@@ -224,6 +247,7 @@ def _validate_executed_record(record: Any) -> tuple[str, str, dict[str, Any]]:
     return nodeid, path, {
         "nodeid": nodeid,
         "path": path,
+        "node_identity": identity,
         "started": record["started"],
         "finished": record["finished"],
         "reports": normalized_reports,
@@ -308,12 +332,12 @@ def _validate_witness_payload(payload: Any) -> dict[str, Any]:
     collection = payload["collection"]
     if not isinstance(collection, list) or len(collection) > MAX_RUNTIME_WITNESS_NODES:
         raise RuntimeWitnessError("WITNESS_COLLECTION_INVALID")
-    collection_map: dict[str, str] = {}
+    collection_map: dict[str, tuple[str, str]] = {}
     for record in collection:
-        nodeid, path = _validate_node_record(record)
+        nodeid, path, node_identity = _validate_node_record(record, verify_identity=True)
         if nodeid in collection_map:
             raise RuntimeWitnessError("WITNESS_DUPLICATE_NODE")
-        collection_map[nodeid] = path
+        collection_map[nodeid] = (path, node_identity)
 
     executed = payload["executed"]
     if not isinstance(executed, list) or len(executed) > MAX_RUNTIME_WITNESS_NODES:
@@ -323,8 +347,10 @@ def _validate_witness_payload(payload: Any) -> dict[str, Any]:
         nodeid, path, normalized = _validate_executed_record(record)
         if nodeid in executed_map:
             raise RuntimeWitnessError("WITNESS_DUPLICATE_NODE")
-        if nodeid not in collection_map or collection_map[nodeid] != path:
+        if nodeid not in collection_map or collection_map[nodeid][0] != path:
             raise RuntimeWitnessError("WITNESS_EXECUTION_NOT_COLLECTED")
+        if collection_map[nodeid][1] != normalized["node_identity"]:
+            raise RuntimeWitnessError("WITNESS_NODE_IDENTITY_CONFLICT")
         executed_map[nodeid] = normalized
 
     session = payload["session"]
@@ -359,8 +385,12 @@ def _validate_witness_payload(payload: Any) -> dict[str, Any]:
             "pytest_root": pytest_root,
             "github": github,
             "collection": [
-                {"nodeid": nodeid, "path": path}
-                for nodeid, path in sorted(collection_map.items())
+                {
+                    "nodeid": nodeid,
+                    "path": path_and_identity[0],
+                    "node_identity": path_and_identity[1],
+                }
+                for nodeid, path_and_identity in sorted(collection_map.items())
             ],
             "executed": [executed_map[nodeid] for nodeid in sorted(executed_map)],
             "errors": list(errors),
@@ -401,13 +431,22 @@ def _load_denominator(path: Path) -> tuple[dict[str, str], ...]:
             source = payload["nodes"]
     if not isinstance(source, list) or len(source) > MAX_RUNTIME_WITNESS_NODES:
         raise RuntimeWitnessError("DENOMINATOR_INVALID")
-    result: dict[str, str] = {}
+    result: dict[str, dict[str, str]] = {}
     for record in source:
-        nodeid, path_value = _validate_node_record(record)
-        if nodeid in result:
+        nodeid, path_value, node_identity = _validate_node_record(record)
+        if node_identity in result:
             raise RuntimeWitnessError("DENOMINATOR_DUPLICATE_NODE")
-        result[nodeid] = path_value
-    return tuple({"nodeid": nodeid, "path": path_value} for nodeid, path_value in sorted(result.items()))
+        result[node_identity] = {
+            "nodeid": nodeid,
+            "path": path_value,
+            "node_identity": node_identity,
+        }
+    return tuple(
+        record
+        for _, record in sorted(
+            result.items(), key=lambda item: (item[1]["nodeid"], item[0])
+        )
+    )
 
 
 def _state_for_execution(record: Mapping[str, Any]) -> FindingState:
@@ -562,28 +601,37 @@ def aggregate_runtime_witnesses(
         ):
             errors.append("EXECUTION_EVIDENCE_INCOMPLETE")
 
-    denominator_map = {record["nodeid"]: record["path"] for record in denominator}
+    denominator_map = {record["node_identity"]: record for record in denominator}
     observed: dict[str, tuple[str, FindingState, str]] = {}
     duplicate_nodes: list[str] = []
     for witness in witnesses:
-        collection_map = {record["nodeid"]: record["path"] for record in witness["collection"]}
-        for nodeid, path_value in collection_map.items():
-            if nodeid not in denominator_map or denominator_map[nodeid] != path_value:
+        collection_map = {
+            record["node_identity"]: record["path"] for record in witness["collection"]
+        }
+        for node_identity, path_value in collection_map.items():
+            if (
+                node_identity not in denominator_map
+                or denominator_map[node_identity]["path"] != path_value
+            ):
                 errors.append("COLLECTION_DENOMINATOR_CONFLICT")
         for record in witness["executed"]:
-            nodeid = record["nodeid"]
+            node_identity = record["node_identity"]
             state = _state_for_execution(record)
-            prior = observed.get(nodeid)
+            prior = observed.get(node_identity)
             if prior is None:
-                observed[nodeid] = (record["path"], state, _identity(witness["github"]))
+                observed[node_identity] = (record["path"], state, _identity(witness["github"]))
             elif prior[0] != record["path"] or prior[1] != state:
                 errors.append("CONFLICTING_NODE_OBSERVATION")
             else:
-                duplicate_nodes.append(nodeid)
+                duplicate_nodes.append(record["nodeid"])
 
     complete = not errors
     findings: list[RuntimeFinding] = []
-    for nodeid, path_value in sorted(denominator_map.items()):
+    for node_identity, record in sorted(
+        denominator_map.items(), key=lambda item: (item[1]["nodeid"], item[0])
+    ):
+        nodeid = record["nodeid"]
+        path_value = record["path"]
         if not complete:
             findings.append(
                 RuntimeFinding(
@@ -593,10 +641,11 @@ def aggregate_runtime_witnesses(
                     False,
                     "runtime witness set is incomplete; execution absence is not a claim",
                     tuple(dict.fromkeys(errors)),
+                    node_identity,
                 )
             )
             continue
-        observed_value = observed.get(nodeid)
+        observed_value = observed.get(node_identity)
         if observed_value is None:
             findings.append(
                 RuntimeFinding(
@@ -605,6 +654,7 @@ def aggregate_runtime_witnesses(
                     FindingState.NOT_SEEN,
                     True,
                     "collected pytest node was not observed in any complete witness",
+                    node_identity=node_identity,
                 )
             )
         else:
@@ -616,6 +666,7 @@ def aggregate_runtime_witnesses(
                     False,
                     "pytest node execution was observed in a complete witness",
                     (observed_value[2],),
+                    node_identity,
                 )
             )
     return RuntimeAggregate(

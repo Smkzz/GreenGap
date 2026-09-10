@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -61,6 +62,18 @@ _TRANSIENT_PATHS = frozenset(
         "qualification/envs",
     }
 )
+
+
+def pytest_node_identity(nodeid: str, path: str) -> str:
+    """Return an opaque, deterministic identity for one exact pytest node."""
+
+    canonical = json.dumps(
+        {"nodeid": nodeid, "path": path},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 _TRANSIENT_COMPONENTS = frozenset(
     item for item in _TRANSIENT_PATHS if "/" not in item
 )

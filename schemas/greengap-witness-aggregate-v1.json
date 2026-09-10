@@ -77,9 +77,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["nodeid", "path", "state", "blocking", "reason", "evidence"],
+        "required": ["nodeid", "node_identity", "path", "state", "blocking", "reason", "evidence"],
         "properties": {
           "nodeid": { "type": "string", "minLength": 3 },
+          "node_identity": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
           "path": {
             "type": "string",
             "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\r\\n]+$"

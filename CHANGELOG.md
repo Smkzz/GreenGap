@@ -4,9 +4,9 @@
 
 Adds the opt-in native pytest Runtime Witness plugin and conservative JSON
 aggregator. Runtime evidence is source-bound to an explicit source and
-repository identity, cumulatively bounded, and incomplete on missing jobs,
-shards, or conflicting observations; static Plan mode remains advisory and
-fail-closed.
+repository identity, binds exact nodes through opaque identities, cumulatively
+bounded, and incomplete on missing jobs, shards, or conflicting observations;
+static Plan mode remains advisory and fail-closed.
 
 ## 1.0.0rc1 - launch candidate
 

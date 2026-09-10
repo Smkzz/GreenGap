@@ -23,7 +23,11 @@ Each artifact is bounded, UTF-8 JSON only, and contains the schema version,
 GreenGap version, source commit, workspace fingerprints, pytest root, full
 collected node identities, observed node reports, and session status. Test
 output, environment dumps, fixtures, pickle, and executable content are not
-captured. The schema is [`schemas/greengap-witness-v1.json`](../schemas/greengap-witness-v1.json).
+captured. Collection and execution records include an opaque SHA-256
+`node_identity` derived from the exact node ID and repository-relative path.
+This lets a public scan report redact path-like parameter values without
+breaking runtime reconciliation. The schema is
+[`schemas/greengap-witness-v1.json`](../schemas/greengap-witness-v1.json).
 
 ## Aggregation
 

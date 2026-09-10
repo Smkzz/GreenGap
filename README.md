@@ -57,8 +57,9 @@ greengap witness . --denominator greengap-scan.json `
 ```
 
 The runtime aggregator requires both explicit source and repository bindings,
-and applies cumulative witness-input bounds. The runtime witness contract and
-identity format are documented in
+uses opaque exact-node identities so public redaction cannot change the
+denominator, and applies cumulative witness-input bounds. The runtime witness
+contract and identity format are documented in
 [`docs/RUNTIME_WITNESS.md`](docs/RUNTIME_WITNESS.md).
 
 GreenGap never installs target dependencies, invokes package-manager hooks, or

@@ -27,6 +27,7 @@ from .util import (
     MAX_RUNTIME_WITNESS_NODES,
     checkout_source_equivalent_to_head,
     normalize_repo_path,
+    pytest_node_identity,
 )
 
 _HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -302,11 +303,21 @@ class _Witness:
             "pytest_root": self.pytest_root,
             "github": self.github,
             "collection": [
-                {"nodeid": nodeid, "path": path}
+                {
+                    "nodeid": nodeid,
+                    "path": path,
+                    "node_identity": pytest_node_identity(nodeid, path),
+                }
                 for nodeid, path in sorted(self.collection.items())
             ][:MAX_RUNTIME_WITNESS_NODES],
             "executed": [
-                self.executed[nodeid] for nodeid in sorted(self.executed)
+                {
+                    **self.executed[nodeid],
+                    "node_identity": pytest_node_identity(
+                        self.executed[nodeid]["nodeid"], self.executed[nodeid]["path"]
+                    ),
+                }
+                for nodeid in sorted(self.executed)
             ][:MAX_RUNTIME_WITNESS_NODES],
             "session": {
                 "exit_status": status,
