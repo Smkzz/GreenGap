@@ -255,6 +255,13 @@ Planned later receipts are:
 * `applicability-cohort-selection-20260910-c30543a.json`;
 * `applicability-cohort-qualification-20260910-c30543a.json`;
 * `applicability-omission-sensitivity-20260910-c30543a.json`; and
-* `applicability-cohort-final-holdouts-20260910-c30543a.json`.
+* `applicability-cohort-final-holdouts-20260910-c30543a.json`; and
+* `applicability-cohort-execution-20260910-34439845721-c30543a.json`.
 
-Until those receipts demonstrate the gate, the launch status remains blocked.
+The aggregate execution receipt records the exact hosted run and the fixed
+gate failure: 0/12 useful determinations, 0/6 controlled omissions detected,
+6/6 restored baselines, and 0/3 useful final holdouts. One designated holdout
+(A12) was setup-incomplete because the frozen Python 3.10 collection
+environment could not satisfy the hash-locked transitive dependency boundary.
+This outcome receipt does not amend the preregistered population, selection,
+thresholds, or fail-closed semantics; the launch status remains blocked.

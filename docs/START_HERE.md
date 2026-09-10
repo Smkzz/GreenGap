@@ -30,7 +30,14 @@ the historical freeze in the narrow analyzer/CLI/workflow fix and its tests;
 the current Linux receipt is bound to c30543a itself. The disposable
 direct-source validation set now covers PASS/no-gap, proven gap/blocking, and
 UNKNOWN at c30543a. The original stress cohort remains a failed-usefulness
-result; a separate applicability cohort is now preregistered before selection.
+result. The separate applicability cohort was preregistered, selected, and
+executed in hosted run
+[34439845721](https://github.com/Smkzz/greengap-launch-probe-20260910/actions/runs/34439845721);
+its fixed gate failed with 0/12 useful determinations, 0/6 controlled
+omissions detected, and 0/3 useful final holdouts. A12 was setup-incomplete
+because the frozen hash-locked collection requirements do not pin Python
+3.10's transitive `exceptiongroup` dependency. The exact readback is in
+[`evidence/applicability-cohort-execution-20260910-34439845721-c30543a.json`](evidence/applicability-cohort-execution-20260910-34439845721-c30543a.json).
 The reusable-workflow success/PR/schedule cases, final artifacts, and the
 remaining human/owner/authorization gates still require closure.
 
@@ -72,6 +79,11 @@ receipts are indexed in [`evidence/README.md`](evidence/README.md).
 The aggregate count is `7/10` domains passed; this does not qualify the
 candidate for stable status.
 
+The applicability gate is independently `FAIL` and stops promotion. Its
+result does not reinterpret the preserved original stress result:
+`COHORT_USEFULNESS_GATE_FAILED`, `USEFUL_DETERMINATIONS=0`, and
+`FALSE_CONFIDENT_CONCLUSIONS=0`.
+
 ## Open launch gates
 
 1. Complete the real disposable caller gate for `greengap-plan.yml`: the
@@ -80,16 +92,15 @@ candidate for stable status.
    `EXTERNAL_WORKFLOW_UNRESOLVED`/exit 2. No genuine `event=schedule` run has
    been observed. Obtain a compatible final artifact plus exact source-head
    success/PR/schedule/default-branch receiver evidence.
-2. The three untouched holdouts have isolated trusted-collection receipts with
-   `FALSE_CONFIDENT_CONCLUSIONS=0`, but all remain UNKNOWN/exit 2 and produced
-   zero useful determinations. The original stress result is permanently
-   classified as `COHORT_USEFULNESS_GATE_FAILED`; C11/C12 negative-shape
-   exclusions remain recorded separately. The new applicability cohort is
-   preregistered and deterministically selected in
-   [`APPLICABILITY_COHORT_PROTOCOL_1_0.md`](APPLICABILITY_COHORT_PROTOCOL_1_0.md)
-   plus the recorded selection receipt; it must still be qualified,
-   sensitivity-tested, and holdout-tested before the usefulness gate can be
-   reassessed.
+2. The prospective applicability cohort was executed only in the disposable
+   hosted boundary. Its fixed gate failed: 0/12 useful determinations, 0/3
+   useful holdouts, and 0/6 controlled omissions detected; all six disposable
+   workflow fixtures were restored. A12 was setup-incomplete because the
+   frozen hash-locked collection requirements do not pin Python 3.10's
+   transitive `exceptiongroup` dependency. Promotion stops at this gate; no
+   product tuning or cohort replacement is authorized. The original stress
+   result remains permanently classified as `COHORT_USEFULNESS_GATE_FAILED`,
+   with C11/C12 negative-shape exclusions recorded separately.
 3. Run five fresh consenting human first-use sessions with at least four
    successful integrations; agent simulations do not count.
 4. Obtain accountable maintenance, support, rollback, and publication owner

@@ -11,11 +11,15 @@ product bytes include the narrow canonical self-call fix and whose final
 follow-up commit is test-only. The exact-head hosted matrix and Linux
 performance receipts now close those machine gates. The disposable direct-source
 validation set is also recorded, while the reusable-workflow artifact,
-schedule, cohort-usefulness, human, owner, and authorization gates remain
-separate and open. The original cohort is retained as a failed-usefulness
-stress cohort; the new applicability population is preregistered and its
-12-repository selection is recorded, but trusted qualification has not
-executed.
+schedule, human, owner, and authorization gates remain separate and open. The
+original cohort is retained as a failed-usefulness
+stress cohort; the new applicability population is preregistered, selected,
+and was executed in the disposable hosted probe. Its gate failed with 0/12
+useful determinations, 0/6 controlled omissions detected, and 0/3 useful final
+holdouts. A12 was setup-incomplete because the frozen hash-locked collection
+requirements do not pin Python 3.10's transitive `exceptiongroup` dependency.
+The exact run and readback classification are retained separately; no
+stable-launch claim is made.
 
 ## Source-bound and candidate receipts
 
@@ -47,6 +51,7 @@ executed.
 | Frozen C11/C12 negative-shape decisions | [`cohort-exclusion-review-20260910-c30543a.json`](cohort-exclusion-review-20260910-c30543a.json) |
 | Prospective applicability-cohort preregistration | [`applicability-cohort-preregistration.json`](applicability-cohort-preregistration.json) |
 | Prospective applicability-cohort selection | [`applicability-cohort-selection-20260910-c30543a.json`](applicability-cohort-selection-20260910-c30543a.json) |
+| Disposable hosted applicability-cohort execution and final gate | [`applicability-cohort-execution-20260910-34439845721-c30543a.json`](applicability-cohort-execution-20260910-34439845721-c30543a.json) |
 | Human usability gate | [`human-usability-20260909-6f76949.json`](human-usability-20260909-6f76949.json) |
 | Owner confirmation gate | [`owner-confirmation-20260909-pending.json`](owner-confirmation-20260909-pending.json) |
 
