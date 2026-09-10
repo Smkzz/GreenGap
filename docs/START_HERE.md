@@ -29,9 +29,10 @@ correction after that source fix. The current candidate therefore differs from
 the historical freeze in the narrow analyzer/CLI/workflow fix and its tests;
 the current Linux receipt is bound to c30543a itself. The disposable
 direct-source validation set now covers PASS/no-gap, proven gap/blocking, and
-UNKNOWN at c30543a. The reusable-workflow success/PR/schedule cases, final
-artifacts, and the remaining human/owner/authorization gates still require
-closure.
+UNKNOWN at c30543a. The original stress cohort remains a failed-usefulness
+result; a separate applicability cohort is now preregistered before selection.
+The reusable-workflow success/PR/schedule cases, final artifacts, and the
+remaining human/owner/authorization gates still require closure.
 
 ## Fast verification
 
@@ -81,10 +82,13 @@ candidate for stable status.
    success/PR/schedule/default-branch receiver evidence.
 2. The three untouched holdouts have isolated trusted-collection receipts with
    `FALSE_CONFIDENT_CONCLUSIONS=0`, but all remain UNKNOWN/exit 2 and produced
-   zero useful determinations. The gate is explicitly classified as
-   `COHORT_USEFULNESS_GATE_FAILED`; C11/C12 negative-shape exclusions are
-   recorded separately. Clear the failed usefulness gate only with a valid
-   predeclared cohort protocol that produces useful determinations.
+   zero useful determinations. The original stress result is permanently
+   classified as `COHORT_USEFULNESS_GATE_FAILED`; C11/C12 negative-shape
+   exclusions remain recorded separately. The new applicability cohort is
+   preregistered in
+   [`APPLICABILITY_COHORT_PROTOCOL_1_0.md`](APPLICABILITY_COHORT_PROTOCOL_1_0.md)
+   and must be selected, qualified, sensitivity-tested, and holdout-tested
+   before the usefulness gate can be reassessed.
 3. Run five fresh consenting human first-use sessions with at least four
    successful integrations; agent simulations do not count.
 4. Obtain accountable maintenance, support, rollback, and publication owner

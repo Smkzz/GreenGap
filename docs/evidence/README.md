@@ -12,7 +12,9 @@ follow-up commit is test-only. The exact-head hosted matrix and Linux
 performance receipts now close those machine gates. The disposable direct-source
 validation set is also recorded, while the reusable-workflow artifact,
 schedule, cohort-usefulness, human, owner, and authorization gates remain
-separate and open.
+separate and open. The original cohort is retained as a failed-usefulness
+stress cohort; the new applicability population is preregistered but has not
+yet been selected or executed.
 
 ## Source-bound and candidate receipts
 
@@ -42,6 +44,7 @@ separate and open.
 | Isolated trusted collection for three frozen holdouts | [`cohort-trusted-20260910-6f76949.json`](cohort-trusted-20260910-6f76949.json) |
 | Trusted cohort usefulness investigation | [`cohort-usefulness-20260910-c30543a.json`](cohort-usefulness-20260910-c30543a.json) |
 | Frozen C11/C12 negative-shape decisions | [`cohort-exclusion-review-20260910-c30543a.json`](cohort-exclusion-review-20260910-c30543a.json) |
+| Prospective applicability-cohort preregistration | [`applicability-cohort-preregistration.json`](applicability-cohort-preregistration.json) |
 | Human usability gate | [`human-usability-20260909-6f76949.json`](human-usability-20260909-6f76949.json) |
 | Owner confirmation gate | [`owner-confirmation-20260909-pending.json`](owner-confirmation-20260909-pending.json) |
 

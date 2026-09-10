@@ -1,17 +1,29 @@
-# Frozen evaluation cohort
+# Historical stress evaluation cohort
 
-The cohort is frozen before candidate outcomes are used for tuning. A repository
-is run only from the recorded commit in a disposable, isolated environment;
+This is the original frozen stress cohort. It remains permanent evidence and
+is not replaced by the prospective applicability population. A repository is
+run only from the recorded commit in a disposable, isolated environment;
 findings are not sent upstream. Ordinary unmodified repositories and controlled
 synthetic mutations are reported separately.
+
+```text
+STRESS_COHORT_SOUNDNESS=PASS — 0 false confident conclusions
+STRESS_COHORT_USEFULNESS=FAILED — 0 useful determinations
+ORIGINAL_GATE_RESULT=COHORT_USEFULNESS_GATE_FAILED
+```
+
+The new applicability population is governed by the preregistered
+[`docs/APPLICABILITY_COHORT_PROTOCOL_1_0.md`](APPLICABILITY_COHORT_PROTOCOL_1_0.md)
+and must not be used to reinterpret this result.
 
 The existing local evidence contains seven independent public repositories and
 one GreenGap self-checkout. The self-checkout is excluded from the external
 cohort. Five additional repositories were acquired at the exact commits below
 in disposable checkouts. Safe static-only runs were recorded for those five;
 trusted collection was not run because this workspace did not provide the
-documented OS-level isolation profile. The required 12-repository launch
-target is therefore not claimed complete.
+documented OS-level isolation profile. This historical stress manifest did not
+meet the later prospective usefulness requirement and is not claimed complete
+for applicability.
 
 | Cohort ID | Repository | Recorded commit | Workflow shape | Holdout | Status |
 | --- | --- | --- | --- | --- | --- |
