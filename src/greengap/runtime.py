@@ -424,7 +424,16 @@ def _load_denominator(path: Path) -> _RuntimeDenominator:
     if not isinstance(payload, dict) or payload.get("artifact_type") != RUNTIME_WITNESS_ARTIFACT_TYPE:
         raise RuntimeWitnessError("DENOMINATOR_RUNTIME_WITNESS_REQUIRED")
     witness = _validate_witness_payload(payload)
-    if witness.get("complete") is not True:
+    session = witness.get("session")
+    if (
+        witness.get("complete") is not True
+        or witness.get("errors")
+        or witness.get("workspace_stable") is not True
+        or witness.get("workspace_fingerprint") != witness.get("workspace_fingerprint_final")
+        or not isinstance(session, dict)
+        or session.get("collection_complete") is not True
+        or session.get("session_complete") is not True
+    ):
         raise RuntimeWitnessError("DENOMINATOR_INCOMPLETE")
     source = witness.get("collection")
     source_commit = witness.get("source_commit")
@@ -460,18 +469,20 @@ def _load_denominator(path: Path) -> _RuntimeDenominator:
 
 def _state_for_execution(record: Mapping[str, Any]) -> FindingState:
     reports = record.get("reports", [])
-    phase_outcomes = {
-        item["when"]: item["outcome"]
-        for item in reports
-        if isinstance(item, dict) and "when" in item and "outcome" in item
-    }
-    if "failed" in phase_outcomes.values():
+    phase_outcomes: dict[str, set[str]] = {}
+    for item in reports:
+        if isinstance(item, dict) and "when" in item and "outcome" in item:
+            phase_outcomes.setdefault(item["when"], set()).add(item["outcome"])
+    if any("failed" in outcomes for outcomes in phase_outcomes.values()):
         return FindingState.EXECUTED_FAIL
-    if phase_outcomes.get("call") == "skipped":
+    call_outcomes = phase_outcomes.get("call", set())
+    if "passed" in call_outcomes and "skipped" in call_outcomes:
+        return FindingState.UNKNOWN
+    if "skipped" in call_outcomes:
         return FindingState.SKIPPED
-    if phase_outcomes.get("call") == "passed":
+    if call_outcomes == {"passed"}:
         return FindingState.EXECUTED_PASS
-    if "skipped" in phase_outcomes.values():
+    if any("skipped" in outcomes for outcomes in phase_outcomes.values()):
         return FindingState.SKIPPED
     return FindingState.UNKNOWN
 

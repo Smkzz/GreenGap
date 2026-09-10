@@ -137,6 +137,20 @@ def test_runtime_plugin_applies_nodeid_bound_before_accepting_item_path(tmp_path
         ([{"when": "setup", "outcome": "passed"}], FindingState.UNKNOWN),
         (
             [
+                {"when": "call", "outcome": "passed"},
+                {"when": "call", "outcome": "skipped"},
+            ],
+            FindingState.UNKNOWN,
+        ),
+        (
+            [
+                {"when": "call", "outcome": "failed"},
+                {"when": "call", "outcome": "passed"},
+            ],
+            FindingState.EXECUTED_FAIL,
+        ),
+        (
+            [
                 {"when": "setup", "outcome": "passed"},
                 {"when": "call", "outcome": "passed"},
                 {"when": "teardown", "outcome": "passed"},
@@ -243,6 +257,24 @@ def test_runtime_aggregate_rejects_public_scan_denominator(tmp_path: Path) -> No
 
     assert not result.complete
     assert "DENOMINATOR_RUNTIME_WITNESS_REQUIRED" in result.errors
+
+
+def test_runtime_aggregate_rejects_unstable_runtime_denominator(tmp_path: Path) -> None:
+    witness = _write(tmp_path / "witness.json", _witness())
+    denominator_payload = _witness()
+    denominator_payload["workspace_stable"] = False
+    denominator = _write(tmp_path / "denominator.json", denominator_payload)
+
+    result = aggregate_runtime_witnesses(
+        (witness,),
+        denominator,
+        expected_identities=("123|1|pytest|-|-",),
+        expected_repository="example/project",
+        source_commit=SOURCE,
+    )
+
+    assert not result.complete
+    assert "DENOMINATOR_INCOMPLETE" in result.errors
 
 
 def test_runtime_aggregate_rejects_repository_mismatch(tmp_path: Path) -> None:
