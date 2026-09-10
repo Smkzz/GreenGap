@@ -85,7 +85,7 @@ def run_plan(
     from .reconcile import plan_is_complete, reconcile_plan
     from .snapshot import workspace_snapshot
     from .trace import trace_github_actions
-    from .util import PathReadContext, git_workspace_clean
+    from .util import PathReadContext, checkout_source_equivalent_to_head
 
     root = root.resolve()
     read_context = PathReadContext(root)
@@ -94,7 +94,9 @@ def run_plan(
         timeout=min(timeout, 10.0),
         read_context=read_context,
     )
-    workspace_clean = git_workspace_clean(root, timeout=min(timeout, 10.0))
+    checkout_source_equivalent = checkout_source_equivalent_to_head(
+        root, timeout=min(timeout, 10.0)
+    )
     candidates, collection = scan_pytest(
         root,
         timeout,
@@ -113,7 +115,7 @@ def run_plan(
         commit_count,
         changed_file_count,
         diff_timed_out,
-        workspace_clean=workspace_clean,
+        workspace_clean=checkout_source_equivalent,
         discovery_timeout=min(timeout, 10.0),
         inside_reusable_workflow=inside_greengap_reusable_workflow,
     )

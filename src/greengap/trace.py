@@ -3029,12 +3029,82 @@ class _Resolver:
         self.invocations: list[PytestInvocation] = []
         self.issues: list[TraceIssue] = []
         self.workflows: list[str] = []
+        # ``None`` means that changed-file values are unavailable.  An empty
+        # tuple is different: it is a known complete empty change set.  The
+        # qualification runner historically supplied only count=0, which
+        # caused the two states to collapse and made path-filter decisions
+        # needlessly UNKNOWN.
+        if (
+            changed_files is None
+            and change_set_complete
+            and changed_file_count == 0
+        ):
+            changed_files = ()
+
+        if changed_file_count is not None and changed_file_count < 0:
+            self.issue(
+                "CHANGE_SET_METADATA_INCONSISTENT",
+                "changed-file count cannot be negative",
+                ("changed-file-count",),
+            )
+            self.change_set_complete = False
+        if commit_count is not None and commit_count < 0:
+            self.issue(
+                "CHANGE_SET_METADATA_INCONSISTENT",
+                "commit count cannot be negative",
+                ("commit-count",),
+            )
+            self.change_set_complete = False
+        if (
+            commit_count == 0
+            and changed_file_count is not None
+            and changed_file_count > 0
+        ):
+            self.issue(
+                "CHANGE_SET_METADATA_INCONSISTENT",
+                "zero commits cannot have changed files",
+                ("commit-count", "changed-file-count"),
+            )
+            self.change_set_complete = False
+
         if changed_files is None:
             self.changed_files: tuple[str, ...] | None = None
+            if change_set_complete and changed_file_count not in (None, 0):
+                self.issue(
+                    "CHANGE_SET_VALUES_UNKNOWN",
+                    "complete change-set metadata has no changed-file values",
+                    ("changed-files",),
+                )
+                self.change_set_complete = False
         else:
+            raw_changed_files = tuple(changed_files)
+            if change_set_complete and changed_file_count is None:
+                # The complete values are authoritative enough to derive their
+                # cardinality.  This is especially important for ``()``: it
+                # is a known empty change set, not unavailable evidence.
+                changed_file_count = len(raw_changed_files)
+                self.changed_file_count = changed_file_count
+            if changed_file_count == 0 and raw_changed_files:
+                self.issue(
+                    "CHANGE_SET_METADATA_INCONSISTENT",
+                    "changed-file count is zero but changed-file values were supplied",
+                    ("changed-files", "changed-file-count"),
+                )
+                self.change_set_complete = False
+            if (
+                changed_file_count is not None
+                and changed_file_count > 0
+                and changed_file_count != len(raw_changed_files)
+            ):
+                self.issue(
+                    "CHANGE_SET_METADATA_INCONSISTENT",
+                    "changed-file count does not match the supplied changed-file values",
+                    ("changed-files", "changed-file-count"),
+                )
+                self.change_set_complete = False
             normalized: list[str] = []
             total_bytes = 0
-            for index, changed_file in enumerate(changed_files):
+            for index, changed_file in enumerate(raw_changed_files):
                 if index >= MAX_CHANGED_FILES:
                     self.issue(
                         "CHANGED_FILE_SET_LIMIT",
@@ -3061,6 +3131,14 @@ class _Resolver:
                         f"changed file is outside the repository or unsafe: {exc}",
                         (raw_changed_file,),
                     )
+                    self.change_set_complete = False
+            if len(set(normalized)) != len(normalized):
+                self.issue(
+                    "CHANGE_SET_METADATA_INCONSISTENT",
+                    "changed-file values contain duplicate paths",
+                    ("changed-files",),
+                )
+                self.change_set_complete = False
             self.changed_files = tuple(dict.fromkeys(normalized))
         self._workflow_stack: set[Path] = set()
         self._self_reusable_workflow_ignored = False

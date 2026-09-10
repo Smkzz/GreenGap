@@ -849,8 +849,17 @@ def bounded_git_paths(
     return tuple(paths), None
 
 
-def git_workspace_clean(root: Path, timeout: float = 10.0) -> bool | None:
-    """Return whether checkout-clean semantics would preserve this workspace."""
+def checkout_source_equivalent_to_head(root: Path, timeout: float = 10.0) -> bool | None:
+    """Return whether the checkout source is equivalent to ``HEAD``.
+
+    Dependency environments and ordinary pytest caches are expected to appear
+    in a CI workspace after setup.  They are not source identity, so ignored
+    transient paths must not make the checkout appear dirty.  Conversely,
+    non-ignored source/configuration files are a known divergence from the
+    checkout that ``actions/checkout(clean=true)`` would replace, and ignored
+    non-transient files are an uninspectable selection surface.  The latter is
+    deliberately UNKNOWN rather than silently discarded.
+    """
 
     for command in (
         ["git", "diff", "--quiet", "--no-ext-diff", "HEAD"],
@@ -873,17 +882,37 @@ def git_workspace_clean(root: Path, timeout: float = 10.0) -> bool | None:
         if clean_result.returncode != 0:
             return None
 
-    output_result = bounded_command_output(
-        ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
-        cwd=root,
-        timeout=timeout,
-    )
-    if output_result is None:
+    def git_paths(*options: str) -> tuple[str, ...] | None:
+        output_result = bounded_command_output(
+            ["git", "ls-files", "--others", *options, "-z"],
+            cwd=root,
+            timeout=timeout,
+        )
+        if output_result is None:
+            return None
+        raw, output_limited, timed_out, returncode = output_result
+        if timed_out or output_limited or returncode != 0 or (raw and not raw.endswith(b"\0")):
+            return None
+        return tuple(os.fsdecode(item) for item in raw.split(b"\0") if item)
+
+    nonignored = git_paths("--exclude-standard")
+    if nonignored is None:
         return None
-    raw, output_limited, timed_out, returncode = output_result
-    if timed_out or output_limited or returncode != 0:
+    if any(not _is_transient_relative_text(path) for path in nonignored):
+        return False
+
+    ignored = git_paths("--ignored", "--exclude-standard")
+    if ignored is None:
         return None
-    return not any(item for item in raw.split(b"\0") if item)
+    if any(not _is_transient_relative_text(path) for path in ignored):
+        return None
+    return True
+
+
+def git_workspace_clean(root: Path, timeout: float = 10.0) -> bool | None:
+    """Backward-compatible alias for the source-equivalence invariant."""
+
+    return checkout_source_equivalent_to_head(root, timeout)
 
 
 def bounded_filesystem_paths(

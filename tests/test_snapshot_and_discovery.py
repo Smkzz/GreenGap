@@ -8,13 +8,92 @@ import pytest
 import greengap.util as util_module
 from greengap.pytest_adapter import discover_candidates, scan_pytest
 from greengap.snapshot import workspace_snapshot
-from greengap.util import PathReadContext, bounded_filesystem_paths, read_limited_bytes
+from greengap.util import (
+    PathReadContext,
+    bounded_filesystem_paths,
+    checkout_source_equivalent_to_head,
+    read_limited_bytes,
+)
 
 from .conftest import write_files
 
 
 def git_init(root):
     subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+
+
+def git_commit(root):
+    subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=GreenGap tests",
+            "-c",
+            "user.email=greengap-tests@example.invalid",
+            "commit",
+            "-qm",
+            "base",
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_checkout_source_equivalence_ignores_transient_dependency_and_cache_paths(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".gitignore": ".venv/\n.tox/\n.pytest_cache/\n",
+            "README.md": "base\n",
+        },
+    )
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    for directory in (".venv", ".tox", ".pytest_cache"):
+        path = tmp_path / directory / "marker"
+        path.parent.mkdir(parents=True)
+        path.write_text("generated\n", encoding="utf-8")
+
+    assert checkout_source_equivalent_to_head(tmp_path) is True
+
+
+def test_checkout_source_equivalence_rejects_nonignored_source_drift(tmp_path) -> None:
+    write_files(tmp_path, {"README.md": "base\n"})
+    git_init(tmp_path)
+    git_commit(tmp_path)
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_new.py").write_text(
+        "def test_new():\n    pass\n", encoding="utf-8"
+    )
+
+    assert checkout_source_equivalent_to_head(tmp_path) is False
+
+
+def test_checkout_source_equivalence_fails_closed_for_ignored_nontransient_file(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {".gitignore": "local-selection.cfg\n", "README.md": "base\n"},
+    )
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    (tmp_path / "local-selection.cfg").write_text("pytest tests\n", encoding="utf-8")
+
+    assert checkout_source_equivalent_to_head(tmp_path) is None
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_checkout_source_equivalence_rejects_tracked_changes(tmp_path, staged: bool) -> None:
+    write_files(tmp_path, {"README.md": "base\n"})
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+    if staged:
+        subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True, capture_output=True)
+
+    assert checkout_source_equivalent_to_head(tmp_path) is False
 
 
 def test_snapshot_changes_for_tracked_dirty_bytes(tmp_path) -> None:

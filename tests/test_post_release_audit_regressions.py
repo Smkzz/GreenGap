@@ -2213,6 +2213,105 @@ jobs:
     assert any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in push_ref_unbound.issues)
 
 
+def test_known_empty_change_set_is_not_treated_as_unavailable(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on:
+  push:
+    paths:
+      - src/**
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest
+""",
+        },
+    )
+
+    result = trace_github_actions(
+        tmp_path,
+        (),
+        event="push",
+        ref="refs/heads/main",
+        change_set_complete=True,
+        commit_count=0,
+        changed_file_count=0,
+    )
+
+    assert result.changed_files == ()
+    assert not result.invocations
+    assert not any(issue.code == "WORKFLOW_PATH_FILTER_UNKNOWN" for issue in result.issues)
+
+
+def test_complete_zero_count_without_values_becomes_known_empty_change_set(tmp_path) -> None:
+    write_files(tmp_path, {".github/workflows/ci.yml": workflow("pytest")})
+
+    result = trace_github_actions(
+        tmp_path,
+        event="push",
+        ref="refs/heads/main",
+        change_set_complete=True,
+        changed_file_count=0,
+        commit_count=0,
+    )
+
+    assert result.changed_files == ()
+
+
+def test_change_set_count_zero_with_values_is_inconsistent(tmp_path) -> None:
+    write_files(tmp_path, {".github/workflows/ci.yml": workflow("pytest")})
+
+    result = trace_github_actions(
+        tmp_path,
+        ("src/main.py",),
+        event="push",
+        ref="refs/heads/main",
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=0,
+    )
+
+    assert any(issue.code == "CHANGE_SET_METADATA_INCONSISTENT" for issue in result.issues)
+    assert not result.complete
+
+
+def test_change_set_positive_count_with_wrong_value_length_is_inconsistent(tmp_path) -> None:
+    write_files(tmp_path, {".github/workflows/ci.yml": workflow("pytest")})
+
+    result = trace_github_actions(
+        tmp_path,
+        ("src/main.py",),
+        event="push",
+        ref="refs/heads/main",
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=2,
+    )
+
+    assert any(issue.code == "CHANGE_SET_METADATA_INCONSISTENT" for issue in result.issues)
+    assert not result.complete
+
+
+def test_complete_positive_count_without_values_does_not_invent_changed_files(tmp_path) -> None:
+    write_files(tmp_path, {".github/workflows/ci.yml": workflow("pytest")})
+
+    result = trace_github_actions(
+        tmp_path,
+        event="push",
+        ref="refs/heads/main",
+        change_set_complete=True,
+        commit_count=1,
+        changed_file_count=1,
+    )
+
+    assert result.changed_files is None
+    assert not result.invocations
+    assert any(issue.code == "CHANGE_SET_VALUES_UNKNOWN" for issue in result.issues)
+
+
 def _pid_exists(pid: int) -> bool:
     if os.name == "nt":
         result = subprocess.run(

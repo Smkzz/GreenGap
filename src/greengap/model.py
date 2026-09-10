@@ -47,6 +47,24 @@ class CollectedNode:
 
 
 @dataclass(frozen=True)
+class PytestPlugin:
+    """Metadata for one pytest11 entry point in the selected target env."""
+
+    distribution: str
+    version: str
+    entry_point: str
+    module: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "distribution": self.distribution,
+            "version": self.version,
+            "entry_point": self.entry_point,
+            "module": self.module,
+        }
+
+
+@dataclass(frozen=True)
 class CollectionResult:
     complete: bool
     environment_valid: bool
@@ -57,6 +75,8 @@ class CollectionResult:
     stderr: str = ""
     error: str | None = None
     timed_out: bool = False
+    plugin_manifest: tuple[PytestPlugin, ...] = ()
+    plugin_manifest_complete: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,6 +87,8 @@ class CollectionResult:
             "returncode": self.returncode,
             "error": self.error,
             "timed_out": self.timed_out,
+            "plugin_manifest": [plugin.to_dict() for plugin in self.plugin_manifest],
+            "plugin_manifest_complete": self.plugin_manifest_complete,
         }
 
 

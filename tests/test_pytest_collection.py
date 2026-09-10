@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import json
 import os
-from types import SimpleNamespace
 
 import pytest
 
 from greengap.environment import collection_environment
+from greengap.model import PytestPlugin
 from greengap.pytest_adapter import (
     _BoundedProcessResult,
-    _explicit_project_plugin_args,
+    _parse_plugin_manifest,
+    _plugin_args_from_manifest,
+    _target_pytest_plugin_manifest,
     collect_pytest,
 )
 
@@ -119,6 +122,10 @@ def test_collection_import_failure_is_not_called_unregistered(tmp_path) -> None:
 
 def test_collection_timeout_preserves_partial_output(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
+        "greengap.pytest_adapter._target_pytest_plugin_manifest",
+        lambda *args, **kwargs: ((), None),
+    )
+    monkeypatch.setattr(
         "greengap.pytest_adapter._run_pytest_bounded",
         lambda *args, **kwargs: _BoundedProcessResult(
             None, "tests/test_a.py::test_a\n", "", timed_out=True
@@ -131,6 +138,11 @@ def test_collection_timeout_preserves_partial_output(monkeypatch, tmp_path) -> N
 
 
 def test_collection_start_failure_is_explicit(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "greengap.pytest_adapter._target_pytest_plugin_manifest",
+        lambda *args, **kwargs: ((), None),
+    )
+
     def failure(*args, **kwargs):
         raise OSError("python unavailable")
 
@@ -140,67 +152,132 @@ def test_collection_start_failure_is_explicit(monkeypatch, tmp_path) -> None:
     assert "could not start" in (result.error or "")
 
 
-def test_declared_marker_plugins_are_loaded_explicitly(monkeypatch, tmp_path) -> None:
-    write_files(
-        tmp_path,
-        {
-            "pyproject.toml": '[project]\ndependencies = ["pytest-trio"]\n',
-            "tests/test_a.py": "import pytest\n@pytest.mark.trio\ndef test_a():\n    pass\n",
-        },
+def test_target_plugin_manifest_is_validated_and_sorted() -> None:
+    manifest, error = _parse_plugin_manifest(
+        "noise\n"
+        'GREENGAP_PYTEST_PLUGIN_MANIFEST=[{"distribution":"pytest-cov","version":"6.0.0","entry_point":"pytest_cov","module":"pytest_cov.plugin"}]\n'
     )
-    entry_point = SimpleNamespace(
-        name="trio",
-        value="pytest_trio.plugin",
-        dist=SimpleNamespace(name="pytest-trio"),
+
+    assert error is None
+    assert manifest == (
+        PytestPlugin("pytest-cov", "6.0.0", "pytest_cov", "pytest_cov.plugin"),
     )
+
+
+def test_malformed_or_duplicate_target_plugin_manifest_is_unknown() -> None:
+    malformed, malformed_error = _parse_plugin_manifest(
+        "GREENGAP_PYTEST_PLUGIN_MANIFEST={not-json}\n"
+    )
+    duplicate, duplicate_error = _parse_plugin_manifest(
+        "GREENGAP_PYTEST_PLUGIN_MANIFEST="
+        + json.dumps(
+            [
+                {
+                    "distribution": "plugin",
+                    "version": "1",
+                    "entry_point": "plugin",
+                    "module": "plugin",
+                },
+                {
+                    "distribution": "plugin",
+                    "version": "1",
+                    "entry_point": "plugin",
+                    "module": "plugin",
+                },
+            ]
+        )
+        + "\n"
+    )
+
+    assert malformed is None and malformed_error
+    assert duplicate is None and duplicate_error
+
+
+def test_plugin_args_use_selected_target_manifest_and_honor_config_disable() -> None:
+    manifest = (
+        PytestPlugin("pytest-cov", "6.0.0", "pytest_cov", "pytest_cov.plugin"),
+        PytestPlugin("pytest-asyncio", "1.0.0", "asyncio", "pytest_asyncio.plugin"),
+    )
+
+    assert _plugin_args_from_manifest(manifest, {"pytest_cov"}) == (
+        "-p",
+        "pytest_asyncio.plugin",
+    )
+
+
+def test_plugin_manifest_inspection_uses_selected_interpreter(monkeypatch, tmp_path) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(args, root, environment, timeout):
+        observed["args"] = args
+        observed["environment"] = environment
+        return _BoundedProcessResult(
+            0,
+            "GREENGAP_PYTEST_PLUGIN_MANIFEST=[]\n",
+            "",
+        )
+
+    monkeypatch.setattr("greengap.pytest_adapter._run_pytest_bounded", fake_run)
+
+    manifest, error = _target_pytest_plugin_manifest(
+        "target-python", tmp_path, {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}, 10
+    )
+
+    assert error is None
+    assert manifest == ()
+    assert observed["args"][0] == "target-python"
+    assert observed["args"][1] == "-c"
+    assert observed["environment"]["PYTHONNOUSERSITE"] == "1"
+
+
+def test_collection_explicitly_loads_selected_target_plugins(monkeypatch, tmp_path) -> None:
+    write_files(tmp_path, {"tests/test_a.py": "def test_a():\n    pass\n"})
+    manifest = (
+        PytestPlugin("pytest-cov", "6.0.0", "pytest_cov", "pytest_cov.plugin"),
+        PytestPlugin("pytest-asyncio", "1.0.0", "asyncio", "pytest_asyncio.plugin"),
+    )
+    observed: dict[str, object] = {}
+
     monkeypatch.setattr(
-        "greengap.pytest_adapter.importlib.metadata.entry_points",
-        lambda **kwargs: (entry_point,),
-    )
-    assert _explicit_project_plugin_args(tmp_path) == ("-p", "pytest_trio.plugin")
-
-
-def test_unrelated_manifest_text_does_not_bind_a_pytest_plugin(monkeypatch, tmp_path) -> None:
-    write_files(
-        tmp_path,
-        {
-            "pyproject.toml": '[project]\ndependencies = []\n# pytest-trio is not installed by this project\n',
-            "tests/test_a.py": "import pytest\n@pytest.mark.trio\ndef test_a():\n    pass\n",
-        },
-    )
-    entry_point = SimpleNamespace(
-        name="trio",
-        value="pytest_trio.plugin",
-        dist=SimpleNamespace(name="pytest-trio"),
-    )
-    monkeypatch.setattr(
-        "greengap.pytest_adapter.importlib.metadata.entry_points",
-        lambda **kwargs: (entry_point,),
+        "greengap.pytest_adapter._target_pytest_plugin_manifest",
+        lambda *args, **kwargs: (manifest, None),
     )
 
-    assert _explicit_project_plugin_args(tmp_path) == ()
+    def fake_run(args, root, environment, timeout):
+        observed["args"] = args
+        observed["environment"] = environment
+        witness = {
+            "version": 1,
+            "nodes": [{"nodeid": "tests/test_a.py::test_a", "path": "tests/test_a.py"}],
+        }
+        with open(environment["GREENGAP_COLLECTION_FILE"], "w", encoding="utf-8") as handle:
+            json.dump(witness, handle)
+        return _BoundedProcessResult(0, "tests/test_a.py::test_a\n", "")
 
-
-def test_unbound_installed_pytest_plugins_invalidate_collection(monkeypatch, tmp_path) -> None:
-    entry_point = SimpleNamespace(
-        name="foreign",
-        value="foreign_pytest_plugin.plugin",
-        dist=SimpleNamespace(name="foreign-plugin"),
-    )
-    monkeypatch.setattr(
-        "greengap.pytest_adapter.importlib.metadata.entry_points",
-        lambda **kwargs: (entry_point,),
-    )
+    monkeypatch.setattr("greengap.pytest_adapter._run_pytest_bounded", fake_run)
 
     result = collect_pytest(tmp_path)
 
-    assert not result.complete
-    assert not result.environment_valid
-    assert "unbound pytest11 plugins" in (result.error or "")
+    assert result.complete
+    assert result.plugin_manifest == manifest
+    assert result.plugin_manifest_complete
+    assert observed["environment"]["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    args = observed["args"]
+    assert args[args.index("-p") + 1 : args.index("--rootdir")] == [
+        "greengap._collection_plugin",
+        "-p",
+        "pytest_asyncio.plugin",
+        "-p",
+        "pytest_cov.plugin",
+    ]
 
 
 @pytest.mark.parametrize("exit_code", [1, 2, 3, 4])
 def test_nonzero_collection_codes_are_not_complete(exit_code: int, monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "greengap.pytest_adapter._target_pytest_plugin_manifest",
+        lambda *args, **kwargs: ((), None),
+    )
     monkeypatch.setattr(
         "greengap.pytest_adapter._run_pytest_bounded",
         lambda *args, **kwargs: _BoundedProcessResult(exit_code, "", "error"),
