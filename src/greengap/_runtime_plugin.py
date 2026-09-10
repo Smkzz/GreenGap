@@ -204,13 +204,13 @@ class _Witness:
         return prior
 
     def log_start(self, nodeid: str, location: Any) -> None:
-        raw_path = location[0] if isinstance(location, (tuple, list)) and location else None
+        raw_path = location[0] if isinstance(location, tuple | list) and location else None
         record = self._ensure_executed(nodeid, raw_path)
         if record is not None:
             record["started"] = True
 
     def log_finish(self, nodeid: str, location: Any) -> None:
-        raw_path = location[0] if isinstance(location, (tuple, list)) and location else None
+        raw_path = location[0] if isinstance(location, tuple | list) and location else None
         record = self._ensure_executed(nodeid, raw_path)
         if record is not None:
             record["finished"] = True
