@@ -1,0 +1,82 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-10",
+  "status": "COHORT_USEFULNESS_GATE_FAILED",
+  "candidate_sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+  "candidate_tree": "ef915d9ce529da5849c3c002b7797d8394b56573",
+  "historical_source_freeze_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "historical_source_freeze_tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
+  "input_receipt": "docs/evidence/cohort-trusted-20260910-6f76949.json",
+  "runner_boundary": "disposable GitHub-hosted Ubuntu 24.04; permissions none; no secrets; no write-capable token; persist-credentials false; target dependencies not installed",
+  "holdouts_required": 3,
+  "holdouts_run": 3,
+  "untouched_holdouts": 3,
+  "false_confident_conclusions": 0,
+  "useful_determinations": 0,
+  "usefulness_threshold": {
+    "previously_frozen_threshold_met": false,
+    "interpretation": "The frozen threshold requires useful determinations; an all-UNKNOWN result is not a pass."
+  },
+  "holdouts": [
+    {
+      "cohort_id": "C03",
+      "repository": "pytest-dev/iniconfig",
+      "pinned_sha": "a0cd289631bd5b6b4b4c9dac5f524e798a0fc8c5",
+      "collection_complete": true,
+      "environment_valid": true,
+      "collected_nodes": 42,
+      "candidate_count": 1,
+      "green_gap_exit": 2,
+      "finding_states": {"UNKNOWN": 1},
+      "reason_codes": {"TRACE_INCOMPLETE": 1},
+      "relevant_trace_codes": ["CHECKOUT_SPARSE_UNKNOWN", "CHECKOUT_WORKSPACE_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN", "WORKSPACE_RESTORE_UNKNOWN"],
+      "useful_determination": false,
+      "false_confident_conclusion": false,
+      "cause_classification": "The selected CI graph restores artifacts, uses sparse checkout, and mutates the workspace before its test command; those effects are intentionally unresolved and therefore downgrade the result to UNKNOWN.",
+      "product_defect_proven": false
+    },
+    {
+      "cohort_id": "C05",
+      "repository": "pallets/markupsafe",
+      "pinned_sha": "b2e4d9c7687be25695fffbe93a37622302b24fb1",
+      "collection_complete": true,
+      "environment_valid": true,
+      "collected_nodes": 80,
+      "candidate_count": 5,
+      "green_gap_exit": 2,
+      "finding_states": {"UNKNOWN": 5},
+      "reason_codes": {"TRACE_INCOMPLETE": 5},
+      "relevant_trace_codes": ["PYTHON_RUNTIME_UNKNOWN", "WORKFLOW_EVENT_FILTER_UNKNOWN", "WORKFLOW_PATH_FILTER_UNKNOWN"],
+      "useful_determination": false,
+      "false_confident_conclusion": false,
+      "cause_classification": "The frozen workflow set contains unresolved runtime and event/path-filter selectors; the analyzer correctly refuses to infer coverage across those unknown branches.",
+      "product_defect_proven": false
+    },
+    {
+      "cohort_id": "C07",
+      "repository": "psf/requests",
+      "pinned_sha": "8f8b212de8c2129d7954c6cd373762880375620a",
+      "collection_complete": false,
+      "environment_valid": false,
+      "collected_nodes": 0,
+      "candidate_count": 9,
+      "green_gap_exit": 2,
+      "finding_states": {"UNKNOWN": 9},
+      "reason_codes": {"COLLECTION_INCOMPLETE": 9},
+      "relevant_trace_codes": ["PYTHON_RUNTIME_UNKNOWN", "WORKFLOW_EVENT_FILTER_UNKNOWN", "WORKSPACE_MUTATION_UNKNOWN"],
+      "useful_determination": false,
+      "false_confident_conclusion": false,
+      "cause_classification": "The trusted collection witness was missing or malformed under the declared no-target-dependency protocol, so GreenGap refused to infer from an incomplete collection.",
+      "product_defect_proven": false
+    }
+  ],
+  "investigation": {
+    "infrastructure_failure": false,
+    "runner_isolation_valid": true,
+    "all_results_unknown_is_accepted_as_pass": false,
+    "finding": "The usefulness gate failed because the preselected holdouts exercised unresolved workflow/environment context or an incomplete collection witness. These are coverage/protocol limitations in the evidence set, not contradictory evidence of a product defect.",
+    "product_source_reopened": false,
+    "product_change_authorized_by_this_receipt": false
+  },
+  "next_action": "Keep the cohort gate failed. A future clearance requires a predeclared supported cohort protocol that yields at least the frozen usefulness threshold while preserving fail-closed UNKNOWN semantics; do not upgrade these UNKNOWN results or silently substitute synthetic cases for the cohort."
+}

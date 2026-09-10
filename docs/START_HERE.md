@@ -27,9 +27,11 @@ defects, so source was deliberately reopened. The product fix landed at
 956285d; the current c30543a head adds only the final push-trigger test fixture
 correction after that source fix. The current candidate therefore differs from
 the historical freeze in the narrow analyzer/CLI/workflow fix and its tests;
-the current Linux receipt is bound to c30543a itself. The reusable-workflow
-success/PR/schedule cases, final artifacts, and the remaining human/owner/
-authorization gates still require closure.
+the current Linux receipt is bound to c30543a itself. The disposable
+direct-source validation set now covers PASS/no-gap, proven gap/blocking, and
+UNKNOWN at c30543a. The reusable-workflow success/PR/schedule cases, final
+artifacts, and the remaining human/owner/authorization gates still require
+closure.
 
 ## Fast verification
 
@@ -60,7 +62,7 @@ receipts are indexed in [`evidence/README.md`](evidence/README.md).
 | 3. CLI/agent interface | Independent JSON/SARIF parsing and schema validation | PASS |
 | 4. Platform reliability | Exact c30543a hosted Ubuntu/Windows matrix, audit, package, fuzz, and review checks | PASS |
 | 5. Performance | Exact-c30543a hosted Linux timing/startup/RSS and exact 6f-source Windows timing pass | PASS |
-| 6. CI/dependency security | Exact-source hosted checks plus bounded independent/security scans | PASS for observed scope; schedule/exact CodeQL scope open |
+| 6. CI/dependency security | Exact-source hosted checks, bounded independent/security scans, and the disposable PASS/gap/UNKNOWN validation set | PASS for observed scope; reusable artifact/schedule/exact CodeQL scope open |
 | 7. Packaging/provenance | Hosted package job passed; final local artifact/attestation not retained | PARTIAL |
 | 8. Documentation/onboarding | Updated handoff, evidence index, and launch report | PASS |
 | 9. Operations/maintenance | Owner confirmation is pending | BLOCKED |
@@ -77,10 +79,12 @@ candidate for stable status.
    `EXTERNAL_WORKFLOW_UNRESOLVED`/exit 2. No genuine `event=schedule` run has
    been observed. Obtain a compatible final artifact plus exact source-head
    success/PR/schedule/default-branch receiver evidence.
-2. The three untouched holdouts now have isolated trusted-collection receipts
-   with `FALSE_CONFIDENT_CONCLUSIONS=0`, but all remain UNKNOWN/exit 2 and
-   produced zero useful determinations. Complete the usefulness threshold and
-   the C11/C12 exclusion decisions for the frozen cohort.
+2. The three untouched holdouts have isolated trusted-collection receipts with
+   `FALSE_CONFIDENT_CONCLUSIONS=0`, but all remain UNKNOWN/exit 2 and produced
+   zero useful determinations. The gate is explicitly classified as
+   `COHORT_USEFULNESS_GATE_FAILED`; C11/C12 negative-shape exclusions are
+   recorded separately. Clear the failed usefulness gate only with a valid
+   predeclared cohort protocol that produces useful determinations.
 3. Run five fresh consenting human first-use sessions with at least four
    successful integrations; agent simulations do not count.
 4. Obtain accountable maintenance, support, rollback, and publication owner

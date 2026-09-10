@@ -9,7 +9,8 @@ Receipts named with `83b4` bind the earlier workflow-correction candidate
 head. Receipts named with `c30543a` bind the current candidate head, whose
 product bytes include the narrow canonical self-call fix and whose final
 follow-up commit is test-only. The exact-head hosted matrix and Linux
-performance receipts now close those machine gates; reusable-workflow artifact,
+performance receipts now close those machine gates. The disposable direct-source
+validation set is also recorded, while the reusable-workflow artifact,
 schedule, cohort-usefulness, human, owner, and authorization gates remain
 separate and open.
 
@@ -32,12 +33,15 @@ separate and open.
 | Exact-candidate disposable reusable-workflow probe | [`reusable-workflow-probe-20260910-c30543a.json`](reusable-workflow-probe-20260910-c30543a.json) |
 | Real disposable pull-request gap case | [`reusable-workflow-pr-gap-20260910-83b4.json`](reusable-workflow-pr-gap-20260910-83b4.json) |
 | Exact-candidate disposable pull-request gap case | [`reusable-workflow-pr-gap-20260910-c30543a.json`](reusable-workflow-pr-gap-20260910-c30543a.json) |
+| Exact-candidate disposable PASS/gap/UNKNOWN validation set | [`live-validation-set-20260910-c30543a.json`](live-validation-set-20260910-c30543a.json) |
 | Scheduled receiver observation | [`schedule-receiver-20260910-c30543a.json`](schedule-receiver-20260910-c30543a.json) |
 | Source, closure, branch, and PR identity | [`release-identity-20260909-6f76949.json`](release-identity-20260909-6f76949.json) |
 | Bounded independent security coverage | [`independent-security-coverage-20260909-6f76949.json`](independent-security-coverage-20260909-6f76949.json) |
 | Bounded review of post-freeze workflow corrections | [`independent-security-coverage-20260910-83b4.json`](independent-security-coverage-20260910-83b4.json) |
 | Bounded review of the canonical self-call product fix | [`independent-security-coverage-20260910-956285d.json`](independent-security-coverage-20260910-956285d.json) |
 | Isolated trusted collection for three frozen holdouts | [`cohort-trusted-20260910-6f76949.json`](cohort-trusted-20260910-6f76949.json) |
+| Trusted cohort usefulness investigation | [`cohort-usefulness-20260910-c30543a.json`](cohort-usefulness-20260910-c30543a.json) |
+| Frozen C11/C12 negative-shape decisions | [`cohort-exclusion-review-20260910-c30543a.json`](cohort-exclusion-review-20260910-c30543a.json) |
 | Human usability gate | [`human-usability-20260909-6f76949.json`](human-usability-20260909-6f76949.json) |
 | Owner confirmation gate | [`owner-confirmation-20260909-pending.json`](owner-confirmation-20260909-pending.json) |
 
@@ -57,3 +61,9 @@ The older 2026-09-08/early-2026-09-09 receipts document prior candidate
 states, package experiments, cohort acquisition, and historical measurements.
 They are preserved for traceability and are not silently upgraded to final
 source evidence.
+
+The live validation-set receipt is direct-source evidence from the exact
+candidate on a disposable runner. It covers one complete PASS/no-gap case, one
+complete blocking proven-gap case, and one fail-closed UNKNOWN case. It does
+not replace the reusable-workflow caller gate, which still requires a
+compatible final artifact and genuine schedule evidence.

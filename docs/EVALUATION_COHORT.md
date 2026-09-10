@@ -25,17 +25,19 @@ target is therefore not claimed complete.
 | C08 | pydantic/pydantic | `2261ae19e2e09f792f06613360c83fc829238111` | matrix + reusable workflows | no | acquired; safe static-only run |
 | C09 | pallets/flask | `d318b683471101618febed18996405ad26462110` | tox + scripts | no | acquired; safe static-only run |
 | C10 | pytest-dev/pytest | `0fabaa620d204fd040066eefd2a3ea2aad8d84cc` | matrix + plugins | yes | acquired; safe static-only run |
-| C11 | python/cpython | `23180c50082fe98784c78511b335d7274ed87fb7` | generated/build selection; no verified pytest workflow | no | acquired; negative-shape review |
-| C12 | scientific-python/array-api | `ff497ed83220372eb689a4fb0878c831470f93bc` | reusable workflow + matrix; no pytest reference | yes | acquired; negative-shape review |
+| C11 | python/cpython | `23180c50082fe98784c78511b335d7274ed87fb7` | generated/build selection; no verified pytest workflow | no | acquired; excluded negative shape |
+| C12 | scientific-python/array-api | `ff497ed83220372eb689a4fb0878c831470f93bc` | reusable workflow + matrix; no pytest reference | yes | acquired; excluded negative shape |
 
 Selection criteria: public repository, pytest tests, GitHub Actions workflow,
 permissive source license, at least four distinct workflow shapes, and no
-repository chosen after observing GreenGap outcomes. C11 and C12 remain
-explicitly marked for exclusion review because their current workflow shapes
-did not provide a verified pytest execution reference. The final packet must
-record URL, exact commit, license, setup command, exclusions, isolation
-profile, oracle source, candidate count, useful determinations, UNKNOWN count,
-and any holdout repair disclosure.
+repository chosen after observing GreenGap outcomes. C11 and C12 are retained
+for traceability but are excluded under the predeclared negative-shape rule
+because their current workflow shapes did not provide a verified pytest
+execution reference. The decision receipt is
+[`docs/evidence/cohort-exclusion-review-20260910-c30543a.json`](evidence/cohort-exclusion-review-20260910-c30543a.json).
+The final packet must record URL, exact commit, license, setup command,
+exclusions, isolation profile, oracle source, candidate count, useful
+determinations, UNKNOWN count, and any holdout repair disclosure.
 
 ## Acquisition and execution receipt
 
@@ -72,5 +74,10 @@ is [`docs/evidence/cohort-trusted-20260910-6f76949.json`](evidence/cohort-truste
 | C07 | incomplete, 0 nodes | exit 2; nine `UNKNOWN` / `COLLECTION_INCOMPLETE` | 0 | 0 |
 
 The three holdouts remain untouched and the false-confident-conclusion count
-is zero. The usefulness threshold is still open because all three results
-correctly remained UNKNOWN rather than producing a useful determination.
+is zero. The trusted cohort did not pass: all three results correctly
+remained UNKNOWN rather than producing a useful determination. This is a
+failed evidence-quality gate, not an infrastructure pass. The investigation
+and classification are recorded in
+[`docs/evidence/cohort-usefulness-20260910-c30543a.json`](evidence/cohort-usefulness-20260910-c30543a.json)
+as `COHORT_USEFULNESS_GATE_FAILED`; no product defect was proven and no
+UNKNOWN result was upgraded.
