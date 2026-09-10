@@ -391,7 +391,7 @@ def _plugin_config_tokens(root: Path) -> tuple[set[str], set[str]]:
 
     options, _ = pytest_config(root)
     addopts = options.get("addopts", "")
-    if isinstance(addopts, (list, tuple)):
+    if isinstance(addopts, list | tuple):
         raw = " ".join(str(item) for item in addopts)
     elif isinstance(addopts, str):
         raw = addopts
