@@ -1,0 +1,439 @@
+{
+  "artifact_type": "greengap_usefulness_recovery_root_cause_matrix",
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-10",
+  "failed_applicability_run": "34439845721",
+  "failed_applicability_status": "permanent_failed_evidence",
+  "source": {
+    "commit": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+    "tree": "89071e9aafdd92ddf7001f9ccdc60083289b5e86",
+    "probe_manifest_sha256": "c6930e5c6dbf8233d8f2e136ec519b45951458a6e9641078d04069503e951abd",
+    "remote_final_receipt_sha256": "4efc141cb2e8fd8118cf7c58dd514d346d3deddc74cad92e88a713d68fd4c848"
+  },
+  "policy": {
+    "development_corpus": ["A01", "A02", "A03", "A04", "A05", "A06", "A07", "A08", "A09"],
+    "consumed_not_future_holdouts": ["A10", "A11", "A12"],
+    "useful_results_in_matrix_are_not_independent_launch_validation": true,
+    "false_confident_conclusions_observed": 0
+  },
+  "dimension_vocabulary": {
+    "observed": "Directly present in the persisted qualification or report artifact.",
+    "not_observed": "The persisted artifact did not report this dimension as a blocker.",
+    "unknown": "The product correctly or incorrectly left the dimension unresolved; the distinction is captured in notes and reason codes.",
+    "not_applicable": "The dimension was not exercised by this qualification record."
+  },
+  "qualifications": [
+    {
+      "cohort_id": "A01",
+      "repository": "schireson/pytest-alembic",
+      "workflow": ".github/workflows/build.yml",
+      "resolver_path": "uv run --all-groups pytest src tests -q",
+      "actual_pytest_invocation": "selected-interpreter -m pytest --collect-only -q",
+      "completeness": {
+        "collection": "unknown",
+        "environment": "unknown",
+        "trace": "unknown",
+        "collection_error": "pytest collection exited with code 3"
+      },
+      "checkout_state": {
+        "status": "unknown",
+        "reason_codes": ["CHECKOUT_CLEAN_STATE_UNKNOWN"]
+      },
+      "workspace_state": {
+        "status": "unknown",
+        "reason_codes": ["WORKSPACE_MUTATION_UNKNOWN"]
+      },
+      "event_path_filter": {
+        "status": "unknown",
+        "reason_codes": ["WORKFLOW_EVENT_FILTER_UNKNOWN"]
+      },
+      "condition": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "external_action": {
+        "status": "unknown",
+        "reason_codes": ["EXTERNAL_ACTION_WORKSPACE_UNKNOWN"]
+      },
+      "pytest_plugin": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "diagnosis": {
+        "classification": "mixed_collection_and_trace_uncertainty",
+        "evidenced_hypotheses": [
+          "Target collection exited nonzero and cannot support a useful determination.",
+          "Checkout and prior-step workspace identity were not proven for the test command.",
+          "Push event filtering was not bound to complete event context."
+        ],
+        "repair_phases": [2, 3]
+      }
+    },
+    {
+      "cohort_id": "A02",
+      "repository": "pytest-dev/cookiecutter-pytest-plugin",
+      "workflow": ".github/workflows/run-checks.yml",
+      "resolver_path": "tox -e py",
+      "actual_pytest_invocation": "selected-interpreter -m pytest --collect-only -q",
+      "completeness": {
+        "collection": "complete",
+        "environment": "valid",
+        "trace": "unknown",
+        "collection_error": null
+      },
+      "checkout_state": {
+        "status": "unknown",
+        "reason_codes": ["CHECKOUT_CLEAN_STATE_UNKNOWN"]
+      },
+      "workspace_state": {
+        "status": "unknown",
+        "reason_codes": ["WORKSPACE_MUTATION_UNKNOWN"]
+      },
+      "event_path_filter": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "condition": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "external_action": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "pytest_plugin": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "diagnosis": {
+        "classification": "trace_identity_uncertainty",
+        "evidenced_hypotheses": [
+          "Collection was usable, but candidate findings remained UNKNOWN because checkout and prior-step workspace identity were not proven.",
+          "The persisted result included a candidate-not-collected finding, which must remain UNKNOWN until trace identity is complete."
+        ],
+        "repair_phases": [2, 3]
+      }
+    },
+    {
+      "cohort_id": "A03",
+      "repository": "pytest-dev/pytest-django",
+      "workflow": ".github/workflows/main.yml",
+      "resolver_path": "tox with static matrix rows",
+      "actual_pytest_invocation": "selected-interpreter -m pytest --collect-only -q",
+      "completeness": {
+        "collection": "unknown",
+        "environment": "valid",
+        "trace": "unknown",
+        "collection_error": "pytest collection exited with code 4"
+      },
+      "checkout_state": {
+        "status": "unknown",
+        "reason_codes": ["CHECKOUT_CLEAN_STATE_UNKNOWN"]
+      },
+      "workspace_state": {
+        "status": "unknown",
+        "reason_codes": ["WORKSPACE_MUTATION_UNKNOWN"]
+      },
+      "event_path_filter": {
+        "status": "unknown",
+        "reason_codes": ["WORKFLOW_EVENT_FILTER_UNKNOWN", "EXTERNAL_ACTION_UNKNOWN"]
+      },
+      "condition": {
+        "status": "unknown",
+        "reason_codes": ["CONDITION_UNKNOWN"]
+      },
+      "external_action": {
+        "status": "unknown",
+        "reason_codes": ["EXTERNAL_ACTION_UNKNOWN", "EXTERNAL_ACTION_WORKSPACE_UNKNOWN"]
+      },
+      "pytest_plugin": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "diagnosis": {
+        "classification": "mixed_collection_and_trace_uncertainty",
+        "evidenced_hypotheses": [
+          "Target collection exited nonzero and cannot support a useful determination.",
+          "Static matrix and conditional/external workflow paths remained unresolved.",
+          "Checkout and prior-step workspace identity were not proven for the test command."
+        ],
+        "repair_phases": [2, 3]
+      }
+    },
+    {
+      "cohort_id": "A04",
+      "repository": "pytest-dev/pytest-testinfra",
+      "workflow": ".github/workflows/tox.yml",
+      "resolver_path": "tox -e py311",
+      "actual_pytest_invocation": "selected-interpreter -m pytest --collect-only -q",
+      "completeness": {
+        "collection": "unknown",
+        "environment": "unknown",
+        "trace": "unknown",
+        "collection_error": "pytest collection witness was missing or malformed"
+      },
+      "checkout_state": {
+        "status": "unknown",
+        "reason_codes": ["CHECKOUT_CLEAN_STATE_UNKNOWN"]
+      },
+      "workspace_state": {
+        "status": "unknown",
+        "reason_codes": ["WORKSPACE_MUTATION_UNKNOWN"]
+      },
+      "event_path_filter": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "condition": {
+        "status": "unknown",
+        "reason_codes": ["CONDITION_UNKNOWN"]
+      },
+      "external_action": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "pytest_plugin": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "diagnosis": {
+        "classification": "collection_witness_and_trace_uncertainty",
+        "evidenced_hypotheses": [
+          "The collection witness was missing or malformed, so collection completeness is not certified.",
+          "The actual workflow command was tox -e py311; the analyzer's selected-interpreter collection must not be treated as proof of that command without binding.",
+          "Checkout and prior-step workspace identity were not proven for the test command."
+        ],
+        "repair_phases": [2, 3, 8]
+      }
+    },
+    {
+      "cohort_id": "A05",
+      "repository": "avast/pytest-docker",
+      "workflow": ".github/workflows/tests.yaml",
+      "resolver_path": "pytest -c setup.cfg",
+      "actual_pytest_invocation": "selected-interpreter -m pytest --collect-only -q",
+      "completeness": {
+        "collection": "unknown",
+        "environment": "unknown",
+        "trace": "unknown",
+        "collection_error": "pytest collection environment contains unbound pytest11 plugins: pytest_docker, pytest_mypy, pytest_pycodestyle, pytest_pylint.plugin"
+      },
+      "checkout_state": {
+        "status": "unknown",
+        "reason_codes": ["CHECKOUT_CLEAN_STATE_UNKNOWN"]
+      },
+      "workspace_state": {
+        "status": "unknown",
+        "reason_codes": ["WORKSPACE_MUTATION_UNKNOWN"]
+      },
+      "event_path_filter": {
+        "status": "unknown",
+        "reason_codes": ["WORKFLOW_PATH_FILTER_UNKNOWN"]
+      },
+      "condition": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "external_action": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "pytest_plugin": {
+        "status": "observed",
+        "reason_codes": ["UNBOUND_PYTEST11_PLUGIN_POLICY_DEFECT"],
+        "observed_entries": ["pytest_docker", "pytest_mypy", "pytest_pycodestyle", "pytest_pylint.plugin"]
+      },
+      "diagnosis": {
+        "classification": "pytest_environment_policy_defect",
+        "evidenced_hypotheses": [
+          "The analyzer enumerated pytest11 plugins from its own environment and rejected target-environment entries as unbound.",
+          "Plugin availability and loading must be resolved by the selected target interpreter, without importing plugin code just to enumerate it.",
+          "Checkout and prior-step workspace identity were also not proven."
+        ],
+        "repair_phases": [2, 4]
+      }
+    },
+    {
+      "cohort_id": "A06",
+      "repository": "microsoft/playwright-pytest",
+      "workflow": ".github/workflows/ci.yml",
+      "resolver_path": "pytest --cov=pytest_playwright",
+      "actual_pytest_invocation": "selected-interpreter -m pytest --collect-only -q",
+      "completeness": {
+        "collection": "unknown",
+        "environment": "unknown",
+        "trace": "unknown",
+        "collection_error": "pytest collection environment contains unbound pytest11 plugins: pytest_asyncio.plugin, pytest_base_url.plugin, pytest_cov.plugin, pytest_playwright.pytest_playwright, pytest_playwright_asyncio.pytest_playwright, xdist.looponfail, xdist.plugin"
+      },
+      "checkout_state": {
+        "status": "unknown",
+        "reason_codes": ["CHECKOUT_CLEAN_STATE_UNKNOWN"]
+      },
+      "workspace_state": {
+        "status": "unknown",
+        "reason_codes": ["WORKSPACE_MUTATION_UNKNOWN"]
+      },
+      "event_path_filter": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "condition": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "external_action": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "pytest_plugin": {
+        "status": "observed",
+        "reason_codes": ["UNBOUND_PYTEST11_PLUGIN_POLICY_DEFECT"],
+        "observed_entries": ["pytest_asyncio.plugin", "pytest_base_url.plugin", "pytest_cov.plugin", "pytest_playwright.pytest_playwright", "pytest_playwright_asyncio.pytest_playwright", "xdist.looponfail", "xdist.plugin"]
+      },
+      "diagnosis": {
+        "classification": "pytest_environment_policy_defect",
+        "evidenced_hypotheses": [
+          "The analyzer rejected pytest-asyncio, pytest-cov, pytest-playwright, and xdist entries as unbound because plugin discovery was not authoritative to the selected target interpreter.",
+          "Collection must disable ambient autoloading and explicitly load the selected target's deterministic plugin manifest.",
+          "Checkout and prior-step workspace identity were also not proven."
+        ],
+        "repair_phases": [2, 4]
+      }
+    },
+    {
+      "cohort_id": "A07",
+      "repository": "pytest-dev/pytest-env",
+      "workflow": ".github/workflows/check.yaml",
+      "resolver_path": "tox run --skip-pkg-install -e static matrix.env",
+      "actual_pytest_invocation": "selected-interpreter -m pytest --collect-only -q",
+      "completeness": {
+        "collection": "complete",
+        "environment": "valid",
+        "trace": "unknown",
+        "collection_error": null
+      },
+      "checkout_state": {
+        "status": "unknown",
+        "reason_codes": ["CHECKOUT_CLEAN_STATE_UNKNOWN"]
+      },
+      "workspace_state": {
+        "status": "unknown",
+        "reason_codes": ["WORKSPACE_MUTATION_UNKNOWN"]
+      },
+      "event_path_filter": {
+        "status": "unknown",
+        "reason_codes": ["WORKFLOW_EVENT_FILTER_UNKNOWN"]
+      },
+      "condition": {
+        "status": "unknown",
+        "reason_codes": ["CONDITION_UNKNOWN"]
+      },
+      "external_action": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "pytest_plugin": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "diagnosis": {
+        "classification": "trace_identity_uncertainty",
+        "evidenced_hypotheses": [
+          "Collection was usable, but checkout/workspace identity, event filtering, and a conditional path remained unresolved.",
+          "The static trace needs enough bound context to distinguish a reachable pytest command from an unproven one."
+        ],
+        "repair_phases": [2, 3]
+      }
+    },
+    {
+      "cohort_id": "A08",
+      "repository": "xmlrunner/unittest-xml-reporting",
+      "workflow": ".github/workflows/tests.yml",
+      "resolver_path": "tox run with static matrix rows",
+      "actual_pytest_invocation": "selected-interpreter -m pytest --collect-only -q",
+      "completeness": {
+        "collection": "complete",
+        "environment": "valid",
+        "trace": "unknown",
+        "collection_error": null
+      },
+      "checkout_state": {
+        "status": "unknown",
+        "reason_codes": ["CHECKOUT_CLEAN_STATE_UNKNOWN"]
+      },
+      "workspace_state": {
+        "status": "unknown",
+        "reason_codes": ["WORKSPACE_MUTATION_UNKNOWN"]
+      },
+      "event_path_filter": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "condition": {
+        "status": "unknown",
+        "reason_codes": ["CONDITION_UNKNOWN"]
+      },
+      "external_action": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "pytest_plugin": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "diagnosis": {
+        "classification": "trace_identity_uncertainty",
+        "evidenced_hypotheses": [
+          "Collection was usable, but checkout/workspace identity and conditional workflow reachability remained unresolved.",
+          "The static trace needs an explicit bound event and workspace transition model before findings can be useful."
+        ],
+        "repair_phases": [2, 3]
+      }
+    },
+    {
+      "cohort_id": "A09",
+      "repository": "TheKevJames/coveralls-python",
+      "workflow": ".github/workflows/test.yml",
+      "resolver_path": "tox",
+      "actual_pytest_invocation": "selected-interpreter -m pytest --collect-only -q",
+      "completeness": {
+        "collection": "complete",
+        "environment": "valid",
+        "trace": "unknown",
+        "collection_error": null
+      },
+      "checkout_state": {
+        "status": "unknown",
+        "reason_codes": ["CHECKOUT_CLEAN_STATE_UNKNOWN"]
+      },
+      "workspace_state": {
+        "status": "unknown",
+        "reason_codes": ["WORKSPACE_MUTATION_UNKNOWN"]
+      },
+      "event_path_filter": {
+        "status": "unknown",
+        "reason_codes": ["WORKFLOW_EVENT_FILTER_UNKNOWN"]
+      },
+      "condition": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "external_action": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "pytest_plugin": {
+        "status": "not_observed",
+        "reason_codes": []
+      },
+      "diagnosis": {
+        "classification": "trace_identity_uncertainty",
+        "evidenced_hypotheses": [
+          "Collection was usable, but checkout/workspace identity and push event filtering remained unresolved.",
+          "A complete trace must bind the workflow event and workspace transitions before a useful conclusion is possible."
+        ],
+        "repair_phases": [2, 3]
+      }
+    }
+  ]
+}
