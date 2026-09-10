@@ -3,9 +3,9 @@
   "RELEASE_VERSION": "1.0.0rc1",
   "RELEASE_SHA": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
   "RELEASE_TREE": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
-  "RELEASE_IDENTITY_STATUS": "HISTORICAL_SOURCE_FREEZE_REOPENED_FOR_CONCRETE_EXTERNAL_WORKFLOW_DEFECTS; current candidate head is separately recorded and is not yet a stable release identity",
-  "CURRENT_CANDIDATE_SHA": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
-  "CURRENT_CANDIDATE_TREE": "a91dd5ce65a98670e070b5a54177e5804db01a67",
+  "RELEASE_IDENTITY_STATUS": "HISTORICAL_SOURCE_FREEZE_REOPENED_FOR_CONCRETE_EXTERNAL_WORKFLOW_DEFECTS; current candidate head c30543a is separately recorded and is not yet a stable release identity",
+  "CURRENT_CANDIDATE_SHA": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+  "CURRENT_CANDIDATE_TREE": "ef915d9ce529da5849c3c002b7797d8394b56573",
   "LOCAL_CHECKPOINT_SHA": "272ab74cf4416ee78f5d8b95c37bf9f88ba10f10",
   "LOCAL_CHECKPOINT_TREE": "b1ac8855e5d2e782977f26c0350ad88e85b247b2",
   "CLOSURE_DOCUMENT_SHA": "ca2d25e42b443fdda2a9ac0e3bb36e244544e529",
@@ -19,7 +19,7 @@
   "INITIAL_EVIDENCE_COMMIT_SCOPE": "initial documentation-only continuation after the source freeze",
   "REMOTE_BRANCH": "release/greengap-1.0.0",
   "REMOTE_BRANCH_SHA_AT_SOURCE_FREEZE": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
-  "CURRENT_REMOTE_BRANCH_SHA": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
+  "CURRENT_REMOTE_BRANCH_SHA": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
   "PULL_REQUEST": {
     "number": 11,
     "url": "https://github.com/Smkzz/GreenGap/pull/11",
@@ -28,7 +28,7 @@
     "base": "main",
     "head_ref": "release/greengap-1.0.0",
     "head_sha_at_source_freeze": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
-    "current_head_sha": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
+    "current_head_sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
     "initial_evidence_head_sha": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
     "review_decision": "REVIEW_REQUIRED",
     "merge_state": "BLOCKED",
@@ -53,23 +53,23 @@
     },
     "4_platform_reliability": {
       "status": "PASS",
-      "evidence": "docs/evidence/hosted-ci-20260909-6f76949.json",
-      "result": "20/20 exact-source hosted checks passed across Ubuntu and Windows lanes; the exact-current-head Linux performance probe also passed."
+      "evidence": "docs/evidence/hosted-ci-20260910-c30543a.json; docs/evidence/linux-performance-probe-20260910-c30543a.json",
+      "result": "20/20 exact-current-candidate hosted checks passed across Ubuntu and Windows lanes; the exact-current-candidate Linux performance probe also passed."
     },
     "5_performance": {
       "status": "PASS",
-      "evidence": "docs/evidence/performance-methodology-20260909-final-6f76949.json; docs/evidence/linux-performance-probe-20260910-6f76949.json; docs/evidence/linux-performance-probe-20260910-83b4.json",
-      "result": "Exact-current-head 83b4 hosted Linux production/startup/RSS budgets and exact 6f-source Windows budgets passed."
+      "evidence": "docs/evidence/performance-methodology-20260909-final-6f76949.json; docs/evidence/linux-performance-probe-20260910-6f76949.json; docs/evidence/linux-performance-probe-20260910-c30543a.json",
+      "result": "Exact-current-head c30543a hosted Linux production/startup/RSS budgets and exact 6f-source Windows budgets passed."
     },
     "6_ci_dependency_security": {
       "status": "PASS",
-      "evidence": "docs/evidence/hosted-ci-20260910-83b4.json; docs/evidence/independent-security-coverage-20260910-83b4.json; docs/evidence/reusable-workflow-probe-20260910-83b4.json",
-      "result": "20/20 hosted checks and bounded post-fix security review passed; the real reusable caller remains open because the immutable pre-1.0.0 artifact and external-workflow trace cannot yet produce the required success/PR/schedule exit cases."
+      "evidence": "docs/evidence/hosted-ci-20260910-c30543a.json; docs/evidence/independent-security-coverage-20260910-83b4.json; docs/evidence/independent-security-coverage-20260910-956285d.json; docs/evidence/reusable-workflow-probe-20260910-c30543a.json; docs/evidence/schedule-receiver-20260910-c30543a.json",
+      "result": "20/20 hosted checks and bounded product-fix security review passed; the real reusable caller remains open because the immutable pre-1.0.0 artifact and external-workflow trace cannot yet produce the required success/PR/schedule exit cases, and no genuine schedule receiver run was observed."
     },
     "7_packaging_provenance": {
       "status": "PARTIAL",
-      "evidence": "docs/evidence/hosted-ci-20260909-6f76949.json",
-      "result": "Hosted package job passed, but final-source local artifacts and hosted attestation were not retained in this worktree."
+      "evidence": "docs/evidence/hosted-ci-20260910-c30543a.json",
+      "result": "Exact-candidate hosted package job passed, but final-source local artifacts and hosted attestation were not retained in this worktree."
     },
     "8_documentation_onboarding": {
       "status": "PASS",
@@ -89,7 +89,7 @@
   },
   "LAUNCH_CRITICAL_OPEN_ITEMS": 6,
   "LAUNCH_CRITICAL_OPEN_ITEM_DETAILS": [
-    "The disposable real caller exposed and repaired runtime-dependency and legacy-CLI compatibility defects, but still returns fail-closed EXTERNAL_WORKFLOW_UNRESOLVED/exit 2 against immutable v0.1.3; exact success/PR/schedule and default-branch receiver evidence is not present.",
+    "The disposable real caller exposed and repaired runtime-dependency, legacy-CLI, and canonical self-call defects, but still tests immutable v0.1.3 and returns fail-closed EXTERNAL_WORKFLOW_UNRESOLVED/exit 2; no genuine event=schedule run or exact final-artifact success/PR/schedule evidence is present.",
     "Three untouched frozen holdouts now have isolated trusted-collection receipts with false confident conclusions 0, but all three results remain UNKNOWN/exit 2, so useful determinations remain 0 and the usefulness threshold plus C11/C12 decisions remain open.",
     "Five fresh consenting human first-use sessions and four successful integrations have not been recorded.",
     "Accountable routine-maintenance, support, rollback, and publication owner confirmation is pending.",
@@ -112,9 +112,20 @@
       "tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34"
     },
     "current_candidate_head": {
-      "sha": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
-      "tree": "a91dd5ce65a98670e070b5a54177e5804db01a67",
-      "source_reopen_reason": "two concrete hosted reusable-workflow defects"
+      "sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+      "tree": "ef915d9ce529da5849c3c002b7797d8394b56573",
+      "source_reopen_reason": "three concrete hosted reusable-workflow defects; c30543a adds only the final push-trigger test fixture correction",
+      "executable_product_bytes_identical_to_historical_freeze": false,
+      "product_fix_commit": "956285d9e8cf7e7aa1cb3351b90d8135e40a2e20",
+      "test_only_follow_up_commits": [
+        "90340a1cf5dc1eed2d1a104088609f294d3a133d",
+        "c30543a4e3442a5238cf714c31f333e6cdfbb45e"
+      ],
+      "changed_product_paths": [
+        "src/greengap/trace.py",
+        "src/greengap/cli.py",
+        ".github/workflows/greengap-plan.yml"
+      ]
     },
     "local_regression": "517 passed, 1 skipped",
     "ruff": "PASS",
@@ -138,20 +149,24 @@
       "local_reason": "The managed audit environment did not have the setuptools build backend available for a final local build.",
       "old_artifacts": "Historical receipts remain separate and are not claimed for the final source freeze.",
       "publication_status": "NOT_AUTHORIZED",
-      "receipt": "docs/evidence/hosted-ci-20260909-6f76949.json"
+      "receipt": "docs/evidence/hosted-ci-20260910-c30543a.json"
     },
     "performance": {
       "receipt": "docs/evidence/performance-methodology-20260909-final-6f76949.json",
       "startup_receipt": "docs/evidence/startup-20260909-6f76949.json",
       "linux_historical_probe_receipt": "docs/evidence/linux-performance-probe-20260910-6f76949.json",
-      "linux_probe_receipt": "docs/evidence/linux-performance-probe-20260910-83b4.json",
+      "linux_probe_receipt": "docs/evidence/linux-performance-probe-20260910-c30543a.json",
       "windows_large_production_p95_seconds": 4.174669199999698,
       "windows_large_peak_rss_bytes": 79388672,
       "windows_large_production_status": "PASS",
       "linux_historical_freeze_status": "PASS",
       "linux_current_candidate_status": "PASS",
-      "linux_current_candidate_production_p95_seconds": 2.546733476,
-      "linux_current_candidate_peak_rss_bytes": 80605184,
+      "linux_current_candidate_production_p95_seconds": 3.5633049240000005,
+      "linux_current_candidate_peak_rss_bytes": 81010688,
+      "linux_current_candidate_startup_p95_seconds": {
+        "version": 0.09973512800002027,
+        "help": 0.11183696899999518
+      },
       "startup_status": "PASS"
     },
     "evaluation_cohort": {
@@ -166,26 +181,27 @@
       "status": "OPEN_USEFULNESS_THRESHOLD_AND_C11_C12_REVIEW"
     },
     "hosted": {
-      "receipt": "docs/evidence/hosted-ci-20260909-6f76949.json",
-      "exact_source_checks": "20/20 SUCCESS",
+      "receipt": "docs/evidence/hosted-ci-20260910-c30543a.json",
+      "exact_source_checks": "20/20 SUCCESS at c30543a",
       "initial_evidence_head_checks": "20/20 SUCCESS on documentation-only continuation",
       "codeql_exact_source_head": false,
-      "scheduled_default_branch_exact_source": false
+      "scheduled_default_branch_exact_source": false,
+      "schedule_observation": "No event=schedule run observed; see docs/evidence/schedule-receiver-20260910-c30543a.json"
     },
     "security": {
-      "receipt": "docs/evidence/independent-security-coverage-20260909-6f76949.json; docs/evidence/independent-security-coverage-20260910-83b4.json",
+      "receipt": "docs/evidence/independent-security-coverage-20260909-6f76949.json; docs/evidence/independent-security-coverage-20260910-83b4.json; docs/evidence/independent-security-coverage-20260910-956285d.json",
       "exact_source_standard_scan": "0 reportable findings at source checkpoint 272; tool coverage complete, semantic scope partial",
-      "final_changed_scans": "0 reportable findings across the remediation ranges through source freeze 6f76949; bounded post-reopen workflow diff 74c4547..83b4 also 0",
+      "final_changed_scans": "0 reportable findings across the remediation ranges through source freeze 6f76949; bounded post-reopen workflow diff 74c4547..83b4 and product-fix diff 83b4..956285d also 0; c30543a adds only test-fixture changes",
       "delegated_follow_up": "No remaining reportable findings in the bounded final surface; no owner approval inferred"
     },
     "workflow_bindings": {
-      "receipt": "docs/evidence/workflow-bindings-20260909-6f76949.json; docs/evidence/reusable-workflow-probe-20260910-83b4.json; docs/evidence/reusable-workflow-pr-gap-20260910-83b4.json",
+      "receipt": "docs/evidence/workflow-bindings-20260909-6f76949.json; docs/evidence/reusable-workflow-probe-20260910-c30543a.json; docs/evidence/reusable-workflow-probe-20260910-83b4.json; docs/evidence/reusable-workflow-pr-gap-20260910-c30543a.json; docs/evidence/reusable-workflow-pr-gap-20260910-83b4.json; docs/evidence/schedule-receiver-20260910-c30543a.json",
       "status": "OPEN_REAL_CALLER_EXIT_CASES_AND_EXACT_SCHEDULE_RECEIVER"
     }
   },
   "DOCUMENTATION_VALIDATION": {
     "status": "PASS",
-    "json_receipts_parsed": 48,
+    "json_receipts_parsed": 52,
     "git_diff_check": "PASS",
     "codex_test_temp_tracked": false,
     "receipt_index": "docs/evidence/README.md"
@@ -201,10 +217,10 @@
   "AUTHORIZATION_BOUNDARY": "No merge, tag, release creation, registry upload, public publication, or public verification was performed.",
   "NOTES": [
     "The report deliberately does not claim stable 1.0.0 launch completion.",
-    "The 6f source freeze remains recorded as historical evidence; source was deliberately reopened only after hosted reusable-workflow exercises proved concrete dependency and CLI compatibility defects, with current candidate head 83b4 recorded separately.",
-    "The exact 6f-source Windows and hosted Linux production timing passed the five-second budget, startup budget, and RSS budget; the exact-current-head 83b hosted Linux rerun also passed with production p95 2.546733476 seconds and peak RSS 80605184 bytes.",
+    "The 6f source freeze remains recorded as historical evidence; source was deliberately reopened after hosted reusable-workflow exercises proved concrete dependency, CLI, and canonical self-call defects, with current candidate head c30543a recorded separately.",
+    "The exact 6f-source Windows and hosted Linux production timing passed the five-second budget, startup budget, and RSS budget; the exact-current-head c30543a hosted Linux rerun also passed with production p95 3.563304924 seconds and peak RSS 81010688 bytes.",
     "The safe CLI receipts intentionally use --no-collect and preserve INCOMPLETE/exit-2 semantics; no target code is claimed to have executed in those runs.",
     "Independent Daybreak Blue reviews found and bounded the listed pre-remediation surfaces; final follow-up reported no remaining reportable finding in its scope. Independent review is not owner approval.",
-    "Hosted CI, package, dependency-review, fuzz, and Scorecard checks were successful at current candidate head 83b4, and the bounded post-reopen security diff was clean; the real reusable caller still fails closed at exit 2 and no merge, tag, release, or publication is authorized."
+    "Hosted CI, package, dependency-review, fuzz, and Scorecard checks were successful at current candidate head c30543a, and the bounded product-fix security diff was clean; the real reusable caller still fails closed at exit 2, no schedule run was observed, and no merge, tag, release, or publication is authorized."
   ]
 }

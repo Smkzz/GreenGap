@@ -8,6 +8,14 @@
   "run_url": "https://github.com/Smkzz/greengap-launch-probe-20260910/actions/runs/34415960238",
   "exact_greengap_sha": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
   "exact_greengap_tree": "a91dd5ce65a98670e070b5a54177e5804db01a67",
+  "historical_source_freeze_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "historical_source_freeze_tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
+  "executable_product_paths_unchanged": [
+    "src/",
+    "scripts/",
+    "pyproject.toml"
+  ],
+  "executable_product_bytes_identical_to_historical_freeze": true,
   "runner_image": "ubuntu-24.04",
   "architecture": "x86_64",
   "python": "3.13.15",

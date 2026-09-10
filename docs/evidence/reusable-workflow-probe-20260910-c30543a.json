@@ -1,0 +1,28 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-10",
+  "repository": "https://github.com/Smkzz/greengap-launch-probe-20260910",
+  "repository_visibility": "private_disposable_synthetic_only",
+  "workflow": ".github/workflows/probe.yml",
+  "workflow_contract_source": "Smkzz/GreenGap/.github/workflows/greengap-plan.yml",
+  "exact_candidate_sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+  "exact_candidate_tree": "ef915d9ce529da5849c3c002b7797d8394b56573",
+  "probe_workflow_head_sha": "199bb3007ecd0f759447134c6a784ccd65eae873",
+  "runtime_source_ref": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+  "release_artifact_tested": "v0.1.3",
+  "required_event": "push",
+  "run_id": 34420107706,
+  "run_url": "https://github.com/Smkzz/greengap-launch-probe-20260910/actions/runs/34420107706",
+  "expected": "success / exit 0",
+  "actual": "failure / GreenGap exit 2",
+  "report_sha256": "c6018347b6c721a815bc8d6a90528f326694688b232ff57f045cc98c161e56ea",
+  "report": {
+    "complete": false,
+    "collection_complete": true,
+    "finding_states": ["UNKNOWN", "UNKNOWN"],
+    "trace_complete": false,
+    "trace_issue_codes": ["EXTERNAL_WORKFLOW_UNRESOLVED"],
+    "changed_files": [".github/workflows/probe.yml"]
+  },
+  "interpretation": "The exact-candidate real push caller preserves fail-closed semantics, but the immutable pre-1.0.0 v0.1.3 release artifact cannot yet produce a complete reusable-workflow result for the external caller edge. This is an open artifact/release gate, not a confident gap. The required pull-request and genuine schedule cases remain open."
+}

@@ -5,12 +5,15 @@ candidate. Receipts named with `6f76949` are bound to the final source freeze
 `6f76949c47535a203ddb5a78a1f038afaecd6e88` and tree
 `bf8a2da0ac70a797c2dce32f5771edac8b501c34`. Earlier receipts are retained as
 historical records and must not be read as evidence for that source freeze.
-Receipts named with `83b4` bind the current workflow-correction candidate
-head. The exact-head Linux performance receipt now closes that timing gate;
-reusable-workflow, artifact, human, owner, and authorization gates remain
+Receipts named with `83b4` bind the earlier workflow-correction candidate
+head. Receipts named with `c30543a` bind the current candidate head, whose
+product bytes include the narrow canonical self-call fix and whose final
+follow-up commit is test-only. The exact-head hosted matrix and Linux
+performance receipts now close those machine gates; reusable-workflow artifact,
+schedule, cohort-usefulness, human, owner, and authorization gates remain
 separate and open.
 
-## Final source-freeze receipts
+## Source-bound and candidate receipts
 
 | Area | Receipt |
 | --- | --- |
@@ -20,14 +23,20 @@ separate and open.
 | Windows/Linux performance | [`performance-methodology-20260909-final-6f76949.json`](performance-methodology-20260909-final-6f76949.json) |
 | Hosted Linux exact-source performance probe | [`linux-performance-probe-20260910-6f76949.json`](linux-performance-probe-20260910-6f76949.json) |
 | Hosted Linux exact-current-head performance probe | [`linux-performance-probe-20260910-83b4.json`](linux-performance-probe-20260910-83b4.json) |
+| Hosted Linux exact-final-candidate performance probe | [`linux-performance-probe-20260910-c30543a.json`](linux-performance-probe-20260910-c30543a.json) |
 | Hosted CI, package, audit, fuzz, and Scorecard checks | [`hosted-ci-20260909-6f76949.json`](hosted-ci-20260909-6f76949.json) |
 | Hosted checks after workflow corrections | [`hosted-ci-20260910-83b4.json`](hosted-ci-20260910-83b4.json) |
+| Hosted checks at exact final candidate head | [`hosted-ci-20260910-c30543a.json`](hosted-ci-20260910-c30543a.json) |
 | Workflow event and reusable-workflow bindings | [`workflow-bindings-20260909-6f76949.json`](workflow-bindings-20260909-6f76949.json) |
 | Real disposable reusable-workflow probe | [`reusable-workflow-probe-20260910-83b4.json`](reusable-workflow-probe-20260910-83b4.json) |
+| Exact-candidate disposable reusable-workflow probe | [`reusable-workflow-probe-20260910-c30543a.json`](reusable-workflow-probe-20260910-c30543a.json) |
 | Real disposable pull-request gap case | [`reusable-workflow-pr-gap-20260910-83b4.json`](reusable-workflow-pr-gap-20260910-83b4.json) |
+| Exact-candidate disposable pull-request gap case | [`reusable-workflow-pr-gap-20260910-c30543a.json`](reusable-workflow-pr-gap-20260910-c30543a.json) |
+| Scheduled receiver observation | [`schedule-receiver-20260910-c30543a.json`](schedule-receiver-20260910-c30543a.json) |
 | Source, closure, branch, and PR identity | [`release-identity-20260909-6f76949.json`](release-identity-20260909-6f76949.json) |
 | Bounded independent security coverage | [`independent-security-coverage-20260909-6f76949.json`](independent-security-coverage-20260909-6f76949.json) |
 | Bounded review of post-freeze workflow corrections | [`independent-security-coverage-20260910-83b4.json`](independent-security-coverage-20260910-83b4.json) |
+| Bounded review of the canonical self-call product fix | [`independent-security-coverage-20260910-956285d.json`](independent-security-coverage-20260910-956285d.json) |
 | Isolated trusted collection for three frozen holdouts | [`cohort-trusted-20260910-6f76949.json`](cohort-trusted-20260910-6f76949.json) |
 | Human usability gate | [`human-usability-20260909-6f76949.json`](human-usability-20260909-6f76949.json) |
 | Owner confirmation gate | [`owner-confirmation-20260909-pending.json`](owner-confirmation-20260909-pending.json) |
