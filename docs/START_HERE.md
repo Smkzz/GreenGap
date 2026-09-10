@@ -85,10 +85,11 @@ candidate for stable status.
    zero useful determinations. The original stress result is permanently
    classified as `COHORT_USEFULNESS_GATE_FAILED`; C11/C12 negative-shape
    exclusions remain recorded separately. The new applicability cohort is
-   preregistered in
+   preregistered and deterministically selected in
    [`APPLICABILITY_COHORT_PROTOCOL_1_0.md`](APPLICABILITY_COHORT_PROTOCOL_1_0.md)
-   and must be selected, qualified, sensitivity-tested, and holdout-tested
-   before the usefulness gate can be reassessed.
+   plus the recorded selection receipt; it must still be qualified,
+   sensitivity-tested, and holdout-tested before the usefulness gate can be
+   reassessed.
 3. Run five fresh consenting human first-use sessions with at least four
    successful integrations; agent simulations do not count.
 4. Obtain accountable maintenance, support, rollback, and publication owner
