@@ -1,0 +1,33 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-09",
+  "candidate_version": "1.0.0rc1",
+  "candidate_sha": "8cf86472626c202f5648f4cb8a0ddd9321210d6f",
+  "status": "BLOCKED",
+  "required_method": {
+    "instrumentation": "none in production timing; no tracemalloc, profiler, coverage, or debugger",
+    "warmup_runs": 1,
+    "timed_runs": 5,
+    "budgets": {
+      "production_p95_seconds": 5.0,
+      "startup_seconds": 1.0,
+      "peak_rss_bytes": 536870912
+    }
+  },
+  "windows_reference": {
+    "status": "PASS",
+    "receipt": "docs/evidence/performance-methodology-20260909-final2.json",
+    "production_large_p95_seconds": 3.7252260999998725,
+    "production_large_peak_rss_bytes": 81481728,
+    "fixture_test_files": 10000
+  },
+  "linux_measurement": {
+    "status": "NOT_AVAILABLE",
+    "hosted_ci_ubuntu_tests": "PASS",
+    "performance_job_or_receipt": null,
+    "local_wsl_probe": "Wsl/EnumerateDistros/Service/E_ACCESSDENIED",
+    "local_docker_probe": "Docker API access denied at npipe:////./pipe/docker_engine",
+    "reason": "The workspace exposed no usable Linux execution substrate and the repository has no existing Linux performance workflow. No temporary benchmark workflow was added, so no Linux timing, startup, or RSS claim is made."
+  },
+  "launch_interpretation": "Linux performance remains an external launch blocker; the passing Windows production measurement and hosted Ubuntu test lanes do not substitute for Linux performance evidence."
+}

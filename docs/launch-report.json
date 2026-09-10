@@ -1,0 +1,260 @@
+{
+  "STATUS": "GREENGAP_STABLE_LAUNCH_BLOCKED",
+  "APPLICABILITY_COHORT": "FAILED_USEFULNESS_AND_SENSITIVITY",
+  "ORIGINAL_STRESS_COHORT": {
+    "role": "STRESS_COHORT",
+    "soundness": "PASS — 0 false confident conclusions",
+    "usefulness": "FAILED — 0 useful determinations",
+    "original_gate_result": "COHORT_USEFULNESS_GATE_FAILED"
+  },
+  "APPLICABILITY_COHORT_PROTOCOL": "docs/APPLICABILITY_COHORT_PROTOCOL_1_0.md",
+  "APPLICABILITY_COHORT_PREREGISTRATION": "docs/evidence/applicability-cohort-preregistration.json",
+  "APPLICABILITY_COHORT_SELECTION": "docs/evidence/applicability-cohort-selection-20260910-c30543a.json",
+  "APPLICABILITY_COHORT_EXECUTION": "docs/evidence/applicability-cohort-execution-20260910-34439845721-c30543a.json",
+  "RELEASE_VERSION": "1.0.0rc1",
+  "RELEASE_SHA": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "RELEASE_TREE": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
+  "RELEASE_IDENTITY_STATUS": "HISTORICAL_SOURCE_FREEZE_REOPENED_FOR_CONCRETE_EXTERNAL_WORKFLOW_DEFECTS; current candidate head c30543a is separately recorded and is not yet a stable release identity",
+  "CURRENT_CANDIDATE_SHA": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+  "CURRENT_CANDIDATE_TREE": "89071e9aafdd92ddf7001f9ccdc60083289b5e86",
+  "LOCAL_CHECKPOINT_SHA": "272ab74cf4416ee78f5d8b95c37bf9f88ba10f10",
+  "LOCAL_CHECKPOINT_TREE": "b1ac8855e5d2e782977f26c0350ad88e85b247b2",
+  "CLOSURE_DOCUMENT_SHA": "ca2d25e42b443fdda2a9ac0e3bb36e244544e529",
+  "CLOSURE_DOCUMENT_TREE": "0870a442f35f7af084afa96f28311e85be482906",
+  "SOURCE_IS_CLOSURE_ANCESTOR": true,
+  "BASELINE_RELEASE": "0.1.3 corrective-release content is preserved; this task did not mutate, retag, recreate, or publish it",
+  "PROMOTION_WORKTREE": "qualification/promotion-clean-ca2d25e-20260909",
+  "PROMOTION_WORKTREE_CLEAN_BEFORE_EVIDENCE": true,
+  "INITIAL_EVIDENCE_COMMIT": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
+  "INITIAL_EVIDENCE_COMMIT_TREE": "baf69d3ac33966714aa2f96d75d40184a0281f2c",
+  "INITIAL_EVIDENCE_COMMIT_SCOPE": "initial documentation-only continuation after the source freeze",
+  "REMOTE_BRANCH": "release/greengap-1.0.0",
+  "REMOTE_BRANCH_SHA_AT_SOURCE_FREEZE": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "CURRENT_REMOTE_BRANCH_SHA": "43cdc44ed3e9354fe4ae626c67671b89147b49f9",
+  "PULL_REQUEST": {
+    "number": 11,
+    "url": "https://github.com/Smkzz/GreenGap/pull/11",
+    "state": "OPEN",
+    "is_draft": false,
+    "base": "main",
+    "head_ref": "release/greengap-1.0.0",
+    "head_sha_at_source_freeze": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+    "current_head_sha": "43cdc44ed3e9354fe4ae626c67671b89147b49f9",
+    "initial_evidence_head_sha": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
+    "review_decision": "REVIEW_REQUIRED",
+    "merge_state": "BLOCKED",
+    "latest_reviews": []
+  },
+  "ACCEPTANCE_DOMAINS_PASSED": "7/10",
+  "ACCEPTANCE_DOMAINS": {
+    "1_correct_product": {
+      "status": "PASS",
+      "evidence": "docs/evidence/local-gates-20260909-6f76949.json",
+      "result": "517 passed, 1 skipped"
+    },
+    "2_safe_execution_fail_closed": {
+      "status": "PASS",
+      "evidence": "docs/evidence/local-gates-20260909-6f76949.json",
+      "result": "Safe default uses --no-collect; JSON and SARIF report INCOMPLETE with exit code 2."
+    },
+    "3_cli_agent_interface": {
+      "status": "PASS",
+      "evidence": "docs/evidence/contract-consumer-20260909-6f76949.json",
+      "result": "Six JSON documents parse; five report documents and one SARIF document validate independently."
+    },
+    "4_platform_reliability": {
+      "status": "PASS",
+      "evidence": "docs/evidence/hosted-ci-20260910-c30543a.json; docs/evidence/linux-performance-probe-20260910-c30543a.json",
+      "result": "20/20 exact-current-candidate hosted checks passed across Ubuntu and Windows lanes; the exact-current-candidate Linux performance probe and the disposable direct-source PASS/gap/UNKNOWN validation set also passed."
+    },
+    "5_performance": {
+      "status": "PASS",
+      "evidence": "docs/evidence/performance-methodology-20260909-final-6f76949.json; docs/evidence/linux-performance-probe-20260910-6f76949.json; docs/evidence/linux-performance-probe-20260910-c30543a.json",
+      "result": "Exact-current-head c30543a hosted Linux production/startup/RSS budgets and exact 6f-source Windows budgets passed."
+    },
+    "6_ci_dependency_security": {
+      "status": "PASS",
+      "evidence": "docs/evidence/hosted-ci-20260910-c30543a.json; docs/evidence/independent-security-coverage-20260910-83b4.json; docs/evidence/independent-security-coverage-20260910-956285d.json; docs/evidence/live-validation-set-20260910-c30543a.json; docs/evidence/reusable-workflow-probe-20260910-c30543a.json; docs/evidence/schedule-receiver-20260910-c30543a.json",
+      "result": "20/20 hosted checks, bounded product-fix security review, and exact-source disposable PASS/gap/UNKNOWN validation passed; the real reusable caller remains open because the immutable pre-1.0.0 artifact and external-workflow trace cannot yet produce the required success/PR/schedule exit cases, and no genuine schedule receiver run was observed."
+    },
+    "7_packaging_provenance": {
+      "status": "PARTIAL",
+      "evidence": "docs/evidence/hosted-ci-20260910-c30543a.json",
+      "result": "Exact-candidate hosted package job passed, but final-source local artifacts and hosted attestation were not retained in this worktree."
+    },
+    "8_documentation_onboarding": {
+      "status": "PASS",
+      "evidence": "docs/START_HERE.md; docs/evidence/README.md",
+      "result": "Handoff and evidence index bind historical and final-source receipts and preserve UNKNOWN/blocking semantics."
+    },
+    "9_operations_maintenance": {
+      "status": "BLOCKED",
+      "evidence": "docs/evidence/owner-confirmation-20260909-pending.json",
+      "result": "No accountable maintenance, support, rollback, or publication owner confirmation is recorded."
+    },
+    "10_authorized_launch": {
+      "status": "BLOCKED",
+      "evidence": "docs/evidence/release-identity-20260909-6f76949.json; docs/evidence/human-usability-20260909-6f76949.json",
+      "result": "Human sessions are 0/5 and no merge, tag, release, upload, or publication authorization was given."
+    }
+  },
+  "LAUNCH_CRITICAL_OPEN_ITEMS": 6,
+  "LAUNCH_CRITICAL_OPEN_ITEM_DETAILS": [
+    "The disposable real caller exposed and repaired runtime-dependency, legacy-CLI, and canonical self-call defects, but still tests immutable v0.1.3 and returns fail-closed EXTERNAL_WORKFLOW_UNRESOLVED/exit 2; the direct-source validation set covers PASS/no-gap, proven gap/blocking, and UNKNOWN, but no genuine event=schedule run or exact final-artifact reusable success/PR/schedule evidence is present.",
+    "The original three untouched frozen holdouts have isolated trusted-collection receipts with false confident conclusions 0, but all three results remain UNKNOWN/exit 2 and useful determinations remain 0. The permanent stress result is COHORT_USEFULNESS_GATE_FAILED; C11/C12 negative-shape exclusions are recorded separately. The new applicability cohort was executed in disposable hosted run 34439845721 at the frozen c30543a source: 0/12 useful determinations, 0/6 controlled omissions detected, 6/6 fixtures restored, and 0/3 useful final holdouts. A12 was setup-incomplete because the frozen hash-locked collection requirements do not pin Python 3.10's transitive exceptiongroup dependency. The applicability gate failed and promotion stopped; no product tuning or cohort replacement was performed.",
+    "Five fresh consenting human first-use sessions and four successful integrations have not been recorded.",
+    "Accountable routine-maintenance, support, rollback, and publication owner confirmation is pending.",
+    "The hosted package job passed, but final-source local artifact bytes and hosted provenance/attestation were not retained for independent readback.",
+    "Explicit authorization for merge, tag, release creation, registry/PyPI upload, publication, and public verification remains absent."
+  ],
+  "STANDARDS_PROFILE": "docs/STANDARDS_PROFILE.md",
+  "HUMAN_REVIEW_COVERAGE": {
+    "fresh_sessions_completed": 0,
+    "fresh_sessions_required": 5,
+    "required_successes": 4,
+    "successful_integrations": 0,
+    "status": "NOT_RUN_EXTERNAL_BLOCKER",
+    "agent_simulations_counted_as_human": false,
+    "receipt": "docs/evidence/human-usability-20260909-6f76949.json"
+  },
+  "MACHINE_REVIEW_COVERAGE": {
+    "source_freeze": {
+      "sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+      "tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34"
+    },
+    "current_candidate_head": {
+      "sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+      "tree": "89071e9aafdd92ddf7001f9ccdc60083289b5e86",
+      "source_reopen_reason": "three concrete hosted reusable-workflow defects; c30543a adds only the final push-trigger test fixture correction",
+      "executable_product_bytes_identical_to_historical_freeze": false,
+      "product_fix_commit": "956285d9e8cf7e7aa1cb3351b90d8135e40a2e20",
+      "test_only_follow_up_commits": [
+        "90340a1cf5dc1eed2d1a104088609f294d3a133d",
+        "c30543a4e3442a5238cf714c31f333e6cdfbb45e"
+      ],
+      "changed_product_paths": [
+        "src/greengap/trace.py",
+        "src/greengap/cli.py",
+        ".github/workflows/greengap-plan.yml"
+      ]
+    },
+    "local_regression": "517 passed, 1 skipped",
+    "ruff": "PASS",
+    "mypy": "PASS: no issues found in 13 source files",
+    "compileall": "PASS",
+    "cli_smoke": {
+      "status": "PASS_FAIL_CLOSED",
+      "json_exit": 2,
+      "json_outcome": "INCOMPLETE",
+      "sarif_exit": 2,
+      "sarif_execution_successful": false,
+      "receipt": "docs/evidence/local-gates-20260909-6f76949.json"
+    },
+    "external_consumer_validation": {
+      "status": "PASS",
+      "receipt": "docs/evidence/contract-consumer-20260909-6f76949.json"
+    },
+    "packaging": {
+      "hosted_package_job": "PASS",
+      "local_final_artifacts": "NOT_RETAINED",
+      "local_reason": "The managed audit environment did not have the setuptools build backend available for a final local build.",
+      "old_artifacts": "Historical receipts remain separate and are not claimed for the final source freeze.",
+      "publication_status": "NOT_AUTHORIZED",
+      "receipt": "docs/evidence/hosted-ci-20260910-c30543a.json"
+    },
+    "performance": {
+      "receipt": "docs/evidence/performance-methodology-20260909-final-6f76949.json",
+      "startup_receipt": "docs/evidence/startup-20260909-6f76949.json",
+      "linux_historical_probe_receipt": "docs/evidence/linux-performance-probe-20260910-6f76949.json",
+      "linux_probe_receipt": "docs/evidence/linux-performance-probe-20260910-c30543a.json",
+      "windows_large_production_p95_seconds": 4.174669199999698,
+      "windows_large_peak_rss_bytes": 79388672,
+      "windows_large_production_status": "PASS",
+      "linux_historical_freeze_status": "PASS",
+      "linux_current_candidate_status": "PASS",
+      "linux_current_candidate_production_p95_seconds": 3.5633049240000005,
+      "linux_current_candidate_peak_rss_bytes": 81010688,
+      "linux_current_candidate_startup_p95_seconds": {
+        "version": 0.09973512800002027,
+        "help": 0.11183696899999518
+      },
+      "startup_status": "PASS"
+    },
+    "evaluation_cohort": {
+      "original_role": "STRESS_COHORT",
+      "original_soundness": "PASS — 0 false confident conclusions",
+      "original_usefulness": "FAILED — 0 useful determinations",
+      "original_gate_result": "COHORT_USEFULNESS_GATE_FAILED",
+      "receipt": "docs/evidence/cohort-static-20260908.json",
+      "new_public_repositories_acquired": 5,
+      "safe_static_only_runs": 5,
+      "trusted_collection_runs": 3,
+      "trusted_holdouts": 3,
+      "useful_determinations_from_new_repositories": 0,
+      "false_confident_conclusions": 0,
+      "trusted_receipt": "docs/evidence/cohort-trusted-20260910-6f76949.json",
+      "usefulness_failure_receipt": "docs/evidence/cohort-usefulness-20260910-c30543a.json",
+      "exclusion_review_receipt": "docs/evidence/cohort-exclusion-review-20260910-c30543a.json",
+      "excluded_negative_shape_repositories": ["C11", "C12"],
+      "status": "STRESS_COHORT_USEFULNESS_FAILED_APPLICABILITY_COHORT_FAILED",
+      "applicability_protocol": "docs/APPLICABILITY_COHORT_PROTOCOL_1_0.md",
+      "applicability_preregistration": "docs/evidence/applicability-cohort-preregistration.json",
+      "applicability_selection_receipt": "docs/evidence/applicability-cohort-selection-20260910-c30543a.json",
+      "applicability_execution_receipt": "docs/evidence/applicability-cohort-execution-20260910-34439845721-c30543a.json",
+      "applicability_selection_executed": true,
+      "applicability_execution_run": "34439845721",
+      "applicability_selected_repository_count": 12,
+      "applicability_final_holdout_count": 3,
+      "applicability_useful_determinations": "0/12",
+      "applicability_final_holdout_useful": "0/3",
+      "applicability_controlled_omissions_detected": "0/6",
+      "applicability_restored_baselines_verified": "6/6",
+      "applicability_gate": "FAIL",
+      "applicability_promotion_action": "STOPPED_AT_APPLICABILITY_GATE"
+    },
+    "hosted": {
+      "receipt": "docs/evidence/hosted-ci-20260910-c30543a.json",
+      "exact_source_checks": "20/20 SUCCESS at c30543a",
+      "initial_evidence_head_checks": "20/20 SUCCESS on documentation-only continuation",
+      "codeql_exact_source_head": false,
+      "scheduled_default_branch_exact_source": false,
+      "schedule_observation": "No event=schedule run observed; see docs/evidence/schedule-receiver-20260910-c30543a.json"
+    },
+    "security": {
+      "receipt": "docs/evidence/independent-security-coverage-20260909-6f76949.json; docs/evidence/independent-security-coverage-20260910-83b4.json; docs/evidence/independent-security-coverage-20260910-956285d.json",
+      "exact_source_standard_scan": "0 reportable findings at source checkpoint 272; tool coverage complete, semantic scope partial",
+      "final_changed_scans": "0 reportable findings across the remediation ranges through source freeze 6f76949; bounded post-reopen workflow diff 74c4547..83b4 and product-fix diff 83b4..956285d also 0; c30543a adds only test-fixture changes",
+      "delegated_follow_up": "No remaining reportable findings in the bounded final surface; no owner approval inferred"
+    },
+    "workflow_bindings": {
+      "receipt": "docs/evidence/workflow-bindings-20260909-6f76949.json; docs/evidence/reusable-workflow-probe-20260910-c30543a.json; docs/evidence/reusable-workflow-probe-20260910-83b4.json; docs/evidence/reusable-workflow-pr-gap-20260910-c30543a.json; docs/evidence/reusable-workflow-pr-gap-20260910-83b4.json; docs/evidence/live-validation-set-20260910-c30543a.json; docs/evidence/schedule-receiver-20260910-c30543a.json",
+      "live_validation_set": "PASS: direct-source no-gap; PASS: direct-source proven blocking gap; PASS: direct-source fail-closed UNKNOWN",
+      "status": "OPEN_REAL_CALLER_EXIT_CASES_AND_EXACT_SCHEDULE_RECEIVER"
+    }
+  },
+  "DOCUMENTATION_VALIDATION": {
+    "status": "PASS",
+    "json_receipts_parsed": 59,
+    "git_diff_check": "PASS",
+    "codex_test_temp_tracked": false,
+    "receipt_index": "docs/evidence/README.md"
+  },
+  "PUBLISHED_CHANNELS": [],
+  "UNAUTHORIZED_CHANNELS_PUBLISHED": 0,
+  "V0_1_3_MUTATED": 0,
+  "ROUTINE_MAINTENANCE_OWNER": "PENDING_OWNER_CONFIRMATION",
+  "EVIDENCE_REPORT": "docs/launch-report.json",
+  "TOKEN_USAGE_REPORT": "docs/token-usage.json",
+  "ARTIFACTS": [],
+  "ARTIFACT_STATUS": "NOT_RETAINED_FOR_FINAL_SOURCE; no stale artifact hashes are claimed",
+  "AUTHORIZATION_BOUNDARY": "No merge, tag, release creation, registry upload, public publication, or public verification was performed.",
+  "NOTES": [
+    "The report deliberately does not claim stable 1.0.0 launch completion.",
+    "The 6f source freeze remains recorded as historical evidence; source was deliberately reopened after hosted reusable-workflow exercises proved concrete dependency, CLI, and canonical self-call defects, with current candidate head c30543a recorded separately.",
+    "The exact 6f-source Windows and hosted Linux production timing passed the five-second budget, startup budget, and RSS budget; the exact-current-head c30543a hosted Linux rerun also passed with production p95 3.563304924 seconds and peak RSS 81010688 bytes.",
+    "The safe CLI receipts intentionally use --no-collect and preserve INCOMPLETE/exit-2 semantics; no target code is claimed to have executed in those runs.",
+    "The original stress cohort is preserved as soundness PASS but usefulness FAILED with zero useful determinations; the prospective applicability protocol and preregistration were committed before the deterministic 12-repository selection. The exact selected cohort then ran in disposable hosted run 34439845721 at c30543a, but the applicability gate failed with 0/12 useful determinations, 0/6 controlled omissions detected, 6/6 restorations verified, and 0/3 useful final holdouts; A12 was setup-incomplete due the frozen Python 3.10 hash-locked collection dependency boundary.",
+    "Independent Daybreak Blue reviews found and bounded the listed pre-remediation surfaces; final follow-up reported no remaining reportable finding in its scope. Independent review is not owner approval.",
+    "Hosted CI, package, dependency-review, fuzz, and Scorecard checks were successful at current candidate head c30543a, the bounded product-fix security diff was clean, and the disposable direct-source validation set passed its PASS/gap/UNKNOWN cases; the real reusable caller still fails closed at exit 2, no schedule run was observed, the cohort usefulness gate is explicitly failed, and no merge, tag, release, or publication is authorized."
+  ]
+}

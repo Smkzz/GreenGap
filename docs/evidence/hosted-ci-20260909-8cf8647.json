@@ -1,0 +1,67 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-09",
+  "repository": "Smkzz/GreenGap",
+  "candidate_version": "1.0.0rc1",
+  "candidate_sha": "8cf86472626c202f5648f4cb8a0ddd9321210d6f",
+  "pull_request": "https://github.com/Smkzz/GreenGap/pull/11",
+  "branch": "release/greengap-1.0.0",
+  "observed_checks": {
+    "total": 20,
+    "successful": 20,
+    "failed": 0,
+    "pending": 0,
+    "source": "gh pr checks 11 --json name,state,link,workflow"
+  },
+  "exact_head_runs": [
+    {
+      "workflow": "GreenGap CI",
+      "event": "push",
+      "run_id": "34342952646",
+      "conclusion": "success",
+      "url": "https://github.com/Smkzz/GreenGap/actions/runs/34342952646"
+    },
+    {
+      "workflow": "GreenGap CI",
+      "event": "pull_request",
+      "run_id": "34342956561",
+      "conclusion": "success",
+      "url": "https://github.com/Smkzz/GreenGap/actions/runs/34342956561"
+    },
+    {
+      "workflow": "OpenSSF Scorecard",
+      "event": "pull_request",
+      "run_id": "34342956590",
+      "conclusion": "success",
+      "url": "https://github.com/Smkzz/GreenGap/actions/runs/34342956590"
+    },
+    {
+      "workflow": "ClusterFuzzLite fuzzing",
+      "event": "pull_request",
+      "run_id": "34342956557",
+      "conclusion": "success",
+      "url": "https://github.com/Smkzz/GreenGap/actions/runs/34342956557"
+    },
+    {
+      "workflow": "Dependency review",
+      "event": "pull_request",
+      "run_id": "34342956544",
+      "conclusion": "success",
+      "url": "https://github.com/Smkzz/GreenGap/actions/runs/34342956544"
+    }
+  ],
+  "matrix_covered_by_ci": [
+    "ubuntu-24.04 / Python 3.11 / minimum",
+    "ubuntu-24.04 / Python 3.12 / latest",
+    "ubuntu-24.04 / Python 3.13 / latest",
+    "ubuntu-24.04 / Python 3.14 / latest",
+    "windows-2025 / Python 3.11 / latest",
+    "windows-2025 / Python 3.14 / latest",
+    "package / wheel and sdist",
+    "dependency audit"
+  ],
+  "limitations": [
+    "The exact RC head was not merged to main; CodeQL and scheduled default-branch receivers were not run at this head.",
+    "The successful PR/push checks do not constitute owner approval or permission to merge, tag, or publish."
+  ]
+}

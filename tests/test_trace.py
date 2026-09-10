@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 
+import greengap.trace as trace_module
 from greengap.trace import (
     _github_path_pattern_regex,
     _path_patterns_match,
+    _portable_path_case_error,
     trace_github_actions,
 )
 
@@ -46,6 +50,75 @@ def test_direct_runner_shapes_are_traced(
     assert len(result.invocations) == 1
     assert result.invocations[0].kind == kind
     assert result.invocations[0].paths == paths
+
+
+def test_pytest_discovery_prunes_ignored_directories(tmp_path, monkeypatch) -> None:
+    ignored = tmp_path / "node_modules"
+    ignored.mkdir()
+    (ignored / "nested").mkdir()
+    (ignored / "nested" / "conftest.py").write_text(
+        "pytest_plugins = ['hostile_plugin']\n", encoding="utf-8"
+    )
+    write_files(tmp_path, {".github/workflows/ci.yml": workflow("pytest tests")})
+
+    original_scandir = trace_module.os.scandir
+    visited: list[Path] = []
+
+    def recording_scandir(path):
+        visited.append(Path(path))
+        return original_scandir(path)
+
+    monkeypatch.setattr(trace_module.os, "scandir", recording_scandir)
+    result = trace_github_actions(tmp_path)
+
+    assert result.invocations[0].paths == ("tests",)
+    assert not result.relevant_incomplete
+    assert ignored not in visited
+
+
+def test_pytest_discovery_deadline_fails_closed(tmp_path) -> None:
+    write_files(tmp_path, {".github/workflows/ci.yml": workflow("pytest tests")})
+
+    result = trace_github_actions(tmp_path, discovery_timeout=0.0)
+
+    assert not result.invocations
+    assert result.relevant_incomplete
+    assert any("deadline" in issue.message for issue in result.issues)
+
+
+def test_pytest_discovery_entry_limit_stops_scandir_incrementally(
+    tmp_path, monkeypatch
+) -> None:
+    for index in range(10):
+        (tmp_path / f"file-{index}.py").write_text("", encoding="utf-8")
+
+    original_scandir = trace_module.os.scandir
+    yielded = 0
+
+    class CountingScanner:
+        def __init__(self, path):
+            self._iterator = original_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            self._iterator.close()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal yielded
+            yielded += 1
+            return next(self._iterator)
+
+    monkeypatch.setattr(trace_module, "_MAX_PYTEST_DISCOVERY_ENTRIES", 2)
+    monkeypatch.setattr(trace_module.os, "scandir", CountingScanner)
+
+    resolver = trace_module._Resolver(tmp_path, discovery_timeout=10.0)
+    assert resolver._pytest_discovery_paths() is None
+    assert yielded == 3
 
 
 @pytest.mark.parametrize(
@@ -259,6 +332,426 @@ runs:
     assert result.invocations[0].paths == ("tests",)
 
 
+def test_local_composite_action_uses_call_inputs_over_workflow_inputs(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      scope: tests
+""",
+            ".github/workflows/reusable.yml": """name: reusable
+on:
+  workflow_call:
+    inputs:
+      scope:
+        type: string
+        required: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/test
+        with:
+          scope: tests/unit
+""",
+            ".github/actions/test/action.yml": """name: test
+inputs:
+  scope:
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: pytest ${{ inputs.scope }}
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert len(result.invocations) == 1
+    assert result.invocations[0].paths == ("tests/unit",)
+
+
+@pytest.mark.parametrize("value", ["false", "0", "-0"])
+def test_local_composite_action_treats_scalar_inputs_as_runtime_strings(tmp_path, value: str) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: caller
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/test
+        with:
+          enabled: {value}
+""",
+            ".github/actions/test/action.yml": """name: test
+inputs:
+  enabled:
+    default: false
+runs:
+  using: composite
+  steps:
+    - if: ${{ inputs.enabled }}
+      shell: bash
+      run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert len(result.invocations) == 1
+    assert not result.relevant_incomplete
+
+
+def test_reusable_workflow_missing_required_input_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+""",
+            ".github/workflows/reusable.yml": """name: reusable
+on:
+  workflow_call:
+    inputs:
+      scope:
+        required: true
+        type: string
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert not result.invocations
+    assert any(issue.code == "REUSABLE_INPUT_REQUIRED_MISSING" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_reusable_workflow_type_mismatch_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      enabled: not-a-bool
+""",
+            ".github/workflows/reusable.yml": """name: reusable
+on:
+  workflow_call:
+    inputs:
+      enabled:
+        required: true
+        type: boolean
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - if: ${{ inputs.enabled }}
+        run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert not result.invocations
+    assert any(issue.code == "REUSABLE_INPUT_TYPE_MISMATCH" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_reusable_workflow_missing_input_type_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+""",
+            ".github/workflows/reusable.yml": """name: reusable
+on:
+  workflow_call:
+    inputs:
+      scope:
+        required: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert not result.invocations
+    assert any(issue.code == "REUSABLE_INPUTS_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_case_walker_rejects_symlink_parent(tmp_path) -> None:
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("external", encoding="utf-8")
+    try:
+        os.symlink(outside, root / "linked", target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    assert _portable_path_case_error(root, "linked/SECRET.TXT") == (
+        "pytest path component directory is a symlink"
+    )
+
+
+def test_reusable_workflow_boolean_input_false_skips_test_step(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      enabled: false
+""",
+            ".github/workflows/reusable.yml": """name: reusable
+on:
+  workflow_call:
+    inputs:
+      enabled:
+        type: boolean
+        required: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - if: ${{ inputs.enabled }}
+        run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert not result.invocations
+    assert not result.relevant_incomplete
+
+
+def test_composite_expression_boolean_input_is_lowercase_runtime_string(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  test:
+    strategy:
+      matrix:
+        enabled: [true]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/test
+        with:
+          enabled: ${{ matrix.enabled }}
+""",
+            ".github/actions/test/action.yml": """name: test
+inputs:
+  enabled:
+    default: false
+runs:
+  using: composite
+  steps:
+    - if: ${{ inputs.enabled == 'true' }}
+      shell: bash
+      run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert len(result.invocations) == 1
+    assert not result.relevant_incomplete
+
+
+@pytest.mark.parametrize(
+    ("matrix_value", "expected"),
+    [("false", "false"), ("0", "0")],
+)
+def test_composite_expression_falsy_input_is_known_runtime_string(
+    tmp_path, matrix_value: str, expected: str
+) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": f"""name: caller
+on: push
+jobs:
+  test:
+    strategy:
+      matrix:
+        enabled: [{matrix_value}]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/test
+        with:
+          enabled: ${{{{ matrix.enabled }}}}
+""",
+            ".github/actions/test/action.yml": f"""name: test
+inputs:
+  enabled:
+    default: false
+runs:
+  using: composite
+  steps:
+    - if: ${{{{ inputs.enabled == '{expected}' }}}}
+      shell: bash
+      run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert len(result.invocations) == 1
+    assert not result.relevant_incomplete
+
+
+def test_composite_dynamic_expression_fallback_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/test
+        with:
+          enabled: ${{ needs.prepare.outputs.run_tests || 'false' }}
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo prepare
+""",
+            ".github/actions/test/action.yml": """name: test
+inputs:
+  enabled:
+    default: false
+runs:
+  using: composite
+  steps:
+    - if: ${{ inputs.enabled == 'false' }}
+      shell: bash
+      run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert not result.invocations
+    assert any(issue.code == "COMPOSITE_INPUT_UNRESOLVED" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_composite_dynamic_environment_fallback_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+env:
+  RUN_TESTS: ${{ needs.prepare.outputs.run_tests }}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/test
+        with:
+          enabled: ${{ env.RUN_TESTS || 'false' }}
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo prepare
+""",
+            ".github/actions/test/action.yml": """name: test
+inputs:
+  enabled:
+    default: false
+runs:
+  using: composite
+  steps:
+    - if: ${{ inputs.enabled == 'false' }}
+      shell: bash
+      run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, event="push")
+
+    assert not result.invocations
+    assert any(issue.code == "COMPOSITE_INPUT_UNRESOLVED" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_local_composite_action_cycle_is_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/a
+""",
+            ".github/actions/a/action.yml": """name: a
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/a
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert any(issue.code == "COMPOSITE_ACTION_CYCLE" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
 def test_local_reusable_workflow_is_resolved(tmp_path) -> None:
     write_files(
         tmp_path,
@@ -288,6 +781,58 @@ jobs:
     )
     result = trace_github_actions(tmp_path)
     assert not result.invocations
+    assert result.issues[0].code == "EXTERNAL_WORKFLOW_UNRESOLVED"
+
+
+def test_green_gap_self_reusable_workflow_is_ignored_only_in_explicit_context(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: tests
+        shell: bash
+        run: |
+          pytest tests
+""",
+            ".github/workflows/caller.yml": """name: caller
+on: push
+jobs:
+  green-gap:
+    uses: Smkzz/GreenGap/.github/workflows/greengap-plan.yml@v1.0.0
+""",
+        },
+    )
+
+    default_result = trace_github_actions(tmp_path, event="push")
+    assert default_result.relevant_incomplete
+    assert any(issue.code == "EXTERNAL_WORKFLOW_UNRESOLVED" for issue in default_result.issues)
+
+    result = trace_github_actions(tmp_path, event="push", inside_reusable_workflow=True)
+    assert result.invocations[0].paths == ("tests",)
+    assert not result.relevant_incomplete
+    assert any(issue.code == "SELF_REUSABLE_WORKFLOW_IGNORED" for issue in result.issues)
+    assert all(not issue.relevant for issue in result.issues)
+
+
+def test_noncanonical_external_reusable_workflow_remains_unknown(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: caller
+on: push
+jobs:
+  green-gap:
+    uses: another-owner/GreenGap/.github/workflows/greengap-plan.yml@v1.0.0
+""",
+        },
+    )
+    result = trace_github_actions(tmp_path, event="push", inside_reusable_workflow=True)
+    assert result.relevant_incomplete
     assert result.issues[0].code == "EXTERNAL_WORKFLOW_UNRESOLVED"
 
 

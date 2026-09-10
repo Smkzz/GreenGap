@@ -7,6 +7,7 @@ import configparser
 import contextlib
 import fnmatch
 import importlib.metadata
+import json
 import os
 import re
 import signal
@@ -16,20 +17,26 @@ import tempfile
 import threading
 import tomllib
 from collections.abc import Iterator
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic
 from typing import Any
 
+from .environment import collection_environment
 from .model import Candidate, CollectedNode, CollectionResult
 from .util import (
     MAX_COLLECTION_OUTPUT_BYTES,
     MAX_COLLECTION_SECONDS,
     MAX_CONFIG_BYTES,
+    PathInventoryLimitError,
+    PathReadContext,
     PathSafetyError,
     as_text,
-    is_transient_path,
+    bounded_filesystem_paths,
+    bounded_git_paths,
     normalize_repo_path,
+    process_group_options,
     read_limited_text,
     split_patterns,
 )
@@ -37,41 +44,25 @@ from .util import (
 DEFAULT_FILE_PATTERNS = ("test_*.py", "*_test.py")
 DEFAULT_FUNCTION_PATTERNS = ("test_*",)
 DEFAULT_CLASS_PATTERNS = ("Test*",)
+_DISCOVERY_PARALLEL_MIN_FILES = 256
+_DISCOVERY_MAX_WORKERS = 4
 
 
 def _git_candidate_paths(root: Path) -> tuple[Path, ...] | None:
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-            cwd=root,
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    result = bounded_git_paths(root, 10.0)
+    if result is None:
         return None
-    if result.returncode != 0:
-        return None
-    raw = result.stdout.decode("utf-8", errors="surrogateescape")
-    return tuple(
-        root / Path(item)
-        for item in raw.split("\0")
-        if item and not is_transient_path(item)
-    )
+    paths, error = result
+    if error is not None:
+        raise PathInventoryLimitError(error)
+    return tuple(root / Path(item) for item in paths)
 
 
 def _filesystem_candidate_paths(root: Path) -> Iterator[Path]:
-    for directory, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
-        relative_dir = Path(directory).relative_to(root)
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if name.lower() != ".git" and not is_transient_path(relative_dir / name)
-        ]
-        for filename in filenames:
-            relative = relative_dir / filename
-            if not is_transient_path(relative):
-                yield Path(directory) / filename
+    paths, error = bounded_filesystem_paths(root)
+    if error is not None:
+        raise PathInventoryLimitError(error)
+    yield from (root / Path(relative) for relative in paths)
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
@@ -154,57 +145,152 @@ def _test_symbols(
     return symbols
 
 
-def discover_candidates(root: Path) -> tuple[Candidate, ...]:
+def _inspect_candidate(
+    root: Path,
+    path: Path,
+    function_patterns: tuple[str, ...],
+    class_patterns: tuple[str, ...],
+    parent_context: PathReadContext | None = None,
+    relative: str | None = None,
+) -> Candidate:
+    if parent_context is not None:
+        record = parent_context.record(path)
+        if record is None:
+            return Candidate(
+                path.as_posix(),
+                "low",
+                (),
+                "candidate path was not prepared for safe batch inspection",
+            )
+        relative = relative or path.relative_to(root).as_posix()
+        is_symlink = record[1]
+    else:
+        try:
+            relative = normalize_repo_path(root, path)
+        except PathSafetyError as exc:
+            return Candidate(
+                path.as_posix(),
+                "low",
+                (),
+                f"candidate path is unsafe and was not inspected: {exc}",
+            )
+        is_symlink = path.is_symlink()
+    if is_symlink:
+        return Candidate(
+            relative,
+            "low",
+            (),
+            "symlink test candidate is not inspected by default",
+        )
+    try:
+        tree = ast.parse(
+            read_limited_text(
+                path,
+                MAX_CONFIG_BYTES,
+                parent_context=parent_context,
+            ),
+            filename=relative,
+        )
+    except (OSError, ValueError, SyntaxError, UnicodeError) as exc:
+        return Candidate(
+            relative, "low", (), f"filename matched but AST inspection failed: {exc}"
+        )
+    symbols = tuple(_test_symbols(tree, function_patterns, class_patterns))
+    if symbols:
+        return Candidate(relative, "high", symbols, "pytest-style symbols found")
+    return Candidate(
+        relative, "low", (), "filename matched without a recognizable pytest symbol"
+    )
+
+
+def _inspect_candidate_batch(
+    root: Path,
+    entries: tuple[tuple[Path, str], ...],
+    function_patterns: tuple[str, ...],
+    class_patterns: tuple[str, ...],
+    parent_context: PathReadContext | None,
+) -> tuple[Candidate, ...]:
+    return tuple(
+        _inspect_candidate(
+            root,
+            path,
+            function_patterns,
+            class_patterns,
+            parent_context,
+            relative,
+        )
+        for path, relative in entries
+    )
+
+
+def discover_candidates(
+    root: Path,
+    *,
+    read_context: PathReadContext | None = None,
+) -> tuple[Candidate, ...]:
     options, _ = pytest_config(root)
     file_patterns = split_patterns(options.get("python_files"), DEFAULT_FILE_PATTERNS)
     function_patterns = split_patterns(options.get("python_functions"), DEFAULT_FUNCTION_PATTERNS)
     class_patterns = split_patterns(options.get("python_classes"), DEFAULT_CLASS_PATTERNS)
-    candidates: list[Candidate] = []
     git_paths = _git_candidate_paths(root)
     paths = _filesystem_candidate_paths(root) if git_paths is None else iter(git_paths)
-    for path in paths:
-        filename = path.name
-        if not _matches(filename, file_patterns) or not filename.endswith(".py"):
-            continue
-        try:
-            relative = normalize_repo_path(root, path)
-        except PathSafetyError as exc:
-            candidates.append(
-                Candidate(
-                    path.as_posix(),
-                    "low",
-                    (),
-                    f"candidate path is unsafe and was not inspected: {exc}",
+    candidate_entries = tuple(
+        (path, path.relative_to(root).as_posix())
+        for path in paths
+        if _matches(path.name, file_patterns) and path.name.endswith(".py")
+    )
+    candidate_paths = tuple(path for path, _ in candidate_entries)
+    context = read_context or PathReadContext(root)
+    context_error = context.prepare(candidate_paths)
+    batch_context: PathReadContext | None = context
+    if context_error is not None:
+        batch_context = None
+    if len(candidate_paths) >= _DISCOVERY_PARALLEL_MIN_FILES:
+        workers = min(_DISCOVERY_MAX_WORKERS, len(candidate_paths))
+        chunk_size = (len(candidate_paths) + workers - 1) // workers
+        chunks = tuple(
+            candidate_entries[index : index + chunk_size]
+            for index in range(0, len(candidate_paths), chunk_size)
+        )
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            candidates = tuple(
+                candidate
+                for future in tuple(
+                    executor.submit(
+                        _inspect_candidate_batch,
+                        root,
+                        chunk,
+                        function_patterns,
+                        class_patterns,
+                        batch_context,
+                    )
+                    for chunk in chunks
                 )
+                for candidate in future.result()
             )
-            continue
-        if path.is_symlink():
-            candidates.append(
-                Candidate(
-                    relative,
-                    "low",
-                    (),
-                    "symlink test candidate is not inspected by default",
-                )
+    else:
+        candidates = tuple(
+            _inspect_candidate(
+                root,
+                path,
+                function_patterns,
+                class_patterns,
+                batch_context,
+                relative,
             )
-            continue
-        try:
-            tree = ast.parse(read_limited_text(path, MAX_CONFIG_BYTES), filename=relative)
-        except (OSError, ValueError, SyntaxError, UnicodeError) as exc:
-            candidates.append(
-                Candidate(
-                    relative, "low", (), f"filename matched but AST inspection failed: {exc}"
+            for path, relative in candidate_entries
+        )
+    if batch_context is not None:
+        context_error = batch_context.verify()
+        if context_error is not None:
+            candidates = tuple(
+                replace(
+                    candidate,
+                    confidence="low",
+                    symbols=(),
+                    reason=f"{candidate.reason}; {context_error}",
                 )
-            )
-            continue
-        symbols = tuple(_test_symbols(tree, function_patterns, class_patterns))
-        if symbols:
-            candidates.append(Candidate(relative, "high", symbols, "pytest-style symbols found"))
-        else:
-            candidates.append(
-                Candidate(
-                    relative, "low", (), "filename matched without a recognizable pytest symbol"
-                )
+                for candidate in candidates
             )
     return tuple(sorted(candidates, key=lambda item: item.path))
 
@@ -234,6 +320,47 @@ def _parse_nodes(root: Path, stdout: str, stderr: str) -> tuple[CollectedNode, .
     return tuple(sorted(nodes.values(), key=lambda item: item.nodeid))
 
 
+def _parse_collection_witness(
+    root: Path, path: Path
+) -> tuple[tuple[CollectedNode, ...] | None, str | None]:
+    try:
+        payload = json.loads(read_limited_text(path, MAX_CONFIG_BYTES))
+    except (OSError, ValueError, UnicodeError, RecursionError, MemoryError):
+        return None, "pytest collection witness was missing or malformed"
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return None, "pytest collection witness version is unsupported"
+    records = payload.get("nodes")
+    if not isinstance(records, list):
+        return None, "pytest collection witness nodes are not a list"
+    nodes: dict[str, CollectedNode] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            return None, "pytest collection witness contains an invalid node"
+        nodeid = record.get("nodeid")
+        raw_path = record.get("path")
+        if not isinstance(nodeid, str) or not isinstance(raw_path, str) or "::" not in nodeid:
+            return None, "pytest collection witness contains an unverifiable node"
+        node_path = nodeid.split("::", 1)[0]
+        try:
+            relative = normalize_repo_path(root, raw_path)
+            node_relative = normalize_repo_path(root, node_path)
+        except PathSafetyError:
+            return None, "pytest collection witness contains a path outside the checkout"
+        if relative != node_relative:
+            return None, "pytest collection witness node path does not match its file path"
+        candidate = root / Path(relative)
+        try:
+            if candidate.is_symlink() or not candidate.is_file():
+                return None, "pytest collection witness references a non-regular file"
+        except OSError:
+            return None, "pytest collection witness file could not be verified"
+        existing = nodes.get(nodeid)
+        if existing is not None and existing.path != relative:
+            return None, "pytest collection witness contains conflicting node paths"
+        nodes[nodeid] = CollectedNode(nodeid, relative)
+    return tuple(sorted(nodes.values(), key=lambda item: item.nodeid)), None
+
+
 def _looks_environment_invalid(output: str) -> bool:
     lowered = output.lower()
     return any(
@@ -249,27 +376,103 @@ def _looks_environment_invalid(output: str) -> bool:
     )
 
 
+def _normalize_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value.strip().lower()).strip("-")
+
+
+def _requirement_distribution_name(value: str) -> str | None:
+    text = value.strip()
+    if not text or text.startswith("#"):
+        return None
+    egg = re.search(r"#egg=([A-Za-z0-9][A-Za-z0-9_.-]*)", text, re.IGNORECASE)
+    if egg is not None:
+        return _normalize_distribution_name(egg.group(1))
+    if text.startswith(("-r", "--requirement", "-c", "--constraint")):
+        return None
+    if text.startswith(("-e ", "--editable ")):
+        text = text.split(None, 1)[1]
+        egg = re.search(r"#egg=([A-Za-z0-9][A-Za-z0-9_.-]*)", text, re.IGNORECASE)
+        return _normalize_distribution_name(egg.group(1)) if egg is not None else None
+    match = re.match(r"([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)", text)
+    return _normalize_distribution_name(match.group(1)) if match else None
+
+
+def _declared_project_distributions(root: Path) -> frozenset[str]:
+    """Extract dependency names without treating arbitrary manifest text as code."""
+
+    distributions: set[str] = set()
+
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        data = _read_toml(pyproject)
+        project = data.get("project", {})
+        if isinstance(project, dict):
+            dependencies = project.get("dependencies", [])
+            if isinstance(dependencies, list):
+                for dependency in dependencies:
+                    if isinstance(dependency, str):
+                        name = _requirement_distribution_name(dependency)
+                        if name:
+                            distributions.add(name)
+            optional = project.get("optional-dependencies", {})
+            if isinstance(optional, dict):
+                for values in optional.values():
+                    if isinstance(values, list):
+                        for dependency in values:
+                            if isinstance(dependency, str):
+                                name = _requirement_distribution_name(dependency)
+                                if name:
+                                    distributions.add(name)
+        tool = data.get("tool", {})
+        poetry = tool.get("poetry", {}) if isinstance(tool, dict) else {}
+        poetry_dependencies = poetry.get("dependencies", {}) if isinstance(poetry, dict) else {}
+        if isinstance(poetry_dependencies, dict):
+            for dependency in poetry_dependencies:
+                if dependency.lower() != "python":
+                    name = _normalize_distribution_name(str(dependency))
+                    if name:
+                        distributions.add(name)
+
+    for filename in ("requirements.txt", "requirements-dev.txt", "test-requirements.txt"):
+        path = root / filename
+        if not path.is_file():
+            continue
+        try:
+            lines = read_limited_text(path, MAX_CONFIG_BYTES).splitlines()
+        except (OSError, ValueError, UnicodeError):
+            return frozenset()
+        for line in lines:
+            name = _requirement_distribution_name(line)
+            if name:
+                distributions.add(name)
+
+    setup_cfg = root / "setup.cfg"
+    if setup_cfg.is_file():
+        parser = configparser.ConfigParser(interpolation=None, strict=False)
+        try:
+            parser.read_string(read_limited_text(setup_cfg, MAX_CONFIG_BYTES))
+        except (OSError, ValueError, UnicodeError, configparser.Error):
+            return frozenset()
+        for section in ("options", "options.extras_require"):
+            if parser.has_option(section, "install_requires"):
+                values = parser.get(section, "install_requires").splitlines()
+                for value in values:
+                    name = _requirement_distribution_name(value)
+                    if name:
+                        distributions.add(name)
+            if parser.has_section(section) and section == "options.extras_require":
+                for _, value in parser.items(section):
+                    name = _requirement_distribution_name(value)
+                    if name:
+                        distributions.add(name)
+
+    return frozenset(distributions)
+
+
 def _explicit_project_plugin_args(root: Path) -> tuple[str, ...]:
     """Load only marker plugins declared by the repository and used by its source."""
 
-    manifest_text: list[str] = []
-    for name in (
-        "pyproject.toml",
-        "pytest.ini",
-        "tox.ini",
-        "setup.cfg",
-        "setup.py",
-        "requirements.txt",
-        "requirements-dev.txt",
-        "test-requirements.txt",
-    ):
-        path = root / name
-        if path.is_file():
-            try:
-                manifest_text.append(read_limited_text(path, MAX_CONFIG_BYTES))
-            except (OSError, ValueError, UnicodeError):
-                return ()
-    normalized_manifests = re.sub(r"[-_.]+", "-", "\n".join(manifest_text).lower())
+    declared_distributions = _declared_project_distributions(root)
     marker_names: set[str] = set()
     try:
         candidate_paths = _git_candidate_paths(root)
@@ -293,7 +496,7 @@ def _explicit_project_plugin_args(root: Path) -> tuple[str, ...]:
         distribution = getattr(entry_point, "dist", None)
         distribution_name = getattr(distribution, "name", "")
         normalized_name = re.sub(r"[-_.]+", "-", str(distribution_name).lower())
-        if not normalized_name or normalized_name not in normalized_manifests:
+        if not normalized_name or normalized_name not in declared_distributions:
             continue
         entry_name = str(entry_point.name).lower()
         if entry_name not in {name.lower() for name in marker_names}:
@@ -340,9 +543,7 @@ class _BoundedProcessResult:
 def _process_group_options() -> dict[str, Any]:
     """Start collection in an isolated process group/session."""
 
-    if os.name == "nt":
-        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
-    return {"start_new_session": True}
+    return process_group_options()
 
 
 def _create_windows_job(process: subprocess.Popen[Any]) -> Any | None:
@@ -548,10 +749,35 @@ def _run_pytest_bounded(
     )
 
 
-def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
-    """Run the actual pytest collector; never replace it with AST emulation."""
+def collection_disabled(reason: str = "pytest collection is disabled") -> CollectionResult:
+    """Represent the safe, non-executing inspection mode."""
 
-    environment = os.environ.copy()
+    return CollectionResult(
+        complete=False,
+        # The analyzer itself is healthy; only the evidence-producing step was
+        # deliberately withheld.  This keeps the result UNKNOWN without
+        # misclassifying a user's explicit safety choice as an environment bug.
+        environment_valid=True,
+        error=reason,
+    )
+
+
+def collect_pytest(
+    root: Path,
+    timeout: float = 60.0,
+    python_executable: str | None = None,
+) -> CollectionResult:
+    """Run the selected project's pytest collector; never emulate collection."""
+
+    selected_python = python_executable or sys.executable
+    if not selected_python.strip():
+        return CollectionResult(
+            complete=False,
+            environment_valid=False,
+            error="the selected Python interpreter is empty",
+        )
+
+    environment = collection_environment()
     ambient = tuple(
         name
         for name in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD")
@@ -580,19 +806,28 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
             ),
         )
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    environment["NO_COLOR"] = "1"
+    environment["PY_COLORS"] = "0"
     src = root / "src"
+    analyzer_src = Path(__file__).resolve().parents[1]
     if src.is_dir():
         # Do not let an analyst's ambient import path change collection.  The
         # repository source directory is the only extra import root GreenGap
         # intentionally supplies.
-        environment["PYTHONPATH"] = str(src)
+        environment["PYTHONPATH"] = os.pathsep.join((str(analyzer_src), str(src)))
     else:
-        environment.pop("PYTHONPATH", None)
+        environment["PYTHONPATH"] = str(analyzer_src)
     with tempfile.TemporaryDirectory(prefix="greengap-pytest-cache-") as cache_dir:
+        for name in ("TEMP", "TMP", "TMPDIR"):
+            environment[name] = cache_dir
+        collection_file = Path(cache_dir) / "collection-witness.json"
+        environment["GREENGAP_COLLECTION_FILE"] = str(collection_file)
         args = [
-            sys.executable,
+            selected_python,
             "-m",
             "pytest",
+            "-p",
+            "greengap._collection_plugin",
             *_explicit_project_plugin_args(root),
             # GreenGap's ``root`` is the checkout boundary.  Without this,
             # pytest can walk above a nested checkout and adopt an analyst
@@ -613,6 +848,7 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
                 environment_valid=False,
                 error=f"could not start pytest: {exc}",
             )
+        witness_nodes, witness_error = _parse_collection_witness(root, collection_file)
 
     stdout = completed.stdout
     stderr = completed.stderr
@@ -637,7 +873,16 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
             error=f"pytest collection timed out after {min(max(timeout, 0.01), MAX_COLLECTION_SECONDS):g}s",
             timed_out=True,
         )
-    nodes = _parse_nodes(root, stdout, stderr)
+    if witness_nodes is None:
+        return CollectionResult(
+            complete=False,
+            environment_valid=False,
+            stdout=stdout,
+            stderr=stderr,
+            returncode=completed.returncode,
+            error=witness_error,
+        )
+    nodes = witness_nodes
     combined = stdout + "\n" + stderr
     no_tests = "no tests collected" in combined.lower() or "collected 0 items" in combined.lower()
     complete = completed.returncode == 0 or (completed.returncode == 5 and no_tests)
@@ -656,6 +901,23 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
 
 
 def scan_pytest(
-    root: Path, timeout: float = 60.0
+    root: Path,
+    timeout: float = 60.0,
+    *,
+    python_executable: str | None = None,
+    collect: bool = True,
+    read_context: PathReadContext | None = None,
 ) -> tuple[tuple[Candidate, ...], CollectionResult]:
-    return discover_candidates(root), collect_pytest(root, timeout)
+    collection = (
+        collect_pytest(root, timeout, python_executable)
+        if collect
+        else collection_disabled(
+            "pytest collection is disabled; pass --trust-collection only for a trusted checkout"
+        )
+    )
+    try:
+        candidates = discover_candidates(root, read_context=read_context)
+    except PathInventoryLimitError as exc:
+        collection = replace(collection, complete=False, error=str(exc))
+        candidates = ()
+    return candidates, collection

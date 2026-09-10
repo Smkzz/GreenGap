@@ -9,6 +9,8 @@ import json
 import os
 import re
 import shlex
+import stat
+import time
 import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -19,10 +21,13 @@ import yaml
 
 from .model import PytestInvocation, TraceIssue, TraceResult
 from .util import (
+    MAX_CHANGED_FILE_BYTES,
+    MAX_CHANGED_FILES,
     MAX_CONFIG_BYTES,
     MAX_MATRIX_ROWS,
     MAX_WORKFLOW_FILES,
     PathSafetyError,
+    _is_reparse_point,
     normalize_repo_path,
     read_limited_text,
     safe_resolve,
@@ -31,6 +36,8 @@ from .util import (
 MAX_DEPTH = 12
 MAX_YAML_DEPTH = 64
 _NEUTRAL_SHELL = "neutral"
+_GREENGAP_REUSABLE_REPOSITORY = ("smkzz", "greengap")
+_GREENGAP_REUSABLE_WORKFLOW_PATH = (".github", "workflows", "greengap-plan.yml")
 _EXPRESSION = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 _ASSIGNMENT = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:=)\s*(.*)$")
 _VARIABLE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
@@ -185,6 +192,42 @@ _PYTEST_CONFIG_NAMES = (
     "setup.cfg",
 )
 _PYTEST_CONFIG_IGNORED_PARTS = {".git", ".venv", ".tox", ".nox", "venv"}
+_PYTEST_DISCOVERY_IGNORED_PARTS = {
+    ".git",
+    ".mypy_cache",
+    ".nox",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+}
+_MAX_PYTEST_DISCOVERY_ENTRIES = 50_000
+_MAX_PYTEST_DISCOVERY_BYTES = 64 * 1024 * 1024
+_MAX_PYTEST_DISCOVERY_SECONDS = 10.0
+_NATIVE_LOADER_ENVIRONMENT = frozenset(
+    {
+        "LD_PRELOAD",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_DEBUG",
+        "LD_DEBUG_OUTPUT",
+        "LD_PROFILE",
+        "LD_ORIGIN_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FRAMEWORK_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        "DYLD_VERSIONED_LIBRARY_PATH",
+        "DYLD_FALLBACK_FRAMEWORK_PATH",
+    }
+)
+_NATIVE_LOADER_PREFIXES = ("LD_", "DYLD_")
+_MAX_PATH_CASE_ENTRIES = 4_096
 
 
 def _merge_workspace_state(left: WorkspaceState, right: WorkspaceState) -> WorkspaceState:
@@ -204,6 +247,10 @@ class _Context:
     workspace_state: WorkspaceState = PROVEN_READ_ONLY
     workflow_event_context: str | None = None
     runner_os: str | None = None
+
+
+class _UnknownExpression(str):
+    """String marker that must not be mistaken for a known context value."""
 
 
 def _scalar(value: Any) -> str | None:
@@ -231,24 +278,57 @@ def _lookup(name: str, context: _Context) -> Any | None:
     return None
 
 
+def _expression_lookup(name: str, context: _Context) -> tuple[Any | None, bool]:
+    """Return a statically supported expression value and its support status."""
+
+    pieces = name.strip().split(".")
+    if len(pieces) != 2:
+        return None, False
+    scope, key = pieces
+    if scope == "matrix":
+        return context.matrix.get(key), True
+    if scope == "env":
+        value = context.env.get(key)
+        return (None, False) if isinstance(value, _UnknownExpression) else (value, True)
+    if scope == "inputs":
+        return context.inputs.get(key), True
+    if scope == "github" and key == "event_name":
+        return context.event_context, True
+    return None, False
+
+
 def _expression_value(expression: str, context: _Context) -> str | None:
     expression = expression.strip()
-    for part in (part.strip() for part in expression.split("||")):
+    parts = [part.strip() for part in expression.split("||")]
+    for index, part in enumerate(parts):
         if part.startswith("format(") and part.endswith(")"):
             inner = part[len("format(") : -1]
             match = re.match(r"\s*(['\"])(.*?)\1\s*,\s*(.*?)\s*$", inner)
             if not match:
                 return None
             template, argument = match.group(2), match.group(3)
-            value = _lookup(argument, context)
-            if value is None:
+            value, supported = _expression_lookup(argument, context)
+            if not supported or value is None:
                 return None
-            return template.replace("{0}", str(value))
+            scalar = _scalar(value)
+            return None if scalar is None else template.replace("{0}", scalar)
         if len(part) >= 2 and part[0] == part[-1] and part[0] in "'\"":
-            return part[1:-1]
-        value = _lookup(part, context)
-        if value is not None and str(value) != "":
-            return str(value)
+            scalar = part[1:-1]
+            if _github_truthy(scalar) or index == len(parts) - 1:
+                return scalar
+            continue
+        value, supported = _expression_lookup(part, context)
+        if not supported:
+            return None
+        if value is None:
+            if index < len(parts) - 1:
+                continue
+            return None
+        scalar = _scalar(value)
+        if scalar is None:
+            return None
+        if _github_truthy(value) or index == len(parts) - 1:
+            return scalar
     return None
 
 
@@ -273,7 +353,7 @@ def _condition_value(value: Any, context: _Context | None = None) -> bool | None
     if context is not None:
         direct = _lookup(stripped, context)
         if direct is not None:
-            return bool(direct)
+            return _github_truthy(direct)
         match = re.fullmatch(
             r"([A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\s*(==|!=)\s*(['\"])(.*?)\3",
             stripped,
@@ -298,6 +378,20 @@ def _condition_value(value: Any, context: _Context | None = None) -> bool | None
                 return text_actual.startswith(suffix)
             return text_actual.endswith(suffix)
     return None
+
+
+def _github_truthy(value: Any) -> bool:
+    """Match GitHub expression falsy values for statically known inputs."""
+
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return value != 0
+    if isinstance(value, str):
+        return value != ""
+    return True
 
 
 def _structure_too_deep(value: Any, limit: int = MAX_YAML_DEPTH) -> bool:
@@ -1044,9 +1138,16 @@ def _casefold_repo_matches(root: Path, relative: str) -> tuple[Path, ...] | None
         next_paths: list[Path] = []
         for parent in current:
             try:
+                info = parent.lstat()
+                if (
+                    stat.S_ISLNK(info.st_mode)
+                    or _is_reparse_point(info)
+                    or not stat.S_ISDIR(info.st_mode)
+                ):
+                    return None
                 entries = parent.iterdir()
                 for inspected, entry in enumerate(entries, start=1):
-                    if inspected > 4096:
+                    if inspected > _MAX_PATH_CASE_ENTRIES:
                         return None
                     if entry.name.casefold() == part.casefold():
                         next_paths.append(entry)
@@ -1078,11 +1179,19 @@ def _portable_path_case_error(root: Path, relative: str) -> str | None:
         next_paths: list[Path] = []
         for parent in current:
             try:
-                matches = [
-                    entry
-                    for entry in parent.iterdir()
-                    if entry.name.casefold() == part.casefold()
-                ]
+                info = parent.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    return "pytest path component directory is a symlink"
+                if _is_reparse_point(info):
+                    return "pytest path component directory is a Windows reparse point"
+                if not stat.S_ISDIR(info.st_mode):
+                    return "pytest path component parent is not a directory"
+                matches: list[Path] = []
+                for inspected, entry in enumerate(parent.iterdir(), start=1):
+                    if inspected > _MAX_PATH_CASE_ENTRIES:
+                        return "pytest path component directory is too large to inspect safely"
+                    if entry.name.casefold() == part.casefold():
+                        matches.append(entry)
             except OSError:
                 return "pytest path component could not be inspected safely"
             if len(matches) > 1:
@@ -1231,15 +1340,6 @@ def _safe_python_code(tokens: tuple[str, ...]) -> bool:
     return True
 
 
-def _known_read_only_python_script(tokens: tuple[str, ...]) -> bool:
-    """Recognize the explicit check-only mode of the unasync helper."""
-
-    if len(tokens) < 3 or not _basename(tokens[0]).startswith("python"):
-        return False
-    script = tokens[1].replace("\\", "/").lower()
-    return (script == "scripts/unasync.py" or script.endswith("/scripts/unasync.py")) and tokens[2:] == ("--check",)
-
-
 def _safe_setup_command(tokens: tuple[str, ...]) -> bool:
     """Recognize commands that cannot select or execute the test suite by themselves."""
 
@@ -1264,8 +1364,6 @@ def _safe_setup_command(tokens: tuple[str, ...]) -> bool:
         return len(tokens) > 1 and tokens[1] in {"erase", "combine", "xml", "report"}
     if first.startswith("python"):
         if len(tokens) == 1:
-            return True
-        if _known_read_only_python_script(tokens):
             return True
         if "-c" in tokens:
             return _safe_python_code(tokens)
@@ -1600,6 +1698,16 @@ def _startup_environment_unknown(
 
     core = _command_core_tokens(tokens)
     first = _basename(core[0]) if core else ""
+    if any(
+        str(value) != ""
+        for name, value in environment.items()
+        if str(name).upper() in _NATIVE_LOADER_ENVIRONMENT
+        or str(name).upper().startswith(_NATIVE_LOADER_PREFIXES)
+    ):
+        return (
+            "NATIVE_LOADER_ENV_UNKNOWN",
+            "native loader environment can preload or redirect code before the command runs",
+        )
     bash_shells = {"bash", "sh", "zsh", "dash"}
     if environment.get("BASH_ENV", "").strip() and (
         shell in bash_shells or shell == _NEUTRAL_SHELL or first in bash_shells
@@ -2144,8 +2252,6 @@ def _workspace_effect_for_tokens(
             if module in _SAFE_PYTHON_MODULES:
                 return MODELED_STATE_TRANSITION
             return UNKNOWN_SIDE_EFFECT
-        if _known_read_only_python_script(core):
-            return MODELED_STATE_TRANSITION
         # A Python script, stdin program, or dynamically selected executable
         # can rewrite any repository byte.  Only explicit read-only diagnostics
         # and the audited module allowlist are safe here.
@@ -2835,15 +2941,55 @@ def _env_mapping(value: Any, context: _Context) -> tuple[dict[str, str], bool]:
             complete = False
             continue
         resolved, known = resolve_expressions(text, context)
-        result[str(key)] = resolved
+        result[str(key)] = resolved if known else _UnknownExpression(resolved)
         complete = complete and known
     return result, complete
+
+
+def _static_workflow_input(value: Any, context: _Context) -> tuple[Any, bool]:
+    if isinstance(value, bool | int | float):
+        return value, True
+    text = _scalar(value)
+    if text is None:
+        return None, False
+    return resolve_expressions(text, context)
+
+
+def _coerce_workflow_input(value: Any, input_type: str) -> Any | None:
+    if input_type == "string":
+        if isinstance(value, bool | int | float):
+            return _scalar(value)
+        return value if isinstance(value, str) else None
+    if input_type == "boolean":
+        return value if isinstance(value, bool) else None
+    if input_type == "number":
+        return value if isinstance(value, int | float) and not isinstance(value, bool) else None
+    return None
+
+
+def _workflow_input_default(input_type: str) -> Any:
+    return {"string": "", "boolean": False, "number": 0}[input_type]
 
 
 def _relative_matrix(row: dict[str, Any]) -> str:
     if not row:
         return "default"
     return ",".join(f"{key}={row[key]}" for key in sorted(row))
+
+
+def _is_greengap_self_reusable_workflow(uses: str) -> bool:
+    """Recognize only GreenGap's canonical external self-call."""
+
+    reference = uses.split("@")
+    if len(reference) != 2 or not reference[1]:
+        return False
+    path = reference[0].split("/")
+    return (
+        len(path) == 5
+        and tuple(part.casefold() for part in path[:2]) == _GREENGAP_REUSABLE_REPOSITORY
+        and tuple(part.casefold() for part in path[2:])
+        == _GREENGAP_REUSABLE_WORKFLOW_PATH
+    )
 
 
 class _Resolver:
@@ -2859,6 +3005,9 @@ class _Resolver:
         commit_count: int | None = None,
         changed_file_count: int | None = None,
         diff_timed_out: bool = False,
+        workspace_clean: bool | None = None,
+        discovery_timeout: float | None = None,
+        inside_reusable_workflow: bool = False,
     ) -> None:
         self.root = root.resolve()
         self.event_context = event_context
@@ -2869,6 +3018,14 @@ class _Resolver:
         self.commit_count = commit_count
         self.changed_file_count = changed_file_count
         self.diff_timed_out = diff_timed_out
+        self.workspace_clean = workspace_clean
+        self.inside_reusable_workflow = inside_reusable_workflow
+        budget_seconds = (
+            _MAX_PYTEST_DISCOVERY_SECONDS
+            if discovery_timeout is None
+            else min(max(discovery_timeout, 0.0), _MAX_PYTEST_DISCOVERY_SECONDS)
+        )
+        self._pytest_discovery_deadline = time.monotonic() + budget_seconds
         self.invocations: list[PytestInvocation] = []
         self.issues: list[TraceIssue] = []
         self.workflows: list[str] = []
@@ -2876,21 +3033,42 @@ class _Resolver:
             self.changed_files: tuple[str, ...] | None = None
         else:
             normalized: list[str] = []
-            for changed_file in changed_files:
+            total_bytes = 0
+            for index, changed_file in enumerate(changed_files):
+                if index >= MAX_CHANGED_FILES:
+                    self.issue(
+                        "CHANGED_FILE_SET_LIMIT",
+                        f"changed-file evidence exceeds limit of {MAX_CHANGED_FILES} files",
+                        ("changed-files",),
+                    )
+                    self.change_set_complete = False
+                    break
+                raw_changed_file = str(changed_file)
+                total_bytes += len(os.fsencode(raw_changed_file))
+                if total_bytes > MAX_CHANGED_FILE_BYTES:
+                    self.issue(
+                        "CHANGED_FILE_SET_LIMIT",
+                        f"changed-file evidence exceeds byte limit of {MAX_CHANGED_FILE_BYTES}",
+                        ("changed-files",),
+                    )
+                    self.change_set_complete = False
+                    break
                 try:
-                    normalized.append(normalize_repo_path(self.root, changed_file))
+                    normalized.append(normalize_repo_path(self.root, raw_changed_file))
                 except PathSafetyError as exc:
                     self.issue(
                         "CHANGED_FILE_UNKNOWN",
                         f"changed file is outside the repository or unsafe: {exc}",
-                        (str(changed_file),),
+                        (raw_changed_file,),
                     )
             self.changed_files = tuple(dict.fromkeys(normalized))
         self._workflow_stack: set[Path] = set()
+        self._self_reusable_workflow_ignored = False
         self._script_stack: set[Path] = set()
         self._make_stack: set[tuple[Path, str]] = set()
         self._package_stack: set[tuple[Path, str]] = set()
         self._tox_stack: set[Path] = set()
+        self._composite_stack: set[Path] = set()
         self._workflow_events: dict[str, set[str]] = {}
         self._workflow_event_kinds: dict[str, set[str]] = {}
         self._workflow_path_filters: set[str] = set()
@@ -2901,6 +3079,10 @@ class _Resolver:
         self._pytest_context_config_error: str | None = None
         self._pytest_portable_paths_checked = False
         self._pytest_portable_paths_issue: str | None = None
+        self._pytest_discovery_checked = False
+        self._pytest_discovery_paths_value: tuple[Path, ...] | None = ()
+        self._pytest_discovery_error: str | None = None
+        self._pytest_discovery_bytes_read = 0
 
     def issue(
         self, code: str, message: str, provenance: tuple[str, ...], relevant: bool = True
@@ -3170,14 +3352,26 @@ class _Resolver:
             return self._trace_result((), tuple(self.issues), ())
         if not workflow_dir.is_dir():
             return self._trace_result((), (), ())
+        paths_list: list[Path] = []
         try:
-            paths = tuple(
-                sorted(
-                    path
-                    for path in workflow_dir.iterdir()
-                    if path.suffix.lower() in {".yml", ".yaml"}
-                )
-            )
+            for inspected, path in enumerate(workflow_dir.iterdir(), start=1):
+                if inspected > MAX_WORKFLOW_FILES:
+                    self.issue(
+                        "WORKFLOW_COUNT_LIMIT",
+                        f"workflow directory contains more than {MAX_WORKFLOW_FILES} entries",
+                        (".github/workflows",),
+                    )
+                    break
+                if path.suffix.lower() not in {".yml", ".yaml"}:
+                    continue
+                if len(paths_list) >= MAX_WORKFLOW_FILES:
+                    self.issue(
+                        "WORKFLOW_COUNT_LIMIT",
+                        f"workflow directory contains more than {MAX_WORKFLOW_FILES} files",
+                        (".github/workflows",),
+                    )
+                    break
+                paths_list.append(path)
         except OSError as exc:
             self.issue(
                 "WORKFLOW_ENUMERATION_ERROR",
@@ -3185,13 +3379,7 @@ class _Resolver:
                 (".github/workflows",),
             )
             return self._trace_result((), tuple(self.issues), ())
-        if len(paths) > MAX_WORKFLOW_FILES:
-            self.issue(
-                "WORKFLOW_COUNT_LIMIT",
-                f"workflow directory contains {len(paths)} files; limit is {MAX_WORKFLOW_FILES}",
-                (".github/workflows",),
-            )
-            paths = paths[:MAX_WORKFLOW_FILES]
+        paths = tuple(sorted(paths_list))
         for path in paths:
             try:
                 relative = normalize_repo_path(self.root, path)
@@ -3609,6 +3797,19 @@ class _Resolver:
             )
             return
         if not uses.startswith("./"):
+            if (
+                self.inside_reusable_workflow
+                and not self._self_reusable_workflow_ignored
+                and _is_greengap_self_reusable_workflow(uses)
+            ):
+                self._self_reusable_workflow_ignored = True
+                self.issue(
+                    "SELF_REUSABLE_WORKFLOW_IGNORED",
+                    "GreenGap's canonical external reusable-workflow self-call is the active analyzer",
+                    context.provenance,
+                    relevant=False,
+                )
+                return
             self.issue(
                 "EXTERNAL_WORKFLOW_UNRESOLVED",
                 f"external reusable workflow {uses!r} was not fetched",
@@ -3629,20 +3830,9 @@ class _Resolver:
                 context.provenance,
             )
             return
-        inputs: dict[str, Any] = {}
-        raw_with = job.get("with", {})
-        if isinstance(raw_with, dict):
-            for key, raw in raw_with.items():
-                text = _scalar(raw)
-                if text is not None:
-                    resolved, known = resolve_expressions(text, context)
-                    if not known:
-                        self.issue(
-                            "REUSABLE_INPUT_UNRESOLVED",
-                            f"input {key!r} is dynamic",
-                            context.provenance,
-                        )
-                    inputs[str(key)] = resolved
+        inputs = self._reusable_input_values(target, context, job)
+        if inputs is None:
+            return
         self._resolve_workflow(
             target,
             replace(
@@ -3654,6 +3844,136 @@ class _Resolver:
                 provenance=context.provenance + (f"uses:{normalize_repo_path(self.root, target)}",),
             ),
         )
+
+    def _reusable_input_values(
+        self, target: Path, context: _Context, job: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Validate a local reusable workflow call before tracing its steps."""
+
+        data = self._load_yaml(target, context.provenance)
+        if data is None:
+            return None
+        yaml_data = cast(dict[Any, Any], data)
+        raw_events = yaml_data["on"] if "on" in yaml_data else yaml_data.get(True)
+        if not isinstance(raw_events, dict) or "workflow_call" not in raw_events:
+            self.issue(
+                "REUSABLE_WORKFLOW_CONTRACT_UNKNOWN",
+                f"reusable workflow {target} has no workflow_call declaration",
+                context.provenance,
+            )
+            return None
+        raw_call = raw_events.get("workflow_call")
+        if raw_call is None:
+            raw_call = {}
+        if not isinstance(raw_call, dict):
+            self.issue(
+                "REUSABLE_INPUTS_UNKNOWN",
+                f"workflow_call declaration in {target} is not statically enumerable",
+                context.provenance,
+            )
+            return None
+        raw_inputs = raw_call.get("inputs", {})
+        if raw_inputs is None:
+            raw_inputs = {}
+        if not isinstance(raw_inputs, dict):
+            self.issue(
+                "REUSABLE_INPUTS_UNKNOWN",
+                f"workflow_call inputs in {target} are not statically enumerable",
+                context.provenance,
+            )
+            return None
+        contracts: dict[str, tuple[str, bool, bool, Any]] = {}
+        for key, definition in raw_inputs.items():
+            if not isinstance(key, str) or not isinstance(definition, dict):
+                self.issue(
+                    "REUSABLE_INPUTS_UNKNOWN",
+                    f"input definition {key!r} in {target} is not a mapping",
+                    context.provenance,
+                )
+                return None
+            input_type = definition.get("type")
+            required = definition.get("required", False)
+            if not isinstance(input_type, str) or input_type not in {
+                "string",
+                "boolean",
+                "number",
+            } or not isinstance(required, bool):
+                self.issue(
+                    "REUSABLE_INPUTS_UNKNOWN",
+                    f"input definition {key!r} in {target} has an unsupported type or required flag",
+                    context.provenance,
+                )
+                return None
+            default_present = "default" in definition
+            default_value: Any = None
+            if default_present:
+                default_value, known = _static_workflow_input(definition["default"], context)
+                if not known:
+                    self.issue(
+                        "REUSABLE_INPUT_UNRESOLVED",
+                        f"default for input {key!r} in {target} is dynamic",
+                        context.provenance,
+                    )
+                    return None
+                default_value = _coerce_workflow_input(default_value, input_type)
+                if default_value is None:
+                    self.issue(
+                        "REUSABLE_INPUT_TYPE_MISMATCH",
+                        f"default for input {key!r} in {target} does not match type {input_type!r}",
+                        context.provenance,
+                    )
+                    return None
+            contracts[key] = (input_type, required, default_present, default_value)
+
+        raw_with = job.get("with", {})
+        if not isinstance(raw_with, dict):
+            self.issue(
+                "REUSABLE_INPUTS_UNKNOWN",
+                f"with values for {target} are not statically enumerable",
+                context.provenance,
+            )
+            return None
+        for key in raw_with:
+            if not isinstance(key, str) or key not in contracts:
+                self.issue(
+                    "REUSABLE_INPUT_UNKNOWN",
+                    f"caller supplied undeclared reusable input {key!r}",
+                    context.provenance,
+                )
+                return None
+
+        inputs: dict[str, Any] = {}
+        for key, (input_type, required, default_present, default_value) in contracts.items():
+            if key in raw_with:
+                value, known = _static_workflow_input(raw_with[key], context)
+                if not known:
+                    self.issue(
+                        "REUSABLE_INPUT_UNRESOLVED",
+                        f"input {key!r} is dynamic",
+                        context.provenance,
+                    )
+                    return None
+                value = _coerce_workflow_input(value, input_type)
+                if value is None:
+                    self.issue(
+                        "REUSABLE_INPUT_TYPE_MISMATCH",
+                        f"input {key!r} does not match reusable type {input_type!r}",
+                        context.provenance,
+                    )
+                    return None
+            elif default_present:
+                value = default_value
+            elif required:
+                self.issue(
+                    "REUSABLE_INPUT_REQUIRED_MISSING",
+                    f"required reusable input {key!r} was not supplied",
+                    context.provenance,
+                )
+                return None
+            else:
+                value = _workflow_input_default(input_type)
+            inputs[key] = value
+        return inputs
 
     def _resolve_steps(
         self,
@@ -3867,7 +4187,10 @@ class _Resolver:
                     action_dir = self._resolve_path(uses[2:], self.root, provenance)
                     if action_dir is not None:
                         nested_state = self._resolve_composite(
-                            action_dir, replace(step_context, workspace_state=workspace_state), default_shell
+                            action_dir,
+                            replace(step_context, workspace_state=workspace_state),
+                            default_shell,
+                            raw_step.get("with"),
                         )
                         workspace_state = _merge_workspace_state(workspace_state, nested_state)
                     else:
@@ -3918,6 +4241,17 @@ class _Resolver:
                                     )
                                 self.issue(code, message, provenance)
                             if configured:
+                                workspace_state = UNKNOWN_SIDE_EFFECT
+                            elif self.workspace_clean is True:
+                                workspace_state = _merge_workspace_state(
+                                    workspace_state, MODELED_STATE_TRANSITION
+                                )
+                            else:
+                                self.issue(
+                                    "CHECKOUT_CLEAN_STATE_UNKNOWN",
+                                    "actions/checkout defaults to clean=true but the analyzed workspace is not proven clean",
+                                    provenance,
+                                )
                                 workspace_state = UNKNOWN_SIDE_EFFECT
                     if action_name in _WORKSPACE_RESTORING_ACTIONS:
                         raw_with = raw_step.get("with")
@@ -4064,7 +4398,39 @@ class _Resolver:
         return MODELED_STATE_TRANSITION
 
     def _resolve_composite(
-        self, action_dir: Path, context: _Context, default_shell: str | None
+        self,
+        action_dir: Path,
+        context: _Context,
+        default_shell: str | None,
+        raw_with: Any = None,
+    ) -> WorkspaceState:
+        action_key = action_dir.resolve(strict=False)
+        if action_key in self._composite_stack:
+            self.issue(
+                "COMPOSITE_ACTION_CYCLE",
+                "local composite action resolution contains a cycle",
+                context.provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+        if len(self._composite_stack) >= MAX_DEPTH:
+            self.issue(
+                "RESOLUTION_DEPTH_EXCEEDED",
+                "local composite action resolution depth exceeded",
+                context.provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+        self._composite_stack.add(action_key)
+        try:
+            return self._resolve_composite_inner(action_dir, context, default_shell, raw_with)
+        finally:
+            self._composite_stack.remove(action_key)
+
+    def _resolve_composite_inner(
+        self,
+        action_dir: Path,
+        context: _Context,
+        default_shell: str | None,
+        raw_with: Any = None,
     ) -> WorkspaceState:
         action_relative = normalize_repo_path(self.root, action_dir)
         action_file: Path | None = None
@@ -4114,10 +4480,90 @@ class _Resolver:
                 context.provenance,
             )
             return UNKNOWN_SIDE_EFFECT
+        action_inputs = data.get("inputs", {})
+        if action_inputs is None:
+            action_inputs = {}
+        if not isinstance(action_inputs, dict):
+            self.issue(
+                "COMPOSITE_INPUTS_UNKNOWN",
+                f"inputs in {action_file} are not statically enumerable",
+                context.provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+        if raw_with is None:
+            raw_with = {}
+        if not isinstance(raw_with, dict):
+            self.issue(
+                "COMPOSITE_INPUTS_UNKNOWN",
+                f"with values for {action_file} are not statically enumerable",
+                context.provenance,
+            )
+            return UNKNOWN_SIDE_EFFECT
+        inputs: dict[str, Any] = {}
+        inputs_complete = True
+        for key, definition in action_inputs.items():
+            if not isinstance(definition, dict):
+                self.issue(
+                    "COMPOSITE_INPUTS_UNKNOWN",
+                    f"input definition {key!r} in {action_file} is not a mapping",
+                    context.provenance,
+                )
+                return UNKNOWN_SIDE_EFFECT
+            if "default" not in definition:
+                continue
+            default = definition["default"]
+            if isinstance(default, bool | int | float):
+                inputs[str(key)] = _scalar(default)
+                continue
+            text = _scalar(default)
+            if text is None:
+                self.issue(
+                    "COMPOSITE_INPUT_UNRESOLVED",
+                    f"default for composite input {key!r} is not static",
+                    context.provenance,
+                )
+                inputs_complete = False
+                continue
+            resolved, known = resolve_expressions(text, context)
+            if not known:
+                self.issue(
+                    "COMPOSITE_INPUT_UNRESOLVED",
+                    f"default for composite input {key!r} is dynamic",
+                    context.provenance,
+                )
+                inputs_complete = False
+                continue
+            inputs[str(key)] = resolved
+        for key, raw in raw_with.items():
+            if isinstance(raw, bool | int | float):
+                inputs[str(key)] = _scalar(raw)
+                continue
+            text = _scalar(raw)
+            if text is None:
+                self.issue(
+                    "COMPOSITE_INPUT_UNRESOLVED",
+                    f"value for composite input {key!r} is not static",
+                    context.provenance,
+                )
+                inputs_complete = False
+                continue
+            resolved, known = resolve_expressions(text, context)
+            if not known:
+                self.issue(
+                    "COMPOSITE_INPUT_UNRESOLVED",
+                    f"value for composite input {key!r} is dynamic",
+                    context.provenance,
+                )
+                inputs_complete = False
+                continue
+            inputs[str(key)] = resolved
+        if not inputs_complete:
+            return UNKNOWN_SIDE_EFFECT
         return self._resolve_steps(
             runs.get("steps", []),
             replace(
                 context,
+                inputs=inputs,
                 provenance=context.provenance
                 + (f"composite:{normalize_repo_path(self.root, action_dir)}",),
             ),
@@ -4670,8 +5116,6 @@ class _Resolver:
                         state = UNKNOWN_SIDE_EFFECT
                         continue
                 elif len(tokens) > 1:
-                    if _known_read_only_python_script(tokens):
-                        continue
                     self.issue(
                         "PYTHON_EXECUTION_UNKNOWN",
                         "python script or stdin execution can rewrite repository bytes",
@@ -4858,6 +5302,102 @@ class _Resolver:
             return None, "only uv run is supported"
         return None, "uv run may synchronize project-controlled code before the command"
 
+    def _pytest_discovery_paths(self) -> tuple[Path, ...] | None:
+        """Enumerate pytest-relevant paths once with pruning and hard budgets."""
+
+        if self._pytest_discovery_checked:
+            return self._pytest_discovery_paths_value
+        self._pytest_discovery_checked = True
+        paths: list[Path] = []
+        pending = [self.root]
+        entries_seen = 0
+        try:
+            while pending:
+                if time.monotonic() >= self._pytest_discovery_deadline:
+                    self._pytest_discovery_error = (
+                        "pytest discovery exceeded its bounded deadline"
+                    )
+                    self._pytest_discovery_paths_value = None
+                    return None
+                directory = pending.pop()
+                with os.scandir(directory) as iterator:
+                    entries = []
+                    for entry in iterator:
+                        if time.monotonic() >= self._pytest_discovery_deadline:
+                            self._pytest_discovery_error = (
+                                "pytest discovery exceeded its bounded deadline"
+                            )
+                            self._pytest_discovery_paths_value = None
+                            return None
+                        entries_seen += 1
+                        if entries_seen > _MAX_PYTEST_DISCOVERY_ENTRIES:
+                            self._pytest_discovery_error = (
+                                "pytest discovery exceeded its bounded entry limit"
+                            )
+                            self._pytest_discovery_paths_value = None
+                            return None
+                        entries.append(entry)
+                    entries.sort(key=lambda entry: entry.name.casefold())
+                    if time.monotonic() >= self._pytest_discovery_deadline:
+                        self._pytest_discovery_error = (
+                            "pytest discovery exceeded its bounded deadline"
+                        )
+                        self._pytest_discovery_paths_value = None
+                        return None
+                    for entry in entries:
+                        if time.monotonic() >= self._pytest_discovery_deadline:
+                            self._pytest_discovery_error = (
+                                "pytest discovery exceeded its bounded deadline"
+                            )
+                            self._pytest_discovery_paths_value = None
+                            return None
+                        try:
+                            is_symlink = entry.is_symlink()
+                            is_directory = entry.is_dir(follow_symlinks=False)
+                        except OSError as exc:
+                            self._pytest_discovery_error = (
+                                f"pytest discovery could not inspect {entry.name!r}: {exc}"
+                            )
+                            self._pytest_discovery_paths_value = None
+                            return None
+                        if (
+                            is_directory
+                            and entry.name.casefold() in _PYTEST_DISCOVERY_IGNORED_PARTS
+                        ):
+                            continue
+                        path = Path(entry.path)
+                        paths.append(path)
+                        if is_directory:
+                            pending.append(path)
+                            continue
+                        if is_symlink:
+                            continue
+        except OSError as exc:
+            self._pytest_discovery_error = f"pytest discovery could not be completed safely: {exc}"
+            self._pytest_discovery_paths_value = None
+            return None
+        self._pytest_discovery_paths_value = tuple(paths)
+        return self._pytest_discovery_paths_value
+
+    def _account_pytest_discovery_bytes(self, amount: int) -> None:
+        if time.monotonic() >= self._pytest_discovery_deadline:
+            raise OSError("pytest discovery exceeded its bounded deadline")
+        if self._pytest_discovery_bytes_read + amount > _MAX_PYTEST_DISCOVERY_BYTES:
+            raise OSError("pytest discovery exceeded its bounded byte budget")
+        self._pytest_discovery_bytes_read += amount
+
+    def _pytest_read_limited_text(self, path: Path) -> str:
+        self._account_pytest_discovery_bytes(MAX_CONFIG_BYTES)
+        text = read_limited_text(path, MAX_CONFIG_BYTES)
+        self._account_pytest_discovery_bytes(0)
+        return text
+
+    def _pytest_config_addopts_bounded(self, path: Path) -> tuple[bool, Any]:
+        self._account_pytest_discovery_bytes(MAX_CONFIG_BYTES)
+        result = _pytest_config_addopts(path)
+        self._account_pytest_discovery_bytes(0)
+        return result
+
     def _pytest_project_plugin_error(self) -> str | None:
         """Find repository-declared plugin surfaces that change pytest execution.
 
@@ -4903,7 +5443,7 @@ class _Resolver:
                     return self._pytest_plugin_declaration_error
                 if not path.is_file():
                     continue
-                text = read_limited_text(path, MAX_CONFIG_BYTES)
+                text = self._pytest_read_limited_text(path)
             except (OSError, ValueError, UnicodeError):
                 self._pytest_plugin_declaration_error = (
                     f"pytest plugin configuration {name!r} could not be read safely"
@@ -4931,8 +5471,15 @@ class _Resolver:
             "setup.py",
         }
         inspected_configs = 0
+        discovery_paths = self._pytest_discovery_paths()
+        if discovery_paths is None:
+            self._pytest_plugin_declaration_error = (
+                self._pytest_discovery_error
+                or "pytest plugin discovery could not be completed safely"
+            )
+            return self._pytest_plugin_declaration_error
         try:
-            for path in self.root.rglob("*"):
+            for path in discovery_paths:
                 if path.name.lower() not in config_names:
                     continue
                 if path.is_symlink():
@@ -4952,7 +5499,7 @@ class _Resolver:
                     )
                     return self._pytest_plugin_declaration_error
                 try:
-                    text = read_limited_text(path, MAX_CONFIG_BYTES)
+                    text = self._pytest_read_limited_text(path)
                 except (OSError, ValueError, UnicodeError):
                     self._pytest_plugin_declaration_error = (
                         f"pytest plugin configuration {relative.as_posix()!r} could not be read safely"
@@ -4971,7 +5518,9 @@ class _Resolver:
 
         inspected = 0
         try:
-            for path in self.root.rglob("*.py"):
+            for path in discovery_paths:
+                if path.suffix.casefold() != ".py":
+                    continue
                 try:
                     relative = path.relative_to(self.root)
                 except ValueError:
@@ -4993,7 +5542,7 @@ class _Resolver:
                     )
                     return self._pytest_plugin_declaration_error
                 try:
-                    text = read_limited_text(path, MAX_CONFIG_BYTES)
+                    text = self._pytest_read_limited_text(path)
                 except (OSError, ValueError, UnicodeError):
                     self._pytest_plugin_declaration_error = (
                         f"pytest plugin source {relative.as_posix()!r} could not be read safely"
@@ -5043,8 +5592,15 @@ class _Resolver:
         self._pytest_context_config_checked = True
         candidates: list[Path] = []
         inspected = 0
+        discovery_paths = self._pytest_discovery_paths()
+        if discovery_paths is None:
+            self._pytest_context_config_error = (
+                self._pytest_discovery_error
+                or "pytest configuration discovery could not be completed safely"
+            )
+            return None
         try:
-            for path in self.root.rglob("*"):
+            for path in discovery_paths:
                 if path.name.casefold() not in _PYTEST_CONFIG_NAMES:
                     continue
                 if path.name not in _PYTEST_CONFIG_NAMES:
@@ -5078,7 +5634,7 @@ class _Resolver:
                         "pytest configuration discovery is not safely bounded"
                     )
                     return None
-                recognized, _ = _pytest_config_addopts(path)
+                recognized, _ = self._pytest_config_addopts_bounded(path)
                 if recognized:
                     candidates.append(path.resolve())
         except OSError:
@@ -5106,8 +5662,15 @@ class _Resolver:
         self._pytest_portable_paths_checked = True
         seen: dict[str, str] = {}
         inspected = 0
+        discovery_paths = self._pytest_discovery_paths()
+        if discovery_paths is None:
+            self._pytest_portable_paths_issue = (
+                self._pytest_discovery_error
+                or "pytest path discovery could not be completed safely"
+            )
+            return self._pytest_portable_paths_issue
         try:
-            for path in self.root.rglob("*"):
+            for path in discovery_paths:
                 try:
                     relative = path.relative_to(self.root)
                 except ValueError:
@@ -5507,7 +6070,7 @@ class _Resolver:
                         return (), f"pytest configuration {name!r} is a symlink"
                     if not path.is_file():
                         continue
-                    recognized, addopts = _pytest_config_addopts(path)
+                    recognized, addopts = self._pytest_config_addopts_bounded(path)
                 except OSError:
                     return (), f"pytest configuration {name!r} could not be read safely"
                 if not recognized:
@@ -5547,8 +6110,14 @@ class _Resolver:
         # active for a selected target.  Refuse that ambiguity rather than
         # silently reconstructing argv from the wrong rootdir.
         inspected = 0
+        discovery_paths = self._pytest_discovery_paths()
+        if discovery_paths is None:
+            return (), (
+                self._pytest_discovery_error
+                or "pytest configuration discovery could not be completed safely"
+            )
         try:
-            for path in self.root.rglob("*"):
+            for path in discovery_paths:
                 if path.name.lower() not in config_names:
                     continue
                 if path.is_symlink():
@@ -5560,7 +6129,7 @@ class _Resolver:
                 inspected += 1
                 if inspected > 4096:
                     return (), "pytest configuration discovery is not safely bounded"
-                recognized, addopts = _pytest_config_addopts(path)
+                recognized, addopts = self._pytest_config_addopts_bounded(path)
                 if not recognized:
                     continue
                 try:
@@ -6299,7 +6868,14 @@ class _Resolver:
             return None
         try:
             data = json.loads(read_limited_text(path, MAX_CONFIG_BYTES))
-        except (OSError, ValueError, UnicodeError, json.JSONDecodeError):
+        except (
+            OSError,
+            ValueError,
+            UnicodeError,
+            json.JSONDecodeError,
+            RecursionError,
+            MemoryError,
+        ):
             return None
         scripts = data.get("scripts", {}) if isinstance(data, dict) else {}
         if not isinstance(scripts, dict):
@@ -6456,6 +7032,10 @@ def trace_github_actions(
     commit_count: int | None = None,
     changed_file_count: int | None = None,
     diff_timed_out: bool = False,
+    *,
+    workspace_clean: bool | None = None,
+    discovery_timeout: float | None = None,
+    inside_reusable_workflow: bool = False,
 ) -> TraceResult:
     return _Resolver(
         root,
@@ -6468,4 +7048,7 @@ def trace_github_actions(
         commit_count,
         changed_file_count,
         diff_timed_out,
+        workspace_clean,
+        discovery_timeout,
+        inside_reusable_workflow,
     ).trace()

@@ -86,7 +86,7 @@ jobs:
       - name: Build distributions
         run: |
           python -m pip install --require-hashes -r .github/requirements-package.txt
-          python -m build
+          python -m build --no-isolation
           python -m twine check dist/*
       - name: Inspect wheel contents and install exact wheel
         run: |

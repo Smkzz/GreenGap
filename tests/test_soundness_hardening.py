@@ -495,6 +495,37 @@ def test_junit_case_limit_is_explicit(monkeypatch, tmp_path) -> None:
         parse_junit(path)
 
 
+def test_junit_nonfinite_time_is_not_serialized(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "results.xml"
+    path.write_text("<testsuite><testcase name='a' time='NaN'/></testsuite>", encoding="utf-8")
+
+    case = parse_junit(path)[0]
+
+    assert case.time is None
+
+
+def test_junit_nesting_limit_is_explicit(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "results.xml"
+    path.write_text("<testsuite><suite><testcase name='a'/></suite></testsuite>", encoding="utf-8")
+    monkeypatch.setattr("greengap.junit.MAX_JUNIT_DEPTH", 2)
+
+    with pytest.raises(ValueError, match="nesting"):
+        parse_junit(path)
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16-le", "utf-16-be"])
+def test_junit_rejects_dtd_entity_expansion_before_parsing(tmp_path, encoding) -> None:
+    path = tmp_path / "entities.xml"
+    payload = (
+        '<!DOCTYPE testsuite [<!ENTITY expanded "boom">]>'
+        '<testsuite><testcase name="x"><failure>&expanded;</failure></testcase></testsuite>'
+    )
+    path.write_bytes(payload.encode(encoding))
+
+    with pytest.raises(ValueError, match="DTD and entity declarations"):
+        parse_junit(path)
+
+
 def test_collection_output_limit_is_explicit(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         "greengap.pytest_adapter._run_pytest_bounded",
@@ -505,6 +536,21 @@ def test_collection_output_limit_is_explicit(monkeypatch, tmp_path) -> None:
     result = collect_pytest(tmp_path)
     assert not result.complete
     assert "output exceeds" in (result.error or "")
+
+
+def test_collection_stdout_node_spoof_is_not_evidence(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "greengap.pytest_adapter._run_pytest_bounded",
+        lambda *args, **kwargs: _BoundedProcessResult(
+            0, "tests/test_fake.py::test_fake\n", ""
+        ),
+    )
+
+    result = collect_pytest(tmp_path)
+
+    assert not result.complete
+    assert result.nodes == ()
+    assert "witness" in (result.error or "")
 
 
 def test_dynamic_condition_unknown_runner_is_relevant(tmp_path) -> None:

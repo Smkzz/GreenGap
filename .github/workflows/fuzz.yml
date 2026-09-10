@@ -16,7 +16,6 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      security-events: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -45,14 +44,32 @@ jobs:
         shell: bash
         env:
           FUZZ_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          FUZZ_WORKFLOW_SHA: ${{ github.sha }}
+          FUZZ_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          FUZZ_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          FUZZ_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          FUZZ_WORKFLOW_REF: ${{ github.ref }}
+          FUZZ_RUN_HEAD_SHA: ${{ github.sha }}
+          FUZZ_WORKFLOW_SHA: ${{ github.workflow_sha }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           RUN_OUTCOME: ${{ steps.run.outcome }}
         run: |
           set -euo pipefail
+          sarif_sha256=""
+          if [ -f cifuzz-sarif/results.sarif ]; then
+            sarif_sha256="$(sha256sum cifuzz-sarif/results.sarif | awk '{print $1}')"
+          fi
           {
-            printf 'FUZZ_HEAD_SHA=%s\n' "${FUZZ_SOURCE_SHA}"
+            printf 'FUZZ_REPOSITORY=%s\n' "${GITHUB_REPOSITORY}"
+            printf 'FUZZ_EVENT=%s\n' "${GITHUB_EVENT_NAME}"
+            printf 'FUZZ_RUN_ID=%s\n' "${GITHUB_RUN_ID}"
+            printf 'FUZZ_SOURCE_SHA=%s\n' "${FUZZ_SOURCE_SHA}"
+            printf 'FUZZ_HEAD_REPOSITORY=%s\n' "${FUZZ_HEAD_REPOSITORY}"
+            printf 'FUZZ_HEAD_SHA=%s\n' "${FUZZ_HEAD_SHA}"
+            printf 'FUZZ_DEFAULT_BRANCH=%s\n' "${FUZZ_DEFAULT_BRANCH}"
+            printf 'FUZZ_WORKFLOW_REF=%s\n' "${FUZZ_WORKFLOW_REF}"
+            printf 'FUZZ_RUN_HEAD_SHA=%s\n' "${FUZZ_RUN_HEAD_SHA}"
             printf 'FUZZ_WORKFLOW_SHA=%s\n' "${FUZZ_WORKFLOW_SHA}"
+            printf 'FUZZ_SARIF_SHA256=%s\n' "${sarif_sha256}"
             printf 'FUZZ_TARGETS=trace_fuzzer\n'
             printf 'FUZZ_BUILD=%s\n' "${BUILD_OUTCOME}"
             printf 'FUZZ_RESULT=%s\n' "${RUN_OUTCOME}"
@@ -73,8 +90,18 @@ jobs:
           name: fuzz-artifacts
           path: out/artifacts
           if-no-files-found: ignore
-      - name: Upload fuzz SARIF
+      - name: Stage fuzz SARIF and receipt for trusted uploader
         if: always() && steps.run.outcome == 'success' && hashFiles('cifuzz-sarif/results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p trusted-fuzz-sarif
+          cp cifuzz-sarif/results.sarif trusted-fuzz-sarif/results.sarif
+          cp fuzz-receipt.txt trusted-fuzz-sarif/fuzz-receipt.txt
+      - name: Upload fuzz SARIF and receipt
+        if: always() && steps.run.outcome == 'success' && hashFiles('trusted-fuzz-sarif/results.sarif') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          sarif_file: cifuzz-sarif/results.sarif
+          name: fuzz-sarif
+          path: trusted-fuzz-sarif
+          if-no-files-found: error

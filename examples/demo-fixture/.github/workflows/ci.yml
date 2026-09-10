@@ -1,0 +1,11 @@
+name: Demo CI
+
+on:
+  push:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pytest tests/test_fast.py

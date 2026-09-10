@@ -1,0 +1,144 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-09",
+  "candidate_version": "1.0.0rc1",
+  "source_freeze_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "source_freeze_tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
+  "methodology": {
+    "production_timing": "run_plan only",
+    "production_instrumentation": [],
+    "legacy_method": "scripts/measure_performance.py with tracemalloc unchanged",
+    "harness_measurements": ["report serialization", "filesystem measurement", "RSS measurement"],
+    "warmup_runs": 1,
+    "timed_runs": 5,
+    "collection_enabled": false,
+    "fresh_child_process_per_method": true,
+    "budgets": {
+      "production_p95_seconds": 5.0,
+      "startup_seconds": 1.0,
+      "peak_rss_bytes": 536870912
+    }
+  },
+  "windows": {
+    "machine": {
+      "os": "Windows 11",
+      "architecture": "AMD64",
+      "python": "3.13.3"
+    },
+    "status": "PASS",
+    "measurements": [
+      {
+        "fixture": "small",
+        "definition": {"test_files": 10, "workflow_files": 1, "workflow_shapes": 1},
+        "raw_receipt": {
+          "path": "C:/Users/samis/AppData/Local/Temp/greengap-performance-methodology-6f76949-small.json",
+          "sha256": "bba6cf531bbe5e7cf82dc3dba566bc49356c483cc9d67a22d0b329b09aa7e455",
+          "bytes": 6422
+        },
+        "production": {
+          "wall_seconds": [0.14988200000152574, 0.1353361000001314, 0.16328239999893412, 0.1620180000008986, 0.13438569999925676],
+          "p50_seconds": 0.14988200000152574,
+          "p95_seconds": 0.16328239999893412,
+          "peak_rss_bytes": 34631680,
+          "disk_delta_bytes": 0,
+          "report_json_bytes": 6388,
+          "outcomes": ["INCOMPLETE", "INCOMPLETE", "INCOMPLETE", "INCOMPLETE", "INCOMPLETE"],
+          "status": "PASS"
+        },
+        "legacy_instrumented": {
+          "p50_seconds": 0.17177339999943797,
+          "p95_seconds": 0.21541260000049078,
+          "process_rss_bytes": 34758656,
+          "peak_python_allocated_bytes": 1084746,
+          "status": "MEASURED_INSTRUMENTATION_DISTORTED"
+        },
+        "harness_overhead": {
+          "report_serialization_p50_seconds": 0.0007814000000507804,
+          "report_serialization_p95_seconds": 0.0008910000015021069,
+          "filesystem_rss_p50_seconds": 0.00083719999929599,
+          "filesystem_rss_p95_seconds": 0.0009303000006184448
+        }
+      },
+      {
+        "fixture": "medium",
+        "definition": {"test_files": 1000, "workflow_files": 4, "workflow_shapes": 4},
+        "raw_receipt": {
+          "path": "C:/Users/samis/AppData/Local/Temp/greengap-performance-methodology-6f76949-medium.json",
+          "sha256": "85b0fb9ed096943dcb13dfee29309faa50fab68576c66e06e79f3777ffa90e2a",
+          "bytes": 6398
+        },
+        "production": {
+          "wall_seconds": [0.5663335999997798, 0.5008225000001403, 0.5166609999996581, 0.4834014999996725, 0.5503996999996161],
+          "p50_seconds": 0.5166609999996581,
+          "p95_seconds": 0.5663335999997798,
+          "peak_rss_bytes": 39743488,
+          "disk_delta_bytes": 0,
+          "report_json_bytes": 378206,
+          "outcomes": ["INCOMPLETE", "INCOMPLETE", "INCOMPLETE", "INCOMPLETE", "INCOMPLETE"],
+          "status": "PASS"
+        },
+        "legacy_instrumented": {
+          "p50_seconds": 1.5498098000007303,
+          "p95_seconds": 1.8630009999997128,
+          "process_rss_bytes": 43638784,
+          "peak_python_allocated_bytes": 2840447,
+          "status": "MEASURED_INSTRUMENTATION_DISTORTED"
+        },
+        "harness_overhead": {
+          "report_serialization_p50_seconds": 0.04651710000143794,
+          "report_serialization_p95_seconds": 0.04986599999938335,
+          "filesystem_rss_p50_seconds": 0.04930450000028941,
+          "filesystem_rss_p95_seconds": 0.07513340000150492
+        }
+      },
+      {
+        "fixture": "large",
+        "definition": {"test_files": 10000, "workflow_files": 4, "workflow_shapes": 4},
+        "raw_receipt": {
+          "path": "C:/Users/samis/AppData/Local/Temp/greengap-performance-methodology-6f76949-large.json",
+          "sha256": "20c52cd90af6b8f1d61ce8f03f97b94c96e312f3469c484591587c0b570d332a",
+          "bytes": 6365
+        },
+        "production": {
+          "wall_seconds": [3.8050423999993654, 4.004022099999929, 3.79346600000099, 4.174669199999698, 3.6141706999987946],
+          "p50_seconds": 3.8050423999993654,
+          "p95_seconds": 4.174669199999698,
+          "peak_rss_bytes": 79388672,
+          "disk_delta_bytes": 0,
+          "report_json_bytes": 3744208,
+          "outcomes": ["INCOMPLETE", "INCOMPLETE", "INCOMPLETE", "INCOMPLETE", "INCOMPLETE"],
+          "status": "PASS"
+        },
+        "legacy_instrumented": {
+          "wall_seconds": [15.29640180000024, 17.23752670000067, 40.6386061000012, 14.788272199999483, 18.14619599999969],
+          "p50_seconds": 17.23752670000067,
+          "p95_seconds": 40.6386061000012,
+          "process_rss_bytes": 124690432,
+          "peak_python_allocated_bytes": 32796093,
+          "status": "MEASURED_INSTRUMENTATION_DISTORTED"
+        },
+        "harness_overhead": {
+          "report_serialization_p50_seconds": 0.5127050999999483,
+          "report_serialization_p95_seconds": 0.5790514000000258,
+          "filesystem_rss_p50_seconds": 0.5457557999998244,
+          "filesystem_rss_p95_seconds": 0.6354617999986658
+        }
+      }
+    ],
+    "interpretation": "The exact frozen source passed the Windows production timing budget and memory budget. The unchanged tracemalloc path is reported separately and is not used as the production SLO decision."
+  },
+  "startup": {
+    "receipt": "docs/evidence/startup-20260909-6f76949.json",
+    "status": "PASS"
+  },
+  "linux": {
+    "status": "BLOCKED",
+    "hosted_ci_ubuntu_tests": "PASS",
+    "performance_job_or_receipt": null,
+    "local_wsl_probe": "Wsl/EnumerateDistros/Service/E_ACCESSDENIED",
+    "local_docker_probe": "Docker API access denied at npipe:////./pipe/docker_engine",
+    "reason": "The workspace exposed no usable Linux execution substrate and the repository has no existing Linux performance workflow. No temporary benchmark workflow was added, so no Linux timing, startup, or RSS claim is made."
+  },
+  "status": "BLOCKED_LINUX_EVIDENCE_UNAVAILABLE",
+  "launch_interpretation": "Windows performance is evidenced at the exact source freeze, but the launch gate remains blocked until Linux performance evidence is obtained."
+}

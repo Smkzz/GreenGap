@@ -17,4 +17,8 @@ python -m build
 Add a regression test for every parser or reconciliation edge case. Keep
 subprocesses bounded and do not add network, telemetry, database, dashboard,
 LLM, or hosted-service requirements to the core. Do not execute workflow
-commands while tracing them.
+commands while tracing them. Target pytest collection executes repository code;
+tests and qualification scripts must pass `--trust-collection` only for the
+intentionally disposable trusted fixtures they own. The CLI's default is
+non-executing and every JSON/SARIF contract change needs a representative
+complete, incomplete, failed, or empty example plus a schema/contract test.

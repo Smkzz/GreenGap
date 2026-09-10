@@ -17,7 +17,6 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-      security-events: write
       id-token: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -25,21 +24,53 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - uses: ossf/scorecard-action@f49aabe0b5af0936a0987cfb85d86b75731b0186 # v2.4.1
+        id: scorecard
         with:
           results_file: results.sarif
           results_format: sarif
           publish_results: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
-      - name: Upload raw Scorecard results
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Record exact Scorecard receipt
         if: always()
+        shell: bash
+        env:
+          SCORECARD_HEAD_SHA: ${{ github.sha }}
+          SCORECARD_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          SCORECARD_WORKFLOW_REF: ${{ github.ref }}
+          SCORECARD_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SCORECARD_BUILD_OUTCOME: ${{ steps.scorecard.outcome }}
+        run: |
+          set -euo pipefail
+          sarif_sha256=""
+          if [ -f results.sarif ]; then
+            sarif_sha256="$(sha256sum results.sarif | awk '{print $1}')"
+          fi
+          {
+            printf 'SCORECARD_REPOSITORY=%s\n' "${GITHUB_REPOSITORY}"
+            printf 'SCORECARD_EVENT=%s\n' "${GITHUB_EVENT_NAME}"
+            printf 'SCORECARD_RUN_ID=%s\n' "${GITHUB_RUN_ID}"
+            printf 'SCORECARD_HEAD_SHA=%s\n' "${SCORECARD_HEAD_SHA}"
+            printf 'SCORECARD_WORKFLOW_SHA=%s\n' "${SCORECARD_WORKFLOW_SHA}"
+            printf 'SCORECARD_WORKFLOW_REF=%s\n' "${SCORECARD_WORKFLOW_REF}"
+            printf 'SCORECARD_DEFAULT_BRANCH=%s\n' "${SCORECARD_DEFAULT_BRANCH}"
+            printf 'SCORECARD_SARIF_SHA256=%s\n' "${sarif_sha256}"
+            printf 'SCORECARD_RESULT=%s\n' "${SCORECARD_BUILD_OUTCOME}"
+          } | tee scorecard-receipt.txt
+      - name: Stage raw Scorecard results
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s results.sarif
+          mkdir -p scorecard-artifact
+          cp results.sarif scorecard-artifact/results.sarif
+          cp scorecard-receipt.txt scorecard-artifact/scorecard-receipt.txt
+      - name: Upload raw Scorecard results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: scorecard-results
-          path: results.sarif
+          path: scorecard-artifact
           if-no-files-found: error
-      - uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
-        if: always()
-        with:
-          sarif_file: results.sarif
 
   scorecard-gate:
     name: scorecard-gate

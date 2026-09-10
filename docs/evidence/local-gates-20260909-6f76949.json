@@ -1,0 +1,34 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-09",
+  "candidate_version": "1.0.0rc1",
+  "source_freeze_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "source_freeze_tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
+  "worktree": "qualification/promotion-clean-ca2d25e-20260909",
+  "worktree_status_before_evidence": "CLEAN",
+  "machine": {
+    "os": "Windows 11",
+    "architecture": "AMD64",
+    "python": "3.13.3"
+  },
+  "regression": {
+    "full_local_pytest": "517 passed, 1 skipped",
+    "status": "PASS"
+  },
+  "static_checks": {
+    "ruff": "PASS",
+    "mypy": "PASS: no issues found in 13 source files",
+    "compileall": "PASS"
+  },
+  "safe_cli": {
+    "no_collect_default": "PASS",
+    "json_exit_code": 2,
+    "json_outcome": "INCOMPLETE",
+    "sarif_exit_code": 2,
+    "sarif_execution_successful": false,
+    "interpretation": "The safe default refuses target collection and preserves fail-closed incomplete semantics."
+  },
+  "limitations": [
+    "This receipt is local evidence and does not substitute for hosted receiver, Linux-performance, cohort, human, owner, or publication gates."
+  ]
+}

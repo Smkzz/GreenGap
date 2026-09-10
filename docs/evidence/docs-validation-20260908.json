@@ -1,0 +1,17 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-08",
+  "scope": "README.md and docs/**/*.md relative Markdown targets",
+  "method": "Local relative-target existence check; HTTP reachability and human accessibility review are not inferred.",
+  "links_checked": 15,
+  "missing_links": 0,
+  "status": "PASS",
+  "source_archive_scope": "greengap-1.0.0rc1.tar.gz packaged Markdown files",
+  "source_archive_markdown_files": 16,
+  "source_archive_missing_links": 0,
+  "source_archive_status": "PASS",
+  "limitations": [
+    "External URLs were not fetched by this check.",
+    "This does not replace five fresh human first-run sessions or a full accessibility review."
+  ]
+}

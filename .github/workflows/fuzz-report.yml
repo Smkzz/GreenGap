@@ -1,0 +1,85 @@
+name: ClusterFuzzLite SARIF upload
+
+on:
+  workflow_run:
+    workflows: ["ClusterFuzzLite fuzzing"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  upload:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'schedule' ||
+      github.event.workflow_run.event == 'workflow_dispatch') &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      security-events: write
+    steps:
+      - name: Download SARIF from the completed fuzz run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fuzz-sarif
+          path: trusted-fuzz-sarif
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Verify exact fuzz run provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FUZZ_RUN_ID: ${{ github.event.workflow_run.id }}
+          FUZZ_REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
+          FUZZ_EVENT: ${{ github.event.workflow_run.event }}
+          FUZZ_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt=trusted-fuzz-sarif/fuzz-receipt.txt
+          sarif=trusted-fuzz-sarif/results.sarif
+          test -f "${receipt}"
+          test -f "${sarif}"
+          receipt_value() {
+            awk -F= -v key="$1" '$1 == key { print substr($0, index($0, "=") + 1); found = 1 } END { if (!found) exit 1 }' "${receipt}"
+          }
+          test "$(receipt_value FUZZ_REPOSITORY)" = "${GITHUB_REPOSITORY}"
+          test "$(receipt_value FUZZ_EVENT)" = "${FUZZ_EVENT}"
+          test "$(receipt_value FUZZ_RUN_ID)" = "${FUZZ_RUN_ID}"
+          test "$(receipt_value FUZZ_BUILD)" = success
+          test "$(receipt_value FUZZ_RESULT)" = success
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${FUZZ_RUN_ID}")"
+          default_branch="$(jq -er '.repository.default_branch' <<<"${run_json}")"
+          run_head_sha="$(jq -er '.head_sha' <<<"${run_json}")"
+          test "$(receipt_value FUZZ_DEFAULT_BRANCH)" = "${default_branch}"
+          test "$(receipt_value FUZZ_WORKFLOW_REF)" = "refs/heads/${default_branch}"
+          test "$(receipt_value FUZZ_RUN_HEAD_SHA)" = "${run_head_sha}"
+          test "$(receipt_value FUZZ_WORKFLOW_SHA)" = "${run_head_sha}"
+          test "$(receipt_value FUZZ_HEAD_REPOSITORY)" = "${GITHUB_REPOSITORY}"
+          test "$(receipt_value FUZZ_HEAD_SHA)" = "${run_head_sha}"
+          test "$(receipt_value FUZZ_SOURCE_SHA)" = "${run_head_sha}"
+          test "$(jq -er '.path' <<<"${run_json}")" = .github/workflows/fuzz.yml
+          test "$(jq -er '.event' <<<"${run_json}")" = "${FUZZ_EVENT}"
+          test "$(jq -er '.repository.full_name' <<<"${run_json}")" = "${GITHUB_REPOSITORY}"
+          test "${FUZZ_RUN_HEAD_SHA}" = "${run_head_sha}"
+          test "$(jq -er '.head_branch' <<<"${run_json}")" = "${default_branch}"
+          test -n "$(receipt_value FUZZ_SARIF_SHA256)"
+          test "$(receipt_value FUZZ_SARIF_SHA256)" = "$(sha256sum trusted-fuzz-sarif/results.sarif | awk '{print $1}')"
+      - name: Validate inert SARIF shape and size
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f trusted-fuzz-sarif/results.sarif
+          test "$(stat -c '%s' trusted-fuzz-sarif/results.sarif)" -le 8388608
+          jq -e '
+            type == "object" and
+            .version == "2.1.0" and
+            (.runs | type == "array" and length <= 16) and
+            all(.runs[]; (.tool | type == "object") and (.results | type == "array" and length <= 10000))
+          ' trusted-fuzz-sarif/results.sarif >/dev/null
+      - name: Upload validated fuzz SARIF
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
+        with:
+          sarif_file: trusted-fuzz-sarif/results.sarif

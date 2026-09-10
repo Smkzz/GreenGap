@@ -1,0 +1,7 @@
+{
+  "status": "NOT_AVAILABLE",
+  "scope": "GreenGap 1.0.0rc1 candidate artifacts",
+  "reason": "A verifiable hosted build attestation requires the authorized release workflow after source freeze and publication approval.",
+  "prohibited_substitute": "The local reproducibility result, checksum file, and unsigned provenance receipt are not represented as an attestation.",
+  "required_next_step": "Run the pinned release workflow on the frozen exact source identity and retain the provider verification packet."
+}

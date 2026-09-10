@@ -22,6 +22,7 @@ from scripts.qualify_stage0e_full import (
 
 from greengap.pytest_adapter import _run_pytest_bounded, discover_candidates, pytest_config
 from greengap.trace import trace_github_actions
+from greengap.util import run_process_tree
 
 from .conftest import write_files
 
@@ -164,6 +165,10 @@ def test_package_install_from_repository_invalidates_later_test_inference(tmp_pa
     ("variable", "value", "command", "issue_code"),
     [
         ("BASH_ENV", "scripts/bootstrap.sh", "echo setup", "BASH_STARTUP_ENV_UNKNOWN"),
+        ("LD_PRELOAD", "./scripts/preload.so", "pytest tests", "NATIVE_LOADER_ENV_UNKNOWN"),
+        ("LD_LIBRARY_PATH", "' '", "pytest tests", "NATIVE_LOADER_ENV_UNKNOWN"),
+        ("DYLD_ROOT_PATH", "./alternate-root", "pytest tests", "NATIVE_LOADER_ENV_UNKNOWN"),
+        ("DYLD_IMAGE_SUFFIX", ".debug", "pytest tests", "NATIVE_LOADER_ENV_UNKNOWN"),
         ("PYTHONPATH", "scripts", "python -m pytest", "PYTHON_MODULE_PATH_UNKNOWN"),
         (
             "NODE_OPTIONS",
@@ -716,6 +721,50 @@ jobs:
     assert any(issue.code == "CHECKOUT_CONDITION_UNKNOWN" for issue in result.issues)
     assert any(issue.code == "WORKSPACE_MUTATION_UNKNOWN" for issue in result.issues)
     assert result.relevant_incomplete
+
+
+def test_default_checkout_requires_clean_workspace_proof(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path)
+
+    assert any(issue.code == "CHECKOUT_CLEAN_STATE_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
+
+
+def test_default_checkout_is_modeled_for_a_proven_clean_workspace(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".github/workflows/ci.yml": """name: CI
+on: pull_request
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pytest tests
+""",
+        },
+    )
+
+    result = trace_github_actions(tmp_path, workspace_clean=True)
+
+    assert not any(issue.code == "CHECKOUT_CLEAN_STATE_UNKNOWN" for issue in result.issues)
+    assert result.invocations
 
 
 def test_unknown_condition_propagates_local_composite_workspace_effect(tmp_path) -> None:
@@ -1781,7 +1830,7 @@ def test_unknown_python_module_invalidates_later_test_inference(tmp_path) -> Non
     assert result.relevant_incomplete
 
 
-def test_unasync_check_mode_is_modeled_as_read_only(tmp_path) -> None:
+def test_unasync_check_mode_remains_unknown_without_helper_attestation(tmp_path) -> None:
     write_files(
         tmp_path,
         {
@@ -1794,8 +1843,9 @@ def test_unasync_check_mode_is_modeled_as_read_only(tmp_path) -> None:
 
     result = trace_github_actions(tmp_path)
 
-    assert result.invocations
-    assert not any(issue.code == "PYTHON_EXECUTION_UNKNOWN" for issue in result.issues)
+    assert not result.invocations
+    assert any(issue.code == "PYTHON_EXECUTION_UNKNOWN" for issue in result.issues)
+    assert result.relevant_incomplete
 
 
 def test_git_archive_output_is_not_read_only(tmp_path) -> None:
@@ -2268,9 +2318,97 @@ def test_pytest_collection_cleans_descendants_after_parent_exit(tmp_path) -> Non
             _stop_process(child_pid)
 
 
+def test_outer_qualification_timeout_terminates_separate_session_descendants(tmp_path) -> None:
+    pid_file = tmp_path / "child.pid"
+    child_code = (
+        "import os, time\n"
+        "from pathlib import Path\n"
+        f"Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        "time.sleep(60)\n"
+    )
+    spawn_options = (
+        "start_new_session=True"
+        if os.name != "nt"
+        else "creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)"
+    )
+    parent_code = (
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}], {spawn_options})\n"
+        "time.sleep(60)\n"
+    )
+    child_pid: int | None = None
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_process_tree(
+                [sys.executable, "-c", parent_code],
+                cwd=tmp_path,
+                env=os.environ.copy(),
+                timeout=0.25,
+            )
+        deadline = time.monotonic() + 3.0
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if pid_file.exists():
+            child_pid = int(pid_file.read_text(encoding="utf-8"))
+        assert child_pid is not None
+        deadline = time.monotonic() + 3.0
+        while _pid_exists(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _pid_exists(child_pid)
+    finally:
+        if child_pid is not None:
+            _stop_process(child_pid)
+
+
+def test_outer_qualification_timeout_cleans_descendants_after_parent_exit(tmp_path) -> None:
+    pid_file = tmp_path / "child.pid"
+    child_code = (
+        "import os, time\n"
+        "from pathlib import Path\n"
+        f"Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        "time.sleep(60)\n"
+    )
+    spawn_options = (
+        "start_new_session=True"
+        if os.name != "nt"
+        else "creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)"
+    )
+    parent_code = (
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}], {spawn_options})\n"
+        "time.sleep(0.1)\n"
+    )
+    child_pid: int | None = None
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_process_tree(
+                [sys.executable, "-c", parent_code],
+                cwd=tmp_path,
+                env=os.environ.copy(),
+                timeout=0.5,
+            )
+        deadline = time.monotonic() + 3.0
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if pid_file.exists():
+            child_pid = int(pid_file.read_text(encoding="utf-8"))
+        assert child_pid is not None
+        deadline = time.monotonic() + 3.0
+        while _pid_exists(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _pid_exists(child_pid)
+    finally:
+        if child_pid is not None:
+            _stop_process(child_pid)
+
+
 def test_release_workflow_is_build_once_and_non_overwriting() -> None:
     repository_root = Path(__file__).parents[1]
-    workflow_text = (repository_root / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    build_workflow = (repository_root / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    publish_workflow = (repository_root / ".github/workflows/release-publish.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow_text = build_workflow + "\n" + publish_workflow
     package_requirements = (repository_root / ".github/requirements-package.txt").read_text(
         encoding="utf-8"
     )
@@ -2287,10 +2425,38 @@ def test_release_workflow_is_build_once_and_non_overwriting() -> None:
     assert "Attest exact release bytes" in workflow_text
     assert "gh release view" in workflow_text
     assert "refusing to replace or resume it" in workflow_text
+    assert 'test "${RELEASE_TAG}" != "v0.1.3"' in workflow_text
+    assert "refusing to rebuild the immutable v0.1.3 baseline" in workflow_text
+    assert "environment:" in workflow_text
+    assert "name: release-publish" in workflow_text
+    assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in workflow_text
+    assert "RELEASE_BINDING.json" in workflow_text
+    assert "tags/protection" in workflow_text
+    assert "--target \"${RELEASE_COMMIT}\"" in workflow_text
+    assert "targetCommitish" in publish_workflow
+    assert "isDraft" in publish_workflow
+    assert "workflow_run:" in publish_workflow
+    assert "head_branch" in publish_workflow
+    assert "contents: write" in workflow_text
+    assert "id-token: write" in workflow_text
+    assert "attestations: write" in workflow_text
+    assert "never checks out candidate source code" in publish_workflow
+    build_block = build_workflow[build_workflow.index("  build:"):]
+    publish_block = publish_workflow[publish_workflow.index("  publish:"):]
+    assert "contents: write" not in build_block
+    assert "id-token: write" not in build_block
+    assert "attestations: write" not in build_block
+    assert "environment:" in publish_block
+    assert "contents: write" in publish_block
+    baseline_guard = workflow_text.index("Refuse immutable baseline")
+    build_step = workflow_text.index("Build and verify distributions once")
+    assert baseline_guard < build_step
     assert "gh release upload" in workflow_text
     assert "python -m pip install --require-hashes -r .github/requirements-package.txt" in workflow_text
     assert "build==1.5.0" in package_requirements
+    assert "setuptools==84.0.0" in package_requirements
     assert "twine==7.0.0" in package_requirements
+    assert "python -m build --no-isolation" in workflow_text
 
 
 def test_sdist_manifest_includes_certification_support_files() -> None:

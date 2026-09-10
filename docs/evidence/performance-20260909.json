@@ -1,0 +1,70 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-09",
+  "reference_machine": {
+    "os": "Windows",
+    "os_release": "11",
+    "architecture": "AMD64",
+    "python": "3.13.3"
+  },
+  "collection_enabled": false,
+  "runs_per_fixture": 5,
+  "warmup_runs_per_fixture": 1,
+  "fixtures": [
+    {
+      "name": "small",
+      "receipt": "docs/evidence/performance-small-20260909.json",
+      "test_files": 10,
+      "workflow_files": 1,
+      "p50_wall_seconds": 0.14581670000916347,
+      "p95_wall_seconds": 0.21367019999888726,
+      "peak_process_rss_bytes": 34918400,
+      "disk_delta_bytes": 0,
+      "status": "MEASURED"
+    },
+    {
+      "name": "medium",
+      "receipt": "docs/evidence/performance-medium-20260909.json",
+      "test_files": 1000,
+      "workflow_files": 4,
+      "workflow_shapes": 4,
+      "p50_wall_seconds": 1.3901844000210986,
+      "p95_wall_seconds": 1.5209751999936998,
+      "peak_process_rss_bytes": 45436928,
+      "disk_delta_bytes": 0,
+      "status": "MEASURED"
+    },
+    {
+      "name": "large",
+      "receipt": "docs/evidence/performance-large-20260909.json",
+      "test_files": 10000,
+      "workflow_files": 4,
+      "workflow_shapes": 4,
+      "p50_wall_seconds": 13.473204000008991,
+      "p95_wall_seconds": 14.418952799984254,
+      "peak_process_rss_bytes": 129724416,
+      "disk_delta_bytes": 0,
+      "status": "TIMING_BUDGET_MISS"
+    }
+  ],
+  "startup_receipt": "docs/evidence/startup-20260908.json",
+  "budgets": {
+    "startup_seconds": 1.0,
+    "large_static_analysis_seconds": 5.0,
+    "large_process_memory_bytes": 536870912
+  },
+  "budget_decision": {
+    "status": "OPEN_PERFORMANCE_BLOCKER",
+    "memory_budget_passed": true,
+    "timing_budget_passed": false,
+    "observed_dominant_cost": "exact workspace-byte snapshots and candidate AST inspection after prepared identity checks and bounded batch inspection",
+    "soundness_preserved": true,
+    "decision": "Do not accept a unilateral exception or weaken fail-closed binding. The algorithmic optimization reduced the large-fixture p95 from 57.926 seconds to 14.419 seconds on the Windows reference environment, but the frozen five-second target remains open; Linux evidence and the required independent review/rebaseline conditions are also outstanding."
+  },
+  "limitations": [
+    "Static-only measurements do not include target pytest collection or dependency installation.",
+    "This receipt is Windows-only; Ubuntu hosted/reference evidence remains open.",
+    "A zero fixture-root disk delta reflects the read-only analysis path and is not a package-install disk budget.",
+    "The prior 2026-09-08 baseline receipts remain unchanged for before/after comparison."
+  ]
+}
