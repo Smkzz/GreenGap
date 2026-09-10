@@ -1,17 +1,22 @@
 {
   "evidence_version": "1.0",
-  "recorded_at": "2026-09-10T00:04:14Z",
+  "recorded_at": "2026-09-10T01:00:16Z",
   "repository": "Smkzz/greengap-launch-probe-20260910",
   "default_branch": "main",
   "workflow": ".github/workflows/probe.yml",
   "workflow_state": "active",
-  "workflow_head_sha": "c1b873f5cbbeff6bec05b6a64b6943d8be43c404",
+  "workflow_head_sha": "199bb3007ecd0f759447134c6a784ccd65eae873",
   "declared_schedule": "*/5 * * * *",
   "required_event": "schedule",
   "observed_runs_query": "gh run list --event schedule --limit 10",
   "observed_runs": [],
+  "latest_observation": {
+    "checked_at": "2026-09-10T01:00:16Z",
+    "workflow_state": "active",
+    "event_schedule_runs": []
+  },
   "status": "NOT_OBSERVED",
-  "exact_greengap_workflow_ref_in_probe": "956285d9e8cf7e7aa1cb3351b90d8135e40a2e20",
+  "exact_greengap_workflow_ref_in_probe": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
   "release_artifact_in_probe": "v0.1.3",
-  "interpretation": "The scheduled receiver is configured and active, but no genuine event=schedule run was observed during the recorded polling window. Manual workflow_dispatch and push runs are not substituted for this required gate. The probe also remains bound to the pre-1.0.0 immutable artifact, so no success/PR/schedule launch conclusion is claimed."
+  "interpretation": "The scheduled receiver is configured and active at probe head 199bb30, but no genuine event=schedule run was observed at the latest observation. Manual workflow_dispatch and push runs are not substituted for this required gate. The probe remains bound to the pre-1.0.0 immutable artifact, so no success/PR/schedule launch conclusion is claimed."
 }
