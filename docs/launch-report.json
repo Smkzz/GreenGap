@@ -15,7 +15,7 @@
   "RELEASE_TREE": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
   "RELEASE_IDENTITY_STATUS": "HISTORICAL_SOURCE_FREEZE_REOPENED_FOR_CONCRETE_EXTERNAL_WORKFLOW_DEFECTS; current candidate head c30543a is separately recorded and is not yet a stable release identity",
   "CURRENT_CANDIDATE_SHA": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
-  "CURRENT_CANDIDATE_TREE": "ef915d9ce529da5849c3c002b7797d8394b56573",
+  "CURRENT_CANDIDATE_TREE": "89071e9aafdd92ddf7001f9ccdc60083289b5e86",
   "LOCAL_CHECKPOINT_SHA": "272ab74cf4416ee78f5d8b95c37bf9f88ba10f10",
   "LOCAL_CHECKPOINT_TREE": "b1ac8855e5d2e782977f26c0350ad88e85b247b2",
   "CLOSURE_DOCUMENT_SHA": "ca2d25e42b443fdda2a9ac0e3bb36e244544e529",
@@ -123,7 +123,7 @@
     },
     "current_candidate_head": {
       "sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
-      "tree": "ef915d9ce529da5849c3c002b7797d8394b56573",
+      "tree": "89071e9aafdd92ddf7001f9ccdc60083289b5e86",
       "source_reopen_reason": "three concrete hosted reusable-workflow defects; c30543a adds only the final push-trigger test fixture correction",
       "executable_product_bytes_identical_to_historical_freeze": false,
       "product_fix_commit": "956285d9e8cf7e7aa1cb3351b90d8135e40a2e20",

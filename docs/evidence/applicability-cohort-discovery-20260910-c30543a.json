@@ -5,7 +5,7 @@
   "status": "STATIC_ELIGIBILITY_COMPLETE_SELECTION_PENDING",
   "candidate_source": {
     "sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
-    "tree": "ef915d9ce529da5849c3c002b7797d8394b56573",
+    "tree": "89071e9aafdd92ddf7001f9ccdc60083289b5e86",
     "version": "1.0.0rc1"
   },
   "discovery_query": {

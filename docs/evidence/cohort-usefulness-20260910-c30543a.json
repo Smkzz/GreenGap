@@ -3,7 +3,7 @@
   "recorded_at": "2026-09-10",
   "status": "COHORT_USEFULNESS_GATE_FAILED",
   "candidate_sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
-  "candidate_tree": "ef915d9ce529da5849c3c002b7797d8394b56573",
+  "candidate_tree": "89071e9aafdd92ddf7001f9ccdc60083289b5e86",
   "historical_source_freeze_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
   "historical_source_freeze_tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
   "input_receipt": "docs/evidence/cohort-trusted-20260910-6f76949.json",

@@ -12,7 +12,7 @@ launch, merge, tagging, registry upload, and public publication.
 | Original source checkpoint | `272ab74cf4416ee78f5d8b95c37bf9f88ba10f10` / `b1ac8855e5d2e782977f26c0350ad88e85b247b2` |
 | Closure-document checkpoint | `ca2d25e42b443fdda2a9ac0e3bb36e244544e529` / `0870a442f35f7af084afa96f28311e85be482906` |
 | Historical source freeze before external workflow fixes | `6f76949c47535a203ddb5a78a1f038afaecd6e88` / `bf8a2da0ac70a797c2dce32f5771edac8b501c34` |
-| Current candidate source head | `c30543a4e3442a5238cf714c31f333e6cdfbb45e` / `ef915d9ce529da5849c3c002b7797d8394b56573` |
+| Current candidate source head | `c30543a4e3442a5238cf714c31f333e6cdfbb45e` / `89071e9aafdd92ddf7001f9ccdc60083289b5e86` |
 | Candidate version | `1.0.0rc1` |
 | Promotion worktree | `qualification/promotion-clean-ca2d25e-20260909` |
 | Remote branch | `release/greengap-1.0.0` |

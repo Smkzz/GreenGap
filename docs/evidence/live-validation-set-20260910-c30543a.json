@@ -16,7 +16,7 @@
   "checkout_persist_credentials": false,
   "fixture_commit": "d073dae4db0fb94c1182e8e871aaff0cde74de49",
   "green_gap_sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
-  "green_gap_tree": "ef915d9ce529da5849c3c002b7797d8394b56573",
+    "green_gap_tree": "89071e9aafdd92ddf7001f9ccdc60083289b5e86",
   "collection_mode": "trusted_checkout",
   "target_code_executed": true,
   "binding_event": "push",

@@ -4,7 +4,7 @@
 **Recorded date:** 2026-09-10  
 **Status:** preregistered before repository selection or trusted execution  
 **Candidate under test:** `c30543a4e3442a5238cf714c31f333e6cdfbb45e`  
-**Candidate tree:** `ef915d9ce529da5849c3c002b7797d8394b56573`
+**Candidate tree:** `89071e9aafdd92ddf7001f9ccdc60083289b5e86`
 
 This protocol measures whether GreenGap is useful inside its documented 1.0
 support envelope. It is a new prospective population. It does not replace,
