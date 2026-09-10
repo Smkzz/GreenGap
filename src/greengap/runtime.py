@@ -399,6 +399,14 @@ def _validate_witness_payload(payload: Any) -> dict[str, Any]:
     return normalized
 
 
+@dataclass(frozen=True)
+class _RuntimeDenominator:
+    records: tuple[dict[str, str], ...]
+    source_commit: str
+    repository: str
+    workspace_fingerprint: str
+
+
 def load_runtime_witness(path: Path) -> dict[str, Any]:
     """Read and validate one JSON witness without executing repository code."""
 
@@ -411,29 +419,26 @@ def parse_runtime_witness(path: Path) -> dict[str, Any]:
     return load_runtime_witness(path)
 
 
-def _load_denominator(path: Path) -> tuple[dict[str, str], ...]:
+def _load_denominator(path: Path) -> _RuntimeDenominator:
     payload = _read_json(path)
-    source: Any = payload
-    if isinstance(payload, dict):
-        if payload.get("mode") in {"scan", "plan"}:
-            collection = payload.get("collection")
-            if not isinstance(collection, dict) or collection.get("complete") is not True:
-                raise RuntimeWitnessError("DENOMINATOR_INCOMPLETE")
-            source = collection.get("nodes")
-            if payload.get("stable") is not True:
-                raise RuntimeWitnessError("DENOMINATOR_UNSTABLE")
-        elif payload.get("artifact_type") == RUNTIME_WITNESS_ARTIFACT_TYPE:
-            witness = _validate_witness_payload(payload)
-            source = witness.get("collection")
-            if witness.get("complete") is not True:
-                raise RuntimeWitnessError("DENOMINATOR_INCOMPLETE")
-        elif "nodes" in payload:
-            source = payload["nodes"]
+    if not isinstance(payload, dict) or payload.get("artifact_type") != RUNTIME_WITNESS_ARTIFACT_TYPE:
+        raise RuntimeWitnessError("DENOMINATOR_RUNTIME_WITNESS_REQUIRED")
+    witness = _validate_witness_payload(payload)
+    if witness.get("complete") is not True:
+        raise RuntimeWitnessError("DENOMINATOR_INCOMPLETE")
+    source = witness.get("collection")
+    source_commit = witness.get("source_commit")
+    repository = witness.get("repository")
+    workspace_fingerprint = witness.get("workspace_fingerprint")
+    if not isinstance(source_commit, str) or not isinstance(repository, str):
+        raise RuntimeWitnessError("DENOMINATOR_PROVENANCE_MISSING")
+    if not isinstance(workspace_fingerprint, str):
+        raise RuntimeWitnessError("DENOMINATOR_WORKSPACE_MISSING")
     if not isinstance(source, list) or len(source) > MAX_RUNTIME_WITNESS_NODES:
         raise RuntimeWitnessError("DENOMINATOR_INVALID")
     result: dict[str, dict[str, str]] = {}
     for record in source:
-        nodeid, path_value, node_identity = _validate_node_record(record)
+        nodeid, path_value, node_identity = _validate_node_record(record, verify_identity=True)
         if node_identity in result:
             raise RuntimeWitnessError("DENOMINATOR_DUPLICATE_NODE")
         result[node_identity] = {
@@ -441,23 +446,33 @@ def _load_denominator(path: Path) -> tuple[dict[str, str], ...]:
             "path": path_value,
             "node_identity": node_identity,
         }
-    return tuple(
+    records = tuple(
         record
-        for _, record in sorted(
-            result.items(), key=lambda item: (item[1]["nodeid"], item[0])
-        )
+        for _, record in sorted(result.items(), key=lambda item: (item[1]["nodeid"], item[0]))
+    )
+    return _RuntimeDenominator(
+        records=records,
+        source_commit=source_commit,
+        repository=repository.casefold(),
+        workspace_fingerprint=workspace_fingerprint,
     )
 
 
 def _state_for_execution(record: Mapping[str, Any]) -> FindingState:
     reports = record.get("reports", [])
-    outcomes = {item["outcome"] for item in reports if isinstance(item, dict)}
-    if "failed" in outcomes:
+    phase_outcomes = {
+        item["when"]: item["outcome"]
+        for item in reports
+        if isinstance(item, dict) and "when" in item and "outcome" in item
+    }
+    if "failed" in phase_outcomes.values():
         return FindingState.EXECUTED_FAIL
-    if "skipped" in outcomes and "passed" not in outcomes:
+    if phase_outcomes.get("call") == "skipped":
         return FindingState.SKIPPED
-    if "passed" in outcomes:
+    if phase_outcomes.get("call") == "passed":
         return FindingState.EXECUTED_PASS
+    if "skipped" in phase_outcomes.values():
+        return FindingState.SKIPPED
     return FindingState.UNKNOWN
 
 
@@ -481,8 +496,10 @@ def aggregate_runtime_witnesses(
 
     errors: list[str] = []
     try:
-        denominator = _load_denominator(denominator_path)
+        denominator_context = _load_denominator(denominator_path)
+        denominator = denominator_context.records
     except RuntimeWitnessError as exc:
+        denominator_context = None
         denominator = ()
         errors.append(exc.code)
     normalized_expected: tuple[str, ...] | None = None
@@ -578,6 +595,17 @@ def aggregate_runtime_witnesses(
         if witness["github"]["repository"] is not None
     ):
         errors.append("REPOSITORY_MISMATCH")
+
+    if denominator_context is not None:
+        if selected_source is not None and denominator_context.source_commit != selected_source:
+            errors.append("DENOMINATOR_SOURCE_COMMIT_MISMATCH")
+        if selected_repository is not None and denominator_context.repository != selected_repository:
+            errors.append("DENOMINATOR_REPOSITORY_MISMATCH")
+        if any(
+            witness["workspace_fingerprint"] != denominator_context.workspace_fingerprint
+            for witness in witnesses
+        ):
+            errors.append("DENOMINATOR_WORKSPACE_MISMATCH")
 
     actual_identities = tuple(sorted(identities))
     if normalized_expected is not None and actual_identities != normalized_expected:

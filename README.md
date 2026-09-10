@@ -45,21 +45,21 @@ pytest -p greengap._runtime_plugin `
   --greengap-witness "$env:RUNNER_TEMP\greengap-witness.json"
 ```
 
-Aggregate only after supplying a complete denominator and a predeclared list
-of expected job/shard identities:
+Aggregate only after supplying a complete source-bound runtime witness as the
+denominator and a predeclared list of expected job/shard identities:
 
 ```powershell
-greengap witness . --denominator greengap-scan.json `
+greengap witness . --denominator "$env:RUNNER_TEMP\full-collection-witness.json" `
   --witness "$env:RUNNER_TEMP\greengap-witness.json" `
   --expected-witness '123456|1|pytest|-|-' `
   --source-commit "$env:GITHUB_SHA" `
   --repository "$env:GITHUB_REPOSITORY" --json
 ```
 
-The runtime aggregator requires both explicit source and repository bindings,
-uses opaque exact-node identities so public redaction cannot change the
-denominator, and applies cumulative witness-input bounds. The runtime witness
-contract and identity format are documented in
+The runtime aggregator requires a complete runtime witness denominator, both
+explicit source and repository bindings, and opaque exact-node identities so
+public redaction cannot change the denominator. It also applies cumulative
+witness-input bounds. The runtime witness contract and identity format are documented in
 [`docs/RUNTIME_WITNESS.md`](docs/RUNTIME_WITNESS.md).
 
 GreenGap never installs target dependencies, invokes package-manager hooks, or

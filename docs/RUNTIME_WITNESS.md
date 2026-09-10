@@ -31,12 +31,14 @@ breaking runtime reconciliation. The schema is
 
 ## Aggregation
 
-The final job must provide both a complete full-collection denominator and the
-predeclared set of expected job/shard identities. For example:
+The final job must provide both a complete full-collection runtime witness as
+the denominator and the predeclared set of expected job/shard identities. A
+public `scan` or `plan` report is not an authenticated runtime denominator and
+is rejected by the witness aggregator. For example:
 
 ```powershell
 greengap witness . `
-  --denominator greengap-scan.json `
+  --denominator "$env:RUNNER_TEMP\full-collection-witness.json" `
   --witness "$env:RUNNER_TEMP\job-linux.json" `
   --witness "$env:RUNNER_TEMP\job-windows.json" `
   --repository "$env:GITHUB_REPOSITORY" `
@@ -49,7 +51,9 @@ greengap witness . `
 The identity format is `run_id|run_attempt|job|matrix|shard`; use `-` for an
 unavailable optional value. `--source-commit` and `--repository` are required
 for a complete aggregation so the denominator is explicitly bound to the
-observed source and target.
+observed source, target, and workspace. The denominator's exact node
+identities and provenance are validated as a runtime witness before the
+aggregation joins any observations.
 
 Aggregation is incomplete unless every expected witness is present and valid,
 all source commits and repositories agree with the explicit bindings, the

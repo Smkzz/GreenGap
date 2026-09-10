@@ -72,11 +72,12 @@ def _safe_identifier(value: Any, *, numeric: bool = False) -> str | None:
 
 def _source_commit(config: Any, errors: list[str]) -> str | None:
     value = config.getoption("greengap_source_commit", default=None)
+    claimed: str | None = None
     if value:
         if not isinstance(value, str) or _HEX_SHA_RE.fullmatch(value) is None:
             errors.append("SOURCE_COMMIT_INVALID")
             return None
-        return value.lower()
+        claimed = value.lower()
     try:
         completed = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -95,7 +96,11 @@ def _source_commit(config: Any, errors: list[str]) -> str | None:
     if completed.returncode != 0 or _HEX_SHA_RE.fullmatch(candidate) is None:
         errors.append("SOURCE_COMMIT_MISSING")
         return None
-    return candidate.lower()
+    actual = candidate.lower()
+    if claimed is not None and claimed != actual:
+        errors.append("SOURCE_COMMIT_MISMATCH")
+        return None
+    return claimed or actual
 
 
 def _relative_node_path(root: Path, value: Any) -> str | None:
@@ -168,12 +173,12 @@ class _Witness:
             self.errors.append(f"CHECKOUT_SOURCE_EQUIVALENCE_UNKNOWN_{phase.upper()}")
 
     def _path_for(self, nodeid: str, raw_path: Any = None) -> str | None:
-        candidate = _relative_node_path(self.root, raw_path) if raw_path is not None else None
-        if candidate:
-            return candidate
         raw_node_path = _node_path(nodeid)
         if raw_node_path is None:
             return None
+        candidate = _relative_node_path(self.root, raw_path) if raw_path is not None else None
+        if candidate:
+            return candidate
         return _relative_node_path(self.root, raw_node_path)
 
     def collection_finish(self, session: Any) -> None:

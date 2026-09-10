@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -75,14 +76,77 @@ def _write(path: Path, payload: object) -> Path:
 
 
 def _denominator(path: Path) -> Path:
-    return _write(
-        path,
-        {
-            "mode": "scan",
-            "stable": True,
-            "collection": {"complete": True, "nodes": _witness()["collection"]},
-        },
+    return _write(path, _witness())
+
+
+def test_runtime_plugin_rejects_explicit_source_claim_that_differs_from_head(monkeypatch) -> None:
+    class Config:
+        rootpath = "."
+
+        def getoption(self, name, default=None):
+            return SOURCE
+
+    monkeypatch.setattr(
+        runtime_plugin.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="c" * 40),
     )
+    errors: list[str] = []
+
+    assert runtime_plugin._source_commit(Config(), errors) is None
+    assert errors == ["SOURCE_COMMIT_MISMATCH"]
+
+
+def test_runtime_plugin_accepts_explicit_source_claim_matching_head(monkeypatch) -> None:
+    class Config:
+        rootpath = "."
+
+        def getoption(self, name, default=None):
+            return SOURCE
+
+    monkeypatch.setattr(
+        runtime_plugin.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=SOURCE),
+    )
+    errors: list[str] = []
+
+    assert runtime_plugin._source_commit(Config(), errors) == SOURCE
+    assert errors == []
+
+
+def test_runtime_plugin_applies_nodeid_bound_before_accepting_item_path(tmp_path: Path) -> None:
+    witness = object.__new__(runtime_plugin._Witness)
+    witness.root = tmp_path
+    nodeid = "tests/test_a.py::test_" + "x" * runtime_plugin._MAX_NODEID_BYTES
+
+    assert witness._path_for(nodeid, tmp_path / "tests" / "test_a.py") is None
+
+
+@pytest.mark.parametrize(
+    ("reports", "expected"),
+    [
+        (
+            [
+                {"when": "setup", "outcome": "passed"},
+                {"when": "call", "outcome": "skipped"},
+                {"when": "teardown", "outcome": "passed"},
+            ],
+            FindingState.SKIPPED,
+        ),
+        ([{"when": "setup", "outcome": "passed"}], FindingState.UNKNOWN),
+        (
+            [
+                {"when": "setup", "outcome": "passed"},
+                {"when": "call", "outcome": "passed"},
+                {"when": "teardown", "outcome": "passed"},
+            ],
+            FindingState.EXECUTED_PASS,
+        ),
+    ],
+)
+def test_runtime_state_requires_a_passing_call_phase(reports, expected) -> None:
+    assert runtime_module._state_for_execution({"reports": reports}) == expected
 
 
 def test_runtime_witness_validation_is_strict_and_normalized(tmp_path: Path) -> None:
@@ -156,6 +220,29 @@ def test_runtime_aggregate_requires_a_target_repository_binding(tmp_path: Path) 
     assert not result.complete
     assert "EXPECTED_REPOSITORY_MISSING" in result.errors
     assert all(finding.state == FindingState.UNKNOWN for finding in result.findings)
+
+
+def test_runtime_aggregate_rejects_public_scan_denominator(tmp_path: Path) -> None:
+    witness = _write(tmp_path / "witness.json", _witness())
+    denominator = _write(
+        tmp_path / "scan.json",
+        {
+            "mode": "scan",
+            "stable": True,
+            "collection": {"complete": True, "nodes": _witness()["collection"]},
+        },
+    )
+
+    result = aggregate_runtime_witnesses(
+        (witness,),
+        denominator,
+        expected_identities=("123|1|pytest|-|-",),
+        expected_repository="example/project",
+        source_commit=SOURCE,
+    )
+
+    assert not result.complete
+    assert "DENOMINATOR_RUNTIME_WITNESS_REQUIRED" in result.errors
 
 
 def test_runtime_aggregate_rejects_repository_mismatch(tmp_path: Path) -> None:
