@@ -10,8 +10,15 @@ output path:
 
 ```powershell
 pytest -p greengap._runtime_plugin `
-  --greengap-witness "$env:RUNNER_TEMP\greengap-witness.json"
+  --greengap-witness "$env:RUNNER_TEMP\greengap-witness.json" `
+  --greengap-full-collection
 ```
+
+`--greengap-full-collection` is an explicit caller assertion for the selected
+pytest roots. The plugin rejects keyword, marker, node-ID, deselection, ignore,
+and cache-based selectors when that assertion is supplied. Without it, the
+witness remains valid evidence of the observed process but cannot be used as a
+complete collection denominator.
 
 `GREENGAP_WITNESS_FILE` and `GREENGAP_SOURCE_COMMIT` may be used instead of
 the corresponding options. On GitHub Actions, the plugin reads the run,
@@ -31,7 +38,7 @@ breaking runtime reconciliation. The schema is
 
 ## Aggregation
 
-The final job must provide both a complete full-collection runtime witness as
+The final job must provide both a complete unfiltered runtime witness as
 the denominator and the predeclared set of expected job/shard identities. A
 public `scan` or `plan` report is not an authenticated runtime denominator and
 is rejected by the witness aggregator. For example:
@@ -50,19 +57,25 @@ greengap witness . `
 
 The identity format is `run_id|run_attempt|job|matrix|shard`; use `-` for an
 unavailable optional value. `--source-commit` and `--repository` are required
-for a complete aggregation so the denominator is explicitly bound to the
-observed source, target, and workspace. The denominator's exact node
-identities and provenance are validated as a runtime witness before the
-aggregation joins any observations.
+for a complete aggregation, and the aggregator also resolves the current
+checkout's exact Git `HEAD` from the supplied repository root. A mismatch or
+unreadable checkout is incomplete, so a valid artifact from another source
+revision cannot be certified by a direct library call. The denominator's exact
+node identities, collection scope, and provenance are validated as a runtime
+witness before the aggregation joins any observations.
 
 Aggregation is incomplete unless every expected witness is present and valid,
 all source commits and repositories agree with the explicit bindings, the
 workspace remained stable, the denominator is complete, and no duplicate or
 conflicting observations exist. Missing jobs, missing shards, malformed
-artifacts, inconsistent source/repository identities, and conflicting node
-paths never become `NOT_SEEN` claims. In those cases findings remain `UNKNOWN`
-and the command exits `2`. The aggregator also caps the number and cumulative
-size of witness inputs.
+artifacts, inconsistent source/repository identities, conflicting node paths,
+or an unknown execution phase never become `NOT_SEEN` claims. In those cases
+findings remain `UNKNOWN` and the command exits `2`. The aggregator also caps
+the number and cumulative size of witness inputs.
+
+The schema remains version `1` for the pre-release contract, but this recovery
+closure intentionally tightens it: old scan/plan reports and filtered or
+legacy runtime witnesses must be regenerated and are not valid denominators.
 
 With a complete set, an observed node is reported as `EXECUTED_PASS`,
 `EXECUTED_FAIL`, or `SKIPPED`. A denominator node absent from the union of all

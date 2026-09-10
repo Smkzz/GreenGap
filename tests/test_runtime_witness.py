@@ -28,6 +28,11 @@ SOURCE = "a" * 40
 FINGERPRINT = "b" * 64
 
 
+@pytest.fixture(autouse=True)
+def _bind_test_checkout(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_module, "_checkout_source_commit", lambda root: SOURCE)
+
+
 def _witness(*, source: str = SOURCE, job: str = "pytest", complete: bool = True) -> dict:
     return {
         "schema_version": 1,
@@ -39,6 +44,7 @@ def _witness(*, source: str = SOURCE, job: str = "pytest", complete: bool = True
         "workspace_fingerprint_final": FINGERPRINT,
         "workspace_stable": True,
         "pytest_root": ".",
+        "collection_scope": "unfiltered",
         "github": {
             "run_id": "123",
             "run_attempt": "1",
@@ -275,6 +281,77 @@ def test_runtime_aggregate_rejects_unstable_runtime_denominator(tmp_path: Path) 
 
     assert not result.complete
     assert "DENOMINATOR_INCOMPLETE" in result.errors
+
+
+def test_runtime_aggregate_rejects_filtered_runtime_denominator(tmp_path: Path) -> None:
+    witness = _write(tmp_path / "witness.json", _witness())
+    denominator_payload = _witness()
+    denominator_payload["collection_scope"] = "filtered"
+    denominator = _write(tmp_path / "denominator.json", denominator_payload)
+
+    result = aggregate_runtime_witnesses(
+        (witness,),
+        denominator,
+        expected_identities=("123|1|pytest|-|-",),
+        expected_repository="example/project",
+        source_commit=SOURCE,
+    )
+
+    assert not result.complete
+    assert "DENOMINATOR_INCOMPLETE" in result.errors
+
+
+def test_runtime_aggregate_rejects_checkout_source_mismatch(tmp_path: Path, monkeypatch) -> None:
+    witness = _write(tmp_path / "witness.json", _witness())
+    denominator = _denominator(tmp_path / "denominator.json")
+    monkeypatch.setattr(runtime_module, "_checkout_source_commit", lambda root: "c" * 40)
+
+    result = aggregate_runtime_witnesses(
+        (witness,),
+        denominator,
+        expected_identities=("123|1|pytest|-|-",),
+        expected_repository="example/project",
+        source_commit=SOURCE,
+        repository_root=tmp_path,
+    )
+
+    assert not result.complete
+    assert "SOURCE_CHECKOUT_MISMATCH" in result.errors
+    assert all(finding.state == FindingState.UNKNOWN for finding in result.findings)
+
+
+def test_runtime_aggregate_keeps_unknown_execution_state_incomplete(tmp_path: Path) -> None:
+    witness_payload = _witness()
+    witness_payload["executed"][0]["reports"] = [
+        {"when": "setup", "outcome": "passed"}
+    ]
+    witness = _write(tmp_path / "witness.json", witness_payload)
+    denominator = _denominator(tmp_path / "denominator.json")
+
+    result = aggregate_runtime_witnesses(
+        (witness,),
+        denominator,
+        expected_identities=("123|1|pytest|-|-",),
+        expected_repository="example/project",
+        source_commit=SOURCE,
+    )
+
+    assert not result.complete
+    assert "EXECUTION_STATE_UNKNOWN" in result.errors
+    assert all(finding.state == FindingState.UNKNOWN for finding in result.findings)
+
+
+def test_runtime_witness_rejects_duplicate_phase_reports(tmp_path: Path) -> None:
+    payload = _witness()
+    payload["executed"][0]["reports"] = [
+        {"when": "call", "outcome": "passed"},
+        {"when": "call", "outcome": "passed"},
+    ]
+
+    with pytest.raises(RuntimeWitnessError) as error:
+        load_runtime_witness(_write(tmp_path / "duplicate-phase.json", payload))
+
+    assert error.value.code == "WITNESS_DUPLICATE_PHASE"
 
 
 def test_runtime_aggregate_rejects_repository_mismatch(tmp_path: Path) -> None:

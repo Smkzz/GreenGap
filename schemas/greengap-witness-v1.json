@@ -18,6 +18,7 @@
     "collection",
     "executed",
     "session",
+    "collection_scope",
     "complete",
     "errors"
   ],
@@ -47,6 +48,7 @@
       "type": "string",
       "pattern": "^(?:\\.|(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\r\\n]+)$"
     },
+    "collection_scope": { "enum": ["filtered", "unfiltered"] },
     "github": {
       "type": "object",
       "additionalProperties": false,

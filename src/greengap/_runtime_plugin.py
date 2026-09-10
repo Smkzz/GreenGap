@@ -52,6 +52,12 @@ def pytest_addoption(parser: Any) -> None:
         help="source commit to bind into the runtime witness",
     )
     group.addoption(
+        "--greengap-full-collection",
+        action="store_true",
+        default=False,
+        help="assert that this invocation has no pytest selectors or node filters",
+    )
+    group.addoption(
         "--greengap-matrix-id",
         action="store",
         default=os.environ.get("GREENGAP_MATRIX_ID"),
@@ -136,6 +142,37 @@ def _github_identity(config: Any, errors: list[str]) -> dict[str, str | None]:
     return values
 
 
+def _collection_scope(config: Any, errors: list[str]) -> str:
+    """Return the caller-declared collection scope after checking selectors."""
+
+    declared = bool(config.getoption("greengap_full_collection", default=False))
+    if not declared:
+        errors.append("FULL_COLLECTION_NOT_DECLARED")
+        return "filtered"
+
+    option = getattr(config, "option", None)
+    selector_options = (
+        "keyword",
+        "markexpr",
+        "deselect",
+        "ignore",
+        "ignore_glob",
+        "last_failed",
+        "failedfirst",
+        "newfirst",
+        "stepwise",
+        "stepwise_skip",
+        "cache_show",
+    )
+    if any(getattr(option, name, None) for name in selector_options):
+        errors.append("COLLECTION_SELECTOR_PRESENT")
+        return "filtered"
+    if any("::" in str(value) or "[" in str(value) for value in getattr(config, "args", ())):
+        errors.append("COLLECTION_SELECTOR_PRESENT")
+        return "filtered"
+    return "unfiltered"
+
+
 class _Witness:
     def __init__(self, config: Any, output: Path) -> None:
         self.config = config
@@ -155,6 +192,7 @@ class _Witness:
         self.final_snapshot: WorkspaceSnapshot | None = None
         self.source_commit = _source_commit(config, self.errors)
         self.github = _github_identity(config, self.errors)
+        self.collection_scope = _collection_scope(config, self.errors)
         self.pytest_root = "."
         self._take_start_snapshot()
 
@@ -196,7 +234,7 @@ class _Witness:
                 self.errors.append("COLLECTION_LIMIT_EXCEEDED")
             else:
                 self.collection[nodeid] = path
-        self.collection_complete = not any(
+        self.collection_complete = self.collection_scope == "unfiltered" and not any(
             error.startswith(("COLLECTION_", "WORKSPACE_FINGERPRINT")) for error in self.errors
         )
 
@@ -251,6 +289,9 @@ class _Witness:
             self.errors.append("REPORT_INVALID")
             return
         report_record = {"when": when, "outcome": outcome}
+        if any(existing.get("when") == when for existing in record["reports"]):
+            self.errors.append("REPORT_PHASE_DUPLICATE")
+            return
         if report_record not in record["reports"]:
             if len(record["reports"]) >= 6:
                 self.errors.append("REPORT_LIMIT_EXCEEDED")
@@ -306,6 +347,7 @@ class _Witness:
             "workspace_fingerprint_final": final_fingerprint,
             "workspace_stable": stable,
             "pytest_root": self.pytest_root,
+            "collection_scope": self.collection_scope,
             "github": self.github,
             "collection": [
                 {

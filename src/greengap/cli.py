@@ -402,6 +402,7 @@ def _witness(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             ),
             expected_repository=args.expected_repository,
             source_commit=args.source_commit,
+            repository_root=Path(args.repo).resolve(),
         )
         payload = aggregate.to_dict()
         return payload, 0 if payload["outcome"] == "COMPLETE" else 1 if payload["outcome"] == "BLOCKED" else 2

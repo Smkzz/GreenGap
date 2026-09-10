@@ -42,7 +42,8 @@ the native witness plugin in the test job and upload its JSON artifact:
 
 ```powershell
 pytest -p greengap._runtime_plugin `
-  --greengap-witness "$env:RUNNER_TEMP\greengap-witness.json"
+  --greengap-witness "$env:RUNNER_TEMP\greengap-witness.json" `
+  --greengap-full-collection
 ```
 
 Aggregate only after supplying a complete source-bound runtime witness as the
@@ -56,7 +57,9 @@ greengap witness . --denominator "$env:RUNNER_TEMP\full-collection-witness.json"
   --repository "$env:GITHUB_REPOSITORY" --json
 ```
 
-The runtime aggregator requires a complete runtime witness denominator, both
+The runtime plugin's `--greengap-full-collection` declaration is accepted only
+when pytest has no node, keyword, marker, deselection, ignore, or cache-based
+selector active. The runtime aggregator requires a complete runtime witness denominator, both
 explicit source and repository bindings, and opaque exact-node identities so
 public redaction cannot change the denominator. It also applies cumulative
 witness-input bounds. The runtime witness contract and identity format are documented in

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import posixpath
 import re
+import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -244,6 +245,9 @@ def _validate_executed_record(record: Any) -> tuple[str, str, dict[str, Any]]:
     if not isinstance(reports, list) or len(reports) > 6:
         raise RuntimeWitnessError("WITNESS_REPORT_INVALID")
     normalized_reports = [_validate_report(item) for item in reports]
+    phases = [item["when"] for item in normalized_reports]
+    if len(set(phases)) != len(phases):
+        raise RuntimeWitnessError("WITNESS_DUPLICATE_PHASE")
     return nodeid, path, {
         "nodeid": nodeid,
         "path": path,
@@ -306,6 +310,7 @@ def _validate_witness_payload(payload: Any) -> dict[str, Any]:
         "collection",
         "executed",
         "session",
+        "collection_scope",
         "complete",
         "errors",
     }
@@ -325,6 +330,9 @@ def _validate_witness_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(payload["workspace_stable"], bool):
         raise RuntimeWitnessError("WITNESS_WORKSPACE_STATE_INVALID")
     pytest_root = _relative_path(payload["pytest_root"], allow_dot=True)
+    collection_scope = payload["collection_scope"]
+    if not isinstance(collection_scope, str) or collection_scope not in {"filtered", "unfiltered"}:
+        raise RuntimeWitnessError("WITNESS_COLLECTION_SCOPE_INVALID")
     github = _validate_github(payload["github"])
     if repository != github["repository"]:
         raise RuntimeWitnessError("WITNESS_REPOSITORY_CONFLICT")
@@ -383,6 +391,7 @@ def _validate_witness_payload(payload: Any) -> dict[str, Any]:
             "workspace_fingerprint": start_fingerprint,
             "workspace_fingerprint_final": final_fingerprint,
             "pytest_root": pytest_root,
+            "collection_scope": collection_scope,
             "github": github,
             "collection": [
                 {
@@ -430,6 +439,7 @@ def _load_denominator(path: Path) -> _RuntimeDenominator:
         or witness.get("errors")
         or witness.get("workspace_stable") is not True
         or witness.get("workspace_fingerprint") != witness.get("workspace_fingerprint_final")
+        or witness.get("collection_scope") != "unfiltered"
         or not isinstance(session, dict)
         or session.get("collection_complete") is not True
         or session.get("session_complete") is not True
@@ -467,6 +477,31 @@ def _load_denominator(path: Path) -> _RuntimeDenominator:
     )
 
 
+def _checkout_source_commit(root: Path) -> str | None:
+    """Read the exact checkout HEAD without executing repository code."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    candidate = completed.stdout.strip()
+    if completed.returncode != 0:
+        return None
+    try:
+        return _sha(candidate)
+    except RuntimeWitnessError:
+        return None
+
+
 def _state_for_execution(record: Mapping[str, Any]) -> FindingState:
     reports = record.get("reports", [])
     phase_outcomes: dict[str, set[str]] = {}
@@ -494,14 +529,16 @@ def aggregate_runtime_witnesses(
     expected_identities: Sequence[str] | None = None,
     expected_repository: str | None = None,
     source_commit: str | None = None,
+    repository_root: Path | None = None,
 ) -> RuntimeAggregate:
     """Aggregate complete, source-bound witnesses against a full node set.
 
-    ``expected_identities``, ``expected_repository``, and ``source_commit``
-    are intentionally required for a complete result. Without a predeclared
-    job/shard set, absence of a witness cannot distinguish "the job did not
-    run" from "the job produced no evidence". Without an expected source
-    commit or repository, the denominator cannot be bound to the witness
+    ``expected_identities``, ``expected_repository``, ``source_commit``, and
+    the checkout HEAD resolved from ``repository_root`` are intentionally
+    required for a complete result. Without a predeclared job/shard set,
+    absence of a witness cannot distinguish "the job did not run" from "the
+    job produced no evidence". Without an expected source commit, repository,
+    or matching checkout HEAD, the denominator cannot be bound to the witness
     source or target.
     """
 
@@ -588,6 +625,21 @@ def aggregate_runtime_witnesses(
     ):
         errors.append("SOURCE_COMMIT_MISMATCH")
 
+    checkout_root: Path | None
+    try:
+        checkout_root = (Path.cwd() if repository_root is None else Path(repository_root)).resolve()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        checkout_root = None
+    checkout_head = (
+        _checkout_source_commit(checkout_root)
+        if checkout_root is not None and checkout_root.is_dir()
+        else None
+    )
+    if checkout_head is None:
+        errors.append("SOURCE_CHECKOUT_UNKNOWN")
+    elif selected_source is not None and checkout_head != selected_source:
+        errors.append("SOURCE_CHECKOUT_MISMATCH")
+
     repository_values = {
         str(witness["github"]["repository"]).casefold()
         for witness in witnesses
@@ -664,6 +716,9 @@ def aggregate_runtime_witnesses(
             else:
                 duplicate_nodes.append(record["nodeid"])
 
+    if any(state is FindingState.UNKNOWN for _, state, _ in observed.values()):
+        errors.append("EXECUTION_STATE_UNKNOWN")
+
     complete = not errors
     findings: list[RuntimeFinding] = []
     for node_identity, record in sorted(
@@ -729,6 +784,7 @@ def aggregate_witnesses(
     expected_identities: Sequence[str] | None = None,
     expected_repository: str | None = None,
     source_commit: str | None = None,
+    repository_root: Path | None = None,
 ) -> RuntimeAggregate:
     """Short alias for integrations that use the generic witness name."""
 
@@ -738,4 +794,5 @@ def aggregate_witnesses(
         expected_identities=expected_identities,
         expected_repository=expected_repository,
         source_commit=source_commit,
+        repository_root=repository_root,
     )
