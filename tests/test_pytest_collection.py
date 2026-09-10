@@ -284,6 +284,61 @@ def test_collection_explicitly_loads_selected_target_plugins(monkeypatch, tmp_pa
     ]
 
 
+def test_collection_supports_normal_target_plugins_without_ambient_analyzer_plugins(
+    monkeypatch, tmp_path
+) -> None:
+    write_files(tmp_path, {"tests/test_a.py": "def test_a():\n    pass\n"})
+    target_manifest = (
+        PytestPlugin("pytest-asyncio", "1.0.0", "asyncio", "pytest_asyncio.plugin"),
+        PytestPlugin("pytest-cov", "6.0.0", "pytest_cov", "pytest_cov.plugin"),
+        PytestPlugin("pytest-docker", "3.2.0", "docker", "pytest_docker.plugin"),
+        PytestPlugin("pytest-xdist", "3.6.1", "xdist", "xdist.plugin"),
+    )
+    observed: dict[str, object] = {}
+
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-p analyzer_only_plugin")
+    monkeypatch.setenv("PYTEST_PLUGINS", "analyzer_only_plugin")
+    monkeypatch.setattr(
+        "greengap.pytest_adapter._target_pytest_plugin_manifest",
+        lambda *args, **kwargs: (target_manifest, None),
+    )
+
+    def fake_run(args, root, environment, timeout):
+        observed["args"] = args
+        observed["environment"] = environment
+        witness = {
+            "version": 1,
+            "nodes": [{"nodeid": "tests/test_a.py::test_a", "path": "tests/test_a.py"}],
+        }
+        with open(environment["GREENGAP_COLLECTION_FILE"], "w", encoding="utf-8") as handle:
+            json.dump(witness, handle)
+        return _BoundedProcessResult(0, "tests/test_a.py::test_a\n", "")
+
+    monkeypatch.setattr("greengap.pytest_adapter._run_pytest_bounded", fake_run)
+
+    result = collect_pytest(tmp_path)
+
+    assert result.complete
+    assert result.plugin_manifest == target_manifest
+    assert observed["environment"]["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    assert "PYTEST_ADDOPTS" not in observed["environment"]
+    assert "PYTEST_PLUGINS" not in observed["environment"]
+    args = observed["args"]
+    explicit_plugins = args[args.index("-p") + 1 : args.index("--rootdir")]
+    assert explicit_plugins == [
+        "greengap._collection_plugin",
+        "-p",
+        "pytest_asyncio.plugin",
+        "-p",
+        "pytest_cov.plugin",
+        "-p",
+        "pytest_docker.plugin",
+        "-p",
+        "xdist.plugin",
+    ]
+    assert "analyzer_only_plugin" not in explicit_plugins
+
+
 @pytest.mark.parametrize("exit_code", [1, 2, 3, 4])
 def test_nonzero_collection_codes_are_not_complete(exit_code: int, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
