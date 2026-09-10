@@ -318,6 +318,35 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--junitxml", "--junit", dest="junitxml")
     verify.add_argument("--json", action="store_true", dest="as_json")
     verify.add_argument("--timeout", type=float, default=60.0)
+    witness = subparsers.add_parser(
+        "witness", help="aggregate native pytest runtime witnesses against a full collection"
+    )
+    witness.add_argument("repo", nargs="?", default=".")
+    witness.add_argument(
+        "--witness",
+        "--input",
+        action="append",
+        dest="witnesses",
+        required=True,
+        help="one inert JSON witness (repeat for jobs or shards)",
+    )
+    witness.add_argument(
+        "--denominator",
+        required=True,
+        help="JSON scan/witness report containing the complete pytest collection",
+    )
+    witness.add_argument(
+        "--expected-witness",
+        action="append",
+        dest="expected_witnesses",
+        help="predeclared witness identity (repeat for every expected job/shard)",
+    )
+    witness.add_argument(
+        "--source-commit",
+        dest="source_commit",
+        help="required 40-character source commit binding the denominator and witnesses",
+    )
+    witness.add_argument("--json", action="store_true", dest="as_json")
     return parser
 
 
@@ -356,6 +385,43 @@ def _verify(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     return payload, 2
 
 
+def _witness(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    from .runtime import RuntimeWitnessError, aggregate_runtime_witnesses
+
+    try:
+        aggregate = aggregate_runtime_witnesses(
+            tuple(Path(value) for value in args.witnesses),
+            Path(args.denominator),
+            expected_identities=(
+                tuple(args.expected_witnesses) if args.expected_witnesses is not None else None
+            ),
+            source_commit=args.source_commit,
+        )
+        payload = aggregate.to_dict()
+        return payload, 0 if payload["outcome"] == "COMPLETE" else 1 if payload["outcome"] == "BLOCKED" else 2
+    except (OSError, ValueError, TypeError, RuntimeWitnessError) as exc:
+        payload = {
+            "schema_version": 1,
+            "artifact_type": "greengap_pytest_runtime_aggregate",
+            "mode": "witness",
+            "complete": False,
+            "outcome": "INCOMPLETE",
+            "tool": {"name": "greengap", "version": __version__, "runtime_proof": False},
+            "runtime_execution_identity": "NOT_CERTIFIED",
+            "source_commit": None,
+            "denominator": {"node_count": 0},
+            "witnesses": {
+                "count": 0,
+                "identities": [],
+                "union_executed_node_count": 0,
+                "duplicate_node_observations": [],
+            },
+            "errors": [str(getattr(exc, "code", "WITNESS_AGGREGATION_FAILED"))],
+            "findings": [],
+        }
+        return payload, 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         for stream in (sys.stdout, sys.stderr):
@@ -380,6 +446,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             if payload["error"]:
                 print(f"error: {terminal_safe_text(payload['error'])}")
             print("verify does not claim witness completeness in the stable Plan-mode API.")
+        return code
+
+    if args.command == "witness":
+        payload, code = _witness(args)
+        if args.as_json:
+            print(json_dump(payload), end="")
+        else:
+            print("GreenGap runtime witness")
+            print(f"status: {payload['outcome']}")
+            print(f"witnesses: {payload['witnesses']['count']}")
+            print(f"collection denominator: {payload['denominator']['node_count']} nodes")
+            print(f"observed nodes: {payload['witnesses']['union_executed_node_count']}")
+            for finding in payload["findings"]:
+                marker = "BLOCKING" if finding.get("blocking") else "         "
+                print(f"{marker} {finding['state']:13} {finding['nodeid']}")
+            if payload["errors"]:
+                print("evidence:")
+                for error in payload["errors"]:
+                    print(f"  - {terminal_safe_text(error)}")
         return code
 
     root = Path(args.repo).resolve()

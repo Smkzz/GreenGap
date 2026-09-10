@@ -13,7 +13,7 @@ unrun hosted event, or failing result is never relabeled not applicable.
 | GG-CLI-05 | Genuine SARIF 2.1.0 with incomplete invocation | SARIF tests and independent Node structural consumer smoke | SARIF consumers | EXTERNAL_BLOCKER: full SARIF validator/ingestion run is not available in the current audit environment; structural smoke passes |
 | GG-SOUND-01 | UNKNOWN never becomes a confident gap | existing v0.1.3 fail-closed regressions | resolver | PASS |
 | GG-SOUND-02 | Changed workspace invalidates result | snapshot mutation tests | resolver | PASS |
-| GG-SOUND-03 | Runtime identity is not certified | JSON/SARIF `NOT_CERTIFIED`, JUnit tests | witness boundary | PASS |
+| GG-SOUND-03 | Static Plan mode does not certify runtime identity; Witness mode certifies only a complete source-bound set | JSON/SARIF `NOT_CERTIFIED` plus Runtime Witness schema/aggregation tests | evidence boundary | PASS |
 | GG-SAFE-01 | Parser/path/resource limits | existing hardening/fuzz/mutation evidence | hostile input | PASS: final local suite |
 | GG-SAFE-02 | Untrusted collection is refused without isolation | safe default and limitation docs | collection | PASS |
 | GG-CI-01 | Exact wheel installation and digest check | reusable workflow source review | GitHub Actions | EXTERNAL_BLOCKER: hosted run not executed |

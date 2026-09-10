@@ -528,6 +528,10 @@ def test_junit_rejects_dtd_entity_expansion_before_parsing(tmp_path, encoding) -
 
 def test_collection_output_limit_is_explicit(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
+        "greengap.pytest_adapter._target_pytest_plugin_manifest",
+        lambda *args, **kwargs: ((), None),
+    )
+    monkeypatch.setattr(
         "greengap.pytest_adapter._run_pytest_bounded",
         lambda *args, **kwargs: _BoundedProcessResult(
             -15, "partial", "", output_limited=True
@@ -539,6 +543,10 @@ def test_collection_output_limit_is_explicit(monkeypatch, tmp_path) -> None:
 
 
 def test_collection_stdout_node_spoof_is_not_evidence(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        "greengap.pytest_adapter._target_pytest_plugin_manifest",
+        lambda *args, **kwargs: ((), None),
+    )
     monkeypatch.setattr(
         "greengap.pytest_adapter._run_pytest_bounded",
         lambda *args, **kwargs: _BoundedProcessResult(
