@@ -1,6 +1,6 @@
 # GreenGap 1.0 applicability cohort protocol
 
-**Protocol version:** 1.0  
+**Protocol version:** 1.0, pre-selection revision 1.1  
 **Recorded date:** 2026-09-10  
 **Status:** preregistered before repository selection or trusted execution  
 **Candidate under test:** `c30543a4e3442a5238cf714c31f333e6cdfbb45e`  
@@ -97,17 +97,20 @@ silently repaired with guessed packages.
 
 ## Candidate discovery and deterministic selection
 
-Discovery is mechanical and outcome-blind. The preregistered GitHub Search
-REST queries are, in this order, with one page of up to 100 results each,
+Discovery is mechanical and outcome-blind. Before selection, the protocol was
+amended to use the pytest-targeted query below as the sole discovery source.
+The broad Python query was read during planning but is not used to define the
+population; removing that irrelevant source before any selection preserves a
+clear, reproducible denominator and is not based on GreenGap outcomes. The
+preregistered GitHub Search REST query is one page of up to 100 results,
 sorted by descending stars:
 
 ```text
-language:Python archived:false stars:>=10
 language:Python archived:false pytest
 ```
 
-The union is de-duplicated by lower-case `owner/name`, retaining the first
-discovery position. The complete ordered discovery list, all static decisions,
+Results are de-duplicated by lower-case `owner/name`, retaining the discovery
+position. The complete ordered discovery list, all static decisions,
 and the resulting ordered eligible population will be retained in
 `docs/evidence/applicability-cohort-discovery-20260910-c30543a.json`. The
 static population must contain at least 30 eligible repositories before any
