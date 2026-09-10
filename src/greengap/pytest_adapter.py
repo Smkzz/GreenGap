@@ -6,10 +6,10 @@ import ast
 import configparser
 import contextlib
 import fnmatch
-import importlib.metadata
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -24,7 +24,7 @@ from time import monotonic
 from typing import Any
 
 from .environment import collection_environment
-from .model import Candidate, CollectedNode, CollectionResult
+from .model import Candidate, CollectedNode, CollectionResult, PytestPlugin
 from .util import (
     MAX_COLLECTION_OUTPUT_BYTES,
     MAX_COLLECTION_SECONDS,
@@ -380,155 +380,183 @@ def _normalize_distribution_name(value: str) -> str:
     return re.sub(r"[-_.]+", "-", value.strip().lower()).strip("-")
 
 
-def _requirement_distribution_name(value: str) -> str | None:
-    text = value.strip()
-    if not text or text.startswith("#"):
-        return None
-    egg = re.search(r"#egg=([A-Za-z0-9][A-Za-z0-9_.-]*)", text, re.IGNORECASE)
-    if egg is not None:
-        return _normalize_distribution_name(egg.group(1))
-    if text.startswith(("-r", "--requirement", "-c", "--constraint")):
-        return None
-    if text.startswith(("-e ", "--editable ")):
-        text = text.split(None, 1)[1]
-        egg = re.search(r"#egg=([A-Za-z0-9][A-Za-z0-9_.-]*)", text, re.IGNORECASE)
-        return _normalize_distribution_name(egg.group(1)) if egg is not None else None
-    match = re.match(r"([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)", text)
-    return _normalize_distribution_name(match.group(1)) if match else None
+def _plugin_config_tokens(root: Path) -> tuple[set[str], set[str]]:
+    """Read plugin enable/disable tokens from the target's pytest addopts.
 
+    The file is parsed only to avoid explicitly re-enabling a plugin that the
+    repository disabled itself.  ``pytest`` still owns the actual config,
+    ``required_plugins`` validation, and ``pytest_plugins`` imports during the
+    target collection process.
+    """
 
-def _declared_project_distributions(root: Path) -> frozenset[str]:
-    """Extract dependency names without treating arbitrary manifest text as code."""
-
-    distributions: set[str] = set()
-
-    pyproject = root / "pyproject.toml"
-    if pyproject.is_file():
-        data = _read_toml(pyproject)
-        project = data.get("project", {})
-        if isinstance(project, dict):
-            dependencies = project.get("dependencies", [])
-            if isinstance(dependencies, list):
-                for dependency in dependencies:
-                    if isinstance(dependency, str):
-                        name = _requirement_distribution_name(dependency)
-                        if name:
-                            distributions.add(name)
-            optional = project.get("optional-dependencies", {})
-            if isinstance(optional, dict):
-                for values in optional.values():
-                    if isinstance(values, list):
-                        for dependency in values:
-                            if isinstance(dependency, str):
-                                name = _requirement_distribution_name(dependency)
-                                if name:
-                                    distributions.add(name)
-        tool = data.get("tool", {})
-        poetry = tool.get("poetry", {}) if isinstance(tool, dict) else {}
-        poetry_dependencies = poetry.get("dependencies", {}) if isinstance(poetry, dict) else {}
-        if isinstance(poetry_dependencies, dict):
-            for dependency in poetry_dependencies:
-                if dependency.lower() != "python":
-                    name = _normalize_distribution_name(str(dependency))
-                    if name:
-                        distributions.add(name)
-
-    for filename in ("requirements.txt", "requirements-dev.txt", "test-requirements.txt"):
-        path = root / filename
-        if not path.is_file():
-            continue
-        try:
-            lines = read_limited_text(path, MAX_CONFIG_BYTES).splitlines()
-        except (OSError, ValueError, UnicodeError):
-            return frozenset()
-        for line in lines:
-            name = _requirement_distribution_name(line)
-            if name:
-                distributions.add(name)
-
-    setup_cfg = root / "setup.cfg"
-    if setup_cfg.is_file():
-        parser = configparser.ConfigParser(interpolation=None, strict=False)
-        try:
-            parser.read_string(read_limited_text(setup_cfg, MAX_CONFIG_BYTES))
-        except (OSError, ValueError, UnicodeError, configparser.Error):
-            return frozenset()
-        for section in ("options", "options.extras_require"):
-            if parser.has_option(section, "install_requires"):
-                values = parser.get(section, "install_requires").splitlines()
-                for value in values:
-                    name = _requirement_distribution_name(value)
-                    if name:
-                        distributions.add(name)
-            if parser.has_section(section) and section == "options.extras_require":
-                for _, value in parser.items(section):
-                    name = _requirement_distribution_name(value)
-                    if name:
-                        distributions.add(name)
-
-    return frozenset(distributions)
-
-
-def _explicit_project_plugin_args(root: Path) -> tuple[str, ...]:
-    """Load only marker plugins declared by the repository and used by its source."""
-
-    declared_distributions = _declared_project_distributions(root)
-    marker_names: set[str] = set()
+    options, _ = pytest_config(root)
+    addopts = options.get("addopts", "")
+    if isinstance(addopts, (list, tuple)):
+        raw = " ".join(str(item) for item in addopts)
+    elif isinstance(addopts, str):
+        raw = addopts
+    else:
+        return set(), set()
     try:
-        candidate_paths = _git_candidate_paths(root)
-        if candidate_paths is None:
-            candidate_paths = tuple(_filesystem_candidate_paths(root))
-        for path in candidate_paths:
-            if path.suffix.lower() != ".py":
-                continue
-            text = read_limited_text(path, MAX_CONFIG_BYTES)
-            marker_names.update(re.findall(r"pytest\.mark\.([A-Za-z_][A-Za-z0-9_]*)", text))
-    except (OSError, ValueError, UnicodeError, PathSafetyError):
-        return ()
-    if not marker_names:
-        return ()
+        tokens = shlex.split(raw, posix=os.name != "nt")
+    except ValueError:
+        return set(), {"<malformed-addopts>"}
+    explicit: set[str] = set()
+    disabled: set[str] = set()
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        value: str | None = None
+        if token == "-p" and index + 1 < len(tokens):
+            index += 1
+            value = tokens[index]
+        elif token.startswith("-p") and token != "-p":
+            value = token[2:]
+        if value:
+            normalized = value.strip().casefold()
+            if normalized.startswith("no:"):
+                disabled.add(normalized[3:])
+            else:
+                explicit.add(normalized)
+        index += 1
+    return explicit, disabled
+
+
+_PYTEST_PLUGIN_MANIFEST_MARKER = "GREENGAP_PYTEST_PLUGIN_MANIFEST="
+_TARGET_PYTEST_PLUGIN_METADATA = r"""
+import importlib.metadata as metadata
+import json
+
+entries = metadata.entry_points()
+if hasattr(entries, "select"):
+    entries = entries.select(group="pytest11")
+elif isinstance(entries, dict):
+    entries = entries.get("pytest11", ())
+else:
+    entries = ()
+records = []
+for entry in entries:
+    distribution = getattr(entry, "dist", None)
+    if distribution is None:
+        raise RuntimeError("pytest11 entry point has no distribution metadata")
+    dist_metadata = getattr(distribution, "metadata", None)
+    name = dist_metadata.get("Name") if dist_metadata is not None else None
+    version = dist_metadata.get("Version") if dist_metadata is not None else None
+    if not name:
+        name = getattr(distribution, "name", None)
+    if not version:
+        version = getattr(distribution, "version", None)
+    entry_name = getattr(entry, "name", None)
+    value = getattr(entry, "value", None)
+    module = str(value or "").split(":", 1)[0].strip()
+    if not all(isinstance(item, str) and item.strip() for item in (name, version, entry_name, module)):
+        raise RuntimeError("pytest11 entry point metadata is incomplete")
+    records.append({
+        "distribution": name.strip(),
+        "version": version.strip(),
+        "entry_point": entry_name.strip(),
+        "module": module,
+    })
+records.sort(key=lambda item: (
+    item["distribution"].casefold(),
+    item["version"],
+    item["entry_point"].casefold(),
+    item["module"],
+))
+print("GREENGAP_PYTEST_PLUGIN_MANIFEST=" + json.dumps(records, sort_keys=True, separators=(",", ":")))
+"""
+
+
+def _parse_plugin_manifest(stdout: str) -> tuple[tuple[PytestPlugin, ...] | None, str | None]:
+    lines = [
+        line[len(_PYTEST_PLUGIN_MANIFEST_MARKER) :]
+        for line in stdout.splitlines()
+        if line.startswith(_PYTEST_PLUGIN_MANIFEST_MARKER)
+    ]
+    if len(lines) != 1:
+        return None, "selected pytest environment plugin manifest was missing or malformed"
     try:
-        entry_points = tuple(importlib.metadata.entry_points(group="pytest11"))
-    except (TypeError, ValueError, RuntimeError):
-        return ()
+        records = json.loads(lines[0])
+    except (TypeError, ValueError, RecursionError, MemoryError):
+        return None, "selected pytest environment plugin manifest was missing or malformed"
+    if not isinstance(records, list):
+        return None, "selected pytest environment plugin manifest was missing or malformed"
+    plugins: list[PytestPlugin] = []
+    for record in records:
+        if not isinstance(record, dict):
+            return None, "selected pytest environment plugin manifest was missing or malformed"
+        values = tuple(record.get(key) for key in ("distribution", "version", "entry_point", "module"))
+        if not all(isinstance(value, str) and value.strip() for value in values):
+            return None, "selected pytest environment plugin manifest was missing or malformed"
+        plugins.append(PytestPlugin(*(value.strip() for value in values)))
+    plugins.sort(
+        key=lambda item: (
+            item.distribution.casefold(),
+            item.version,
+            item.entry_point.casefold(),
+            item.module,
+        )
+    )
+    if len({(item.distribution, item.version, item.entry_point, item.module) for item in plugins}) != len(plugins):
+        return None, "selected pytest environment plugin manifest contains duplicates"
+    return tuple(plugins), None
+
+
+def _target_pytest_plugin_manifest(
+    selected_python: str,
+    root: Path,
+    environment: dict[str, str],
+    timeout: float,
+) -> tuple[tuple[PytestPlugin, ...] | None, str | None]:
+    """Inspect pytest11 metadata with the selected interpreter only.
+
+    This subprocess reads importlib metadata and never calls an entry point's
+    ``load`` method.  Plugin code is imported only later by pytest itself,
+    during the intentionally requested collection.
+    """
+
+    metadata_environment = dict(environment)
+    metadata_environment["PYTHONNOUSERSITE"] = "1"
+    try:
+        completed = _run_pytest_bounded(
+            [selected_python, "-c", _TARGET_PYTEST_PLUGIN_METADATA],
+            root,
+            metadata_environment,
+            min(max(timeout, 0.01), 30.0),
+        )
+    except OSError as exc:
+        return None, f"could not inspect selected pytest environment: {exc}"
+    if completed.output_limited:
+        return None, "selected pytest environment plugin manifest exceeds output limit"
+    if completed.timed_out:
+        return None, "selected pytest environment plugin manifest inspection timed out"
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        suffix = f": {detail[-1][:300]}" if detail else ""
+        return None, f"selected pytest environment plugin manifest could not be inspected{suffix}"
+    return _parse_plugin_manifest(completed.stdout)
+
+
+def _plugin_args_from_manifest(
+    manifest: tuple[PytestPlugin, ...], disabled: set[str]
+) -> tuple[str, ...]:
+    """Build deterministic explicit ``-p`` arguments for target plugins."""
+
     modules: set[str] = set()
-    for entry_point in entry_points:
-        distribution = getattr(entry_point, "dist", None)
-        distribution_name = getattr(distribution, "name", "")
-        normalized_name = re.sub(r"[-_.]+", "-", str(distribution_name).lower())
-        if not normalized_name or normalized_name not in declared_distributions:
+    for plugin in manifest:
+        identifiers = {
+            plugin.distribution.casefold(),
+            _normalize_distribution_name(plugin.distribution),
+            plugin.entry_point.casefold(),
+            plugin.module.casefold(),
+        }
+        if identifiers.intersection(disabled):
             continue
-        entry_name = str(entry_point.name).lower()
-        if entry_name not in {name.lower() for name in marker_names}:
-            continue
-        module = str(entry_point.value).split(":", 1)[0]
-        if module:
-            modules.add(module)
+        modules.add(plugin.module)
     args: list[str] = []
     for module in sorted(modules):
         args.extend(("-p", module))
     return tuple(args)
-
-
-def _unbound_pytest_plugins(root: Path) -> tuple[str, ...] | None:
-    """Return installed pytest plugins that collection does not explicitly bind."""
-
-    try:
-        entry_points = tuple(importlib.metadata.entry_points(group="pytest11"))
-    except (TypeError, ValueError, RuntimeError):
-        return None
-    explicit = _explicit_project_plugin_args(root)
-    explicit_modules = {
-        explicit[index + 1]
-        for index, token in enumerate(explicit[:-1])
-        if token == "-p"
-    }
-    unbound = {
-        str(entry_point.value).split(":", 1)[0]
-        for entry_point in entry_points
-        if str(entry_point.value).split(":", 1)[0] not in explicit_modules
-    }
-    return tuple(sorted(module for module in unbound if module))
 
 
 @dataclass(frozen=True)
@@ -789,25 +817,31 @@ def collect_pytest(
             environment_valid=False,
             error="ambient pytest selection/plugin environment is set: " + ", ".join(ambient),
         )
-    unbound_plugins = _unbound_pytest_plugins(root)
-    if unbound_plugins is None:
-        return CollectionResult(
-            complete=False,
-            environment_valid=False,
-            error="installed pytest plugin entry points could not be inspected safely",
-        )
-    if unbound_plugins:
-        return CollectionResult(
-            complete=False,
-            environment_valid=False,
-            error=(
-                "pytest collection environment contains unbound pytest11 plugins: "
-                + ", ".join(unbound_plugins)
-            ),
-        )
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     environment["NO_COLOR"] = "1"
     environment["PY_COLORS"] = "0"
+    plugin_manifest, manifest_error = _target_pytest_plugin_manifest(
+        selected_python, root, environment, timeout
+    )
+    if plugin_manifest is None:
+        return CollectionResult(
+            complete=False,
+            environment_valid=False,
+            error=manifest_error or "selected pytest environment plugin manifest is unknown",
+        )
+    _, disabled_plugins = _plugin_config_tokens(root)
+    if "<malformed-addopts>" in disabled_plugins:
+        return CollectionResult(
+            complete=False,
+            environment_valid=False,
+            plugin_manifest=plugin_manifest,
+            plugin_manifest_complete=True,
+            error="pytest addopts could not be parsed safely",
+        )
+    manifest_fields = {
+        "plugin_manifest": plugin_manifest,
+        "plugin_manifest_complete": True,
+    }
     src = root / "src"
     analyzer_src = Path(__file__).resolve().parents[1]
     if src.is_dir():
@@ -828,7 +862,7 @@ def collect_pytest(
             "pytest",
             "-p",
             "greengap._collection_plugin",
-            *_explicit_project_plugin_args(root),
+            *_plugin_args_from_manifest(plugin_manifest, disabled_plugins),
             # GreenGap's ``root`` is the checkout boundary.  Without this,
             # pytest can walk above a nested checkout and adopt an analyst
             # host's pytest configuration, making discovery diverge from the
@@ -847,6 +881,7 @@ def collect_pytest(
                 complete=False,
                 environment_valid=False,
                 error=f"could not start pytest: {exc}",
+                **manifest_fields,
             )
         witness_nodes, witness_error = _parse_collection_witness(root, collection_file)
 
@@ -860,6 +895,7 @@ def collect_pytest(
             stderr=stderr[:MAX_COLLECTION_OUTPUT_BYTES],
             returncode=completed.returncode,
             error=f"pytest collection output exceeds limit of {MAX_COLLECTION_OUTPUT_BYTES} bytes",
+            **manifest_fields,
         )
     if completed.timed_out:
         nodes = _parse_nodes(root, stdout, stderr)
@@ -872,6 +908,7 @@ def collect_pytest(
             stderr=stderr,
             error=f"pytest collection timed out after {min(max(timeout, 0.01), MAX_COLLECTION_SECONDS):g}s",
             timed_out=True,
+            **manifest_fields,
         )
     if witness_nodes is None:
         return CollectionResult(
@@ -881,6 +918,7 @@ def collect_pytest(
             stderr=stderr,
             returncode=completed.returncode,
             error=witness_error,
+            **manifest_fields,
         )
     nodes = witness_nodes
     combined = stdout + "\n" + stderr
@@ -897,6 +935,7 @@ def collect_pytest(
         stdout=stdout,
         stderr=stderr,
         error=error,
+        **manifest_fields,
     )
 
 
