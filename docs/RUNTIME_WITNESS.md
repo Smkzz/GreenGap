@@ -35,6 +35,7 @@ greengap witness . `
   --denominator greengap-scan.json `
   --witness "$env:RUNNER_TEMP\job-linux.json" `
   --witness "$env:RUNNER_TEMP\job-windows.json" `
+  --repository "$env:GITHUB_REPOSITORY" `
   --expected-witness '123456|1|pytest-linux|-|-' `
   --expected-witness '123456|1|pytest-windows|-|-' `
   --source-commit "$env:GITHUB_SHA" `
@@ -42,15 +43,18 @@ greengap witness . `
 ```
 
 The identity format is `run_id|run_attempt|job|matrix|shard`; use `-` for an
-unavailable optional value. `--source-commit` is required for a complete
-aggregation so the denominator is explicitly bound to the observed source.
+unavailable optional value. `--source-commit` and `--repository` are required
+for a complete aggregation so the denominator is explicitly bound to the
+observed source and target.
 
 Aggregation is incomplete unless every expected witness is present and valid,
-all source commits agree, the workspace remained stable, the denominator is
-complete, and no duplicate or conflicting observations exist. Missing jobs,
-missing shards, malformed artifacts, inconsistent source commits, and
-conflicting node paths never become `NOT_SEEN` claims. In those cases findings
-remain `UNKNOWN` and the command exits `2`.
+all source commits and repositories agree with the explicit bindings, the
+workspace remained stable, the denominator is complete, and no duplicate or
+conflicting observations exist. Missing jobs, missing shards, malformed
+artifacts, inconsistent source/repository identities, and conflicting node
+paths never become `NOT_SEEN` claims. In those cases findings remain `UNKNOWN`
+and the command exits `2`. The aggregator also caps the number and cumulative
+size of witness inputs.
 
 With a complete set, an observed node is reported as `EXECUTED_PASS`,
 `EXECUTED_FAIL`, or `SKIPPED`. A denominator node absent from the union of all

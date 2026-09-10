@@ -19,7 +19,14 @@ from typing import Any
 
 from . import __version__
 from .model import FindingState
-from .util import MAX_RUNTIME_WITNESS_BYTES, MAX_RUNTIME_WITNESS_NODES, read_limited_bytes
+from .util import (
+    MAX_RUNTIME_AGGREGATE_BYTES,
+    MAX_RUNTIME_EXPECTED_IDENTITIES,
+    MAX_RUNTIME_WITNESS_BYTES,
+    MAX_RUNTIME_WITNESS_NODES,
+    MAX_RUNTIME_WITNESSES,
+    read_limited_bytes,
+)
 
 RUNTIME_WITNESS_SCHEMA_VERSION = 1
 RUNTIME_WITNESS_ARTIFACT_TYPE = "greengap_pytest_runtime_witness"
@@ -68,6 +75,7 @@ class RuntimeAggregate:
 
     complete: bool
     source_commit: str | None
+    repository: str | None
     denominator_count: int
     witness_count: int
     executed_count: int
@@ -100,6 +108,7 @@ class RuntimeAggregate:
             },
             "runtime_execution_identity": "CERTIFIED" if self.complete else "NOT_CERTIFIED",
             "source_commit": self.source_commit,
+            "repository": self.repository,
             "denominator": {"node_count": self.denominator_count},
             "witnesses": {
                 "count": self.witness_count,
@@ -250,6 +259,12 @@ def _expected_identity(value: Any) -> str:
     if not parts[0].isdigit() or not parts[1].isdigit():
         raise RuntimeWitnessError("EXPECTED_WITNESS_SET_INVALID")
     return value
+
+
+def _expected_repository(value: Any) -> str:
+    """Normalize the caller's expected GitHub repository identity."""
+
+    return _string(value, identifier=True).casefold()
 
 
 def _validate_witness_payload(payload: Any) -> dict[str, Any]:
@@ -412,15 +427,17 @@ def aggregate_runtime_witnesses(
     denominator_path: Path,
     *,
     expected_identities: Sequence[str] | None = None,
+    expected_repository: str | None = None,
     source_commit: str | None = None,
 ) -> RuntimeAggregate:
     """Aggregate complete, source-bound witnesses against a full node set.
 
-    ``expected_identities`` and ``source_commit`` are intentionally required
-    for a complete result. Without a predeclared job/shard set, absence of a
-    witness cannot distinguish "the job did not run" from "the job produced
-    no evidence". Without an expected source commit, the denominator cannot
-    be bound to the witness source.
+    ``expected_identities``, ``expected_repository``, and ``source_commit``
+    are intentionally required for a complete result. Without a predeclared
+    job/shard set, absence of a witness cannot distinguish "the job did not
+    run" from "the job produced no evidence". Without an expected source
+    commit or repository, the denominator cannot be bound to the witness
+    source or target.
     """
 
     errors: list[str] = []
@@ -434,16 +451,42 @@ def aggregate_runtime_witnesses(
         errors.append("EXPECTED_WITNESS_SET_MISSING")
     else:
         try:
-            values = tuple(_expected_identity(value) for value in expected_identities)
+            values: list[str] = []
+            for index, value in enumerate(expected_identities):
+                if index >= MAX_RUNTIME_EXPECTED_IDENTITIES:
+                    raise RuntimeWitnessError("EXPECTED_WITNESS_SET_LIMIT_EXCEEDED")
+                values.append(_expected_identity(value))
             if not values or len(set(values)) != len(values):
                 raise RuntimeWitnessError("EXPECTED_WITNESS_SET_INVALID")
             normalized_expected = tuple(sorted(values))
         except RuntimeWitnessError as exc:
             errors.append(exc.code)
 
+    normalized_repository: str | None = None
+    if expected_repository is None:
+        errors.append("EXPECTED_REPOSITORY_MISSING")
+    else:
+        try:
+            normalized_repository = _expected_repository(expected_repository)
+        except RuntimeWitnessError as exc:
+            errors.append(exc.code)
+
     witnesses: list[dict[str, Any]] = []
     identities: dict[str, dict[str, Any]] = {}
+    aggregate_bytes = 0
     for index, path in enumerate(witness_paths):
+        if index >= MAX_RUNTIME_WITNESSES:
+            errors.append("WITNESS_SET_LIMIT_EXCEEDED")
+            break
+        try:
+            artifact_size = path.stat().st_size
+        except (AttributeError, OSError, ValueError):
+            artifact_size = None
+        if artifact_size is not None:
+            aggregate_bytes += max(artifact_size, 0)
+            if aggregate_bytes > MAX_RUNTIME_AGGREGATE_BYTES:
+                errors.append("WITNESS_TOTAL_SIZE_LIMIT_EXCEEDED")
+                break
         try:
             witness = load_runtime_witness(path)
         except RuntimeWitnessError as exc:
@@ -477,6 +520,25 @@ def aggregate_runtime_witnesses(
         witness.get("source_commit") != selected_source for witness in witnesses
     ):
         errors.append("SOURCE_COMMIT_MISMATCH")
+
+    repository_values = {
+        str(witness["github"]["repository"]).casefold()
+        for witness in witnesses
+        if witness["github"]["repository"] is not None
+    }
+    if any(witness["github"]["repository"] is None for witness in witnesses):
+        errors.append("REPOSITORY_MISSING")
+    if len(repository_values) > 1:
+        errors.append("REPOSITORY_INCONSISTENT")
+    selected_repository = normalized_repository
+    if selected_repository is None and len(repository_values) == 1:
+        selected_repository = next(iter(repository_values))
+    if selected_repository is not None and any(
+        witness["github"]["repository"].casefold() != selected_repository
+        for witness in witnesses
+        if witness["github"]["repository"] is not None
+    ):
+        errors.append("REPOSITORY_MISMATCH")
 
     actual_identities = tuple(sorted(identities))
     if normalized_expected is not None and actual_identities != normalized_expected:
@@ -559,6 +621,7 @@ def aggregate_runtime_witnesses(
     return RuntimeAggregate(
         complete=complete,
         source_commit=selected_source,
+        repository=selected_repository,
         denominator_count=len(denominator),
         witness_count=len(witnesses),
         executed_count=len(observed),
@@ -574,6 +637,7 @@ def aggregate_witnesses(
     denominator_path: Path,
     *,
     expected_identities: Sequence[str] | None = None,
+    expected_repository: str | None = None,
     source_commit: str | None = None,
 ) -> RuntimeAggregate:
     """Short alias for integrations that use the generic witness name."""
@@ -582,5 +646,6 @@ def aggregate_witnesses(
         witness_paths,
         denominator_path,
         expected_identities=expected_identities,
+        expected_repository=expected_repository,
         source_commit=source_commit,
     )

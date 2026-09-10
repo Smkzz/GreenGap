@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+import greengap._runtime_plugin as runtime_plugin
+import greengap.runtime as runtime_module
 from greengap.cli import main
 from greengap.model import FindingState
 from greengap.runtime import (
@@ -98,6 +100,7 @@ def test_runtime_aggregate_reports_observed_and_unseen_nodes(tmp_path: Path) -> 
         (witness,),
         denominator,
         expected_identities=("123|1|pytest|-|-",),
+        expected_repository="example/project",
         source_commit=SOURCE,
     )
 
@@ -121,6 +124,39 @@ def test_runtime_aggregate_requires_a_predeclared_witness_set(tmp_path: Path) ->
     assert result.to_dict()["runtime_execution_identity"] == "NOT_CERTIFIED"
 
 
+def test_runtime_aggregate_requires_a_target_repository_binding(tmp_path: Path) -> None:
+    witness = _write(tmp_path / "witness.json", _witness())
+    denominator = _denominator(tmp_path / "denominator.json")
+
+    result = aggregate_runtime_witnesses(
+        (witness,),
+        denominator,
+        expected_identities=("123|1|pytest|-|-",),
+        source_commit=SOURCE,
+    )
+
+    assert not result.complete
+    assert "EXPECTED_REPOSITORY_MISSING" in result.errors
+    assert all(finding.state == FindingState.UNKNOWN for finding in result.findings)
+
+
+def test_runtime_aggregate_rejects_repository_mismatch(tmp_path: Path) -> None:
+    witness = _write(tmp_path / "witness.json", _witness())
+    denominator = _denominator(tmp_path / "denominator.json")
+
+    result = aggregate_runtime_witnesses(
+        (witness,),
+        denominator,
+        expected_identities=("123|1|pytest|-|-",),
+        expected_repository="other/project",
+        source_commit=SOURCE,
+    )
+
+    assert not result.complete
+    assert "REPOSITORY_MISMATCH" in result.errors
+    assert all(finding.state == FindingState.UNKNOWN for finding in result.findings)
+
+
 def test_runtime_aggregate_rejects_missing_and_inconsistent_witnesses(tmp_path: Path) -> None:
     first = _write(tmp_path / "first.json", _witness(job="pytest-linux"))
     second_payload = _witness(source="c" * 40, job="pytest-windows")
@@ -134,6 +170,7 @@ def test_runtime_aggregate_rejects_missing_and_inconsistent_witnesses(tmp_path: 
             "123|1|pytest-linux|-|-",
             "123|1|pytest-windows|-|-",
         ),
+        expected_repository="example/project",
         source_commit=SOURCE,
     )
 
@@ -152,11 +189,63 @@ def test_runtime_aggregate_rejects_duplicate_witness_identity(tmp_path: Path) ->
         (first, duplicate),
         denominator,
         expected_identities=("123|1|pytest|-|-",),
+        expected_repository="example/project",
         source_commit=SOURCE,
     )
 
     assert not result.complete
     assert "DUPLICATE_WITNESS_IDENTITY" in result.errors
+
+
+def test_runtime_aggregate_bounds_outer_witness_set(tmp_path: Path, monkeypatch) -> None:
+    witness = _write(tmp_path / "witness.json", _witness())
+    denominator = _denominator(tmp_path / "denominator.json")
+    monkeypatch.setattr(runtime_module, "MAX_RUNTIME_WITNESSES", 1)
+
+    result = aggregate_runtime_witnesses(
+        (witness, witness),
+        denominator,
+        expected_identities=("123|1|pytest|-|-",),
+        expected_repository="example/project",
+        source_commit=SOURCE,
+    )
+
+    assert not result.complete
+    assert "WITNESS_SET_LIMIT_EXCEEDED" in result.errors
+
+
+def test_runtime_aggregate_bounds_expected_identity_set(tmp_path: Path, monkeypatch) -> None:
+    witness = _write(tmp_path / "witness.json", _witness())
+    denominator = _denominator(tmp_path / "denominator.json")
+    monkeypatch.setattr(runtime_module, "MAX_RUNTIME_EXPECTED_IDENTITIES", 1)
+
+    result = aggregate_runtime_witnesses(
+        (witness,),
+        denominator,
+        expected_identities=("123|1|pytest|-|-", "123|1|other|-|-"),
+        expected_repository="example/project",
+        source_commit=SOURCE,
+    )
+
+    assert not result.complete
+    assert "EXPECTED_WITNESS_SET_LIMIT_EXCEEDED" in result.errors
+
+
+def test_runtime_aggregate_bounds_cumulative_artifact_size(tmp_path: Path, monkeypatch) -> None:
+    witness = _write(tmp_path / "witness.json", _witness())
+    denominator = _denominator(tmp_path / "denominator.json")
+    monkeypatch.setattr(runtime_module, "MAX_RUNTIME_AGGREGATE_BYTES", 1)
+
+    result = aggregate_runtime_witnesses(
+        (witness,),
+        denominator,
+        expected_identities=("123|1|pytest|-|-",),
+        expected_repository="example/project",
+        source_commit=SOURCE,
+    )
+
+    assert not result.complete
+    assert "WITNESS_TOTAL_SIZE_LIMIT_EXCEEDED" in result.errors
 
 
 def test_runtime_witness_cli_preserves_runtime_contract(capsys, tmp_path: Path) -> None:
@@ -175,6 +264,8 @@ def test_runtime_witness_cli_preserves_runtime_contract(capsys, tmp_path: Path) 
             "123|1|pytest|-|-",
             "--source-commit",
             SOURCE,
+            "--repository",
+            "example/project",
             "--json",
         ]
     )
@@ -184,3 +275,27 @@ def test_runtime_witness_cli_preserves_runtime_contract(capsys, tmp_path: Path) 
     assert output["mode"] == "witness"
     assert output["runtime_execution_identity"] == "CERTIFIED"
     assert output["findings"][1]["state"] == "NOT_SEEN"
+
+
+@pytest.mark.parametrize(
+    ("equivalent", "error"),
+    [
+        (False, "CHECKOUT_SOURCE_NOT_EQUIVALENT_START"),
+        (None, "CHECKOUT_SOURCE_EQUIVALENCE_UNKNOWN_START"),
+    ],
+)
+def test_runtime_witness_fails_closed_for_checkout_source_drift(
+    monkeypatch, tmp_path: Path, equivalent: bool | None, error: str
+) -> None:
+    witness = object.__new__(runtime_plugin._Witness)
+    witness.root = tmp_path
+    witness.errors = []
+    monkeypatch.setattr(
+        runtime_plugin,
+        "checkout_source_equivalent_to_head",
+        lambda root, timeout: equivalent,
+    )
+
+    witness._check_checkout_source("start")
+
+    assert witness.errors == [error]

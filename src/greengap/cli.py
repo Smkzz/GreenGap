@@ -346,6 +346,11 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="source_commit",
         help="required 40-character source commit binding the denominator and witnesses",
     )
+    witness.add_argument(
+        "--repository",
+        dest="expected_repository",
+        help="required GitHub repository identity (OWNER/REPOSITORY) for a complete result",
+    )
     witness.add_argument("--json", action="store_true", dest="as_json")
     return parser
 
@@ -395,6 +400,7 @@ def _witness(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             expected_identities=(
                 tuple(args.expected_witnesses) if args.expected_witnesses is not None else None
             ),
+            expected_repository=args.expected_repository,
             source_commit=args.source_commit,
         )
         payload = aggregate.to_dict()
@@ -409,6 +415,7 @@ def _witness(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "tool": {"name": "greengap", "version": __version__, "runtime_proof": False},
             "runtime_execution_identity": "NOT_CERTIFIED",
             "source_commit": None,
+            "repository": None,
             "denominator": {"node_count": 0},
             "witnesses": {
                 "count": 0,

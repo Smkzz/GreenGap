@@ -52,10 +52,13 @@ of expected job/shard identities:
 greengap witness . --denominator greengap-scan.json `
   --witness "$env:RUNNER_TEMP\greengap-witness.json" `
   --expected-witness '123456|1|pytest|-|-' `
-  --source-commit "$env:GITHUB_SHA" --json
+  --source-commit "$env:GITHUB_SHA" `
+  --repository "$env:GITHUB_REPOSITORY" --json
 ```
 
-The runtime witness contract and identity format are documented in
+The runtime aggregator requires both explicit source and repository bindings,
+and applies cumulative witness-input bounds. The runtime witness contract and
+identity format are documented in
 [`docs/RUNTIME_WITNESS.md`](docs/RUNTIME_WITNESS.md).
 
 GreenGap never installs target dependencies, invokes package-manager hooks, or

@@ -22,7 +22,12 @@ from .runtime import (
     RUNTIME_WITNESS_SCHEMA_VERSION,
 )
 from .snapshot import workspace_snapshot
-from .util import MAX_RUNTIME_WITNESS_BYTES, MAX_RUNTIME_WITNESS_NODES, normalize_repo_path
+from .util import (
+    MAX_RUNTIME_WITNESS_BYTES,
+    MAX_RUNTIME_WITNESS_NODES,
+    checkout_source_equivalent_to_head,
+    normalize_repo_path,
+)
 
 _HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,256}$")
@@ -148,10 +153,18 @@ class _Witness:
         self._take_start_snapshot()
 
     def _take_start_snapshot(self) -> None:
+        self._check_checkout_source("start")
         snapshot = workspace_snapshot(self.root, timeout=10.0)
         self.start_snapshot = snapshot
         if not snapshot.complete:
             self.errors.append("WORKSPACE_FINGERPRINT_INCOMPLETE")
+
+    def _check_checkout_source(self, phase: str) -> None:
+        equivalent = checkout_source_equivalent_to_head(self.root, timeout=10.0)
+        if equivalent is False:
+            self.errors.append(f"CHECKOUT_SOURCE_NOT_EQUIVALENT_{phase.upper()}")
+        elif equivalent is None:
+            self.errors.append(f"CHECKOUT_SOURCE_EQUIVALENCE_UNKNOWN_{phase.upper()}")
 
     def _path_for(self, nodeid: str, raw_path: Any = None) -> str | None:
         candidate = _relative_node_path(self.root, raw_path) if raw_path is not None else None
@@ -239,6 +252,7 @@ class _Witness:
                 record["reports"].append(report_record)
 
     def session_finish(self, session: Any, exitstatus: Any) -> None:
+        self._check_checkout_source("final")
         snapshot = workspace_snapshot(self.root, timeout=10.0)
         self.final_snapshot = snapshot
         if not snapshot.complete:
