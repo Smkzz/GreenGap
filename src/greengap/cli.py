@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -430,6 +431,222 @@ def _witness(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         return payload, 2
 
 
+def _witness_action_parser(action: str) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=f"greengap witness {action}",
+        description="caller-authorized pytest runtime witness operation",
+    )
+    if action in {"collect", "run"}:
+        parser.add_argument("repo", nargs="?", default=".")
+        parser.add_argument("--repo", dest="repo_option")
+        parser.add_argument(
+            "--output-dir",
+            "--witness-dir",
+            "--output",
+            dest="output_dir",
+            help="directory for unique witness fragments (defaults to a temporary directory)",
+        )
+        parser.add_argument("--source-commit", dest="source_commit")
+        parser.add_argument("--repository", dest="repository")
+        parser.add_argument("--surface-id", dest="surface_id")
+        parser.add_argument("--run-id", dest="run_id")
+        parser.add_argument("--run-attempt", default="1", dest="run_attempt")
+        parser.add_argument("--timeout", type=float, default=300.0)
+        parser.add_argument("--json", action="store_true", default=True, dest="as_json")
+        return parser
+    if action == "analyze":
+        parser.add_argument("--manifest", required=True)
+        parser.add_argument(
+            "--collection-witness",
+            "--collection-witnesses",
+            "--collection",
+            action="append",
+            dest="collection_witnesses",
+            default=[],
+            help="collection witness file or directory (repeatable)",
+        )
+        parser.add_argument(
+            "--execution-witness",
+            "--execution-witnesses",
+            "--execution",
+            action="append",
+            dest="execution_witnesses",
+            default=[],
+            help="execution witness file or directory (repeatable)",
+        )
+        parser.add_argument(
+            "--witness",
+            action="append",
+            dest="execution_witnesses",
+            default=[],
+            help="compatibility alias for an execution witness",
+        )
+        output = parser.add_mutually_exclusive_group()
+        output.add_argument("--json", action="store_true", dest="as_json")
+        output.add_argument("--sarif", action="store_true", dest="as_sarif")
+        parser.set_defaults(as_json=True, as_sarif=False)
+        return parser
+    if action == "manifest":
+        parser.add_argument("--collection-witness", required=True)
+        parser.add_argument(
+            "--execution-witness-id",
+            action="append",
+            required=True,
+            dest="execution_witness_ids",
+        )
+        parser.add_argument("--output", required=True)
+        parser.add_argument("--json", action="store_true", default=True, dest="as_json")
+        return parser
+    raise ValueError(f"unsupported witness action: {action}")
+
+
+def _split_witness_command(arguments: Sequence[str]) -> tuple[list[str], list[str]]:
+    values = list(arguments)
+    try:
+        delimiter = values.index("--")
+    except ValueError:
+        return values, []
+    return values[:delimiter], values[delimiter + 1 :]
+
+
+def _expand_witness_inputs(values: Sequence[str]) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for value in values:
+        path = Path(value)
+        if path.is_dir():
+            paths.extend(sorted(candidate for candidate in path.glob("*.json") if candidate.is_file()))
+        else:
+            paths.append(path)
+    return tuple(paths)
+
+
+def _command_witness_payload(action: str, result: Any) -> dict[str, Any]:
+    from .witness import WitnessError, load_witness
+
+    valid = 0
+    complete = 0
+    errors: list[str] = []
+    source_commit = None
+    workspace_fingerprint = None
+    run_identity: dict[str, Any] = {"run_id": None, "run_attempt": None}
+    for index, name in enumerate(result.fragment_names):
+        try:
+            payload = load_witness(result.output_dir / name)
+        except (OSError, ValueError, TypeError, WitnessError):
+            errors.append(f"FRAGMENT_{index + 1}_INVALID")
+            continue
+        valid += 1
+        if source_commit is None:
+            source_commit = payload["repository_identity"]["git_sha"]
+            workspace_fingerprint = payload["workspace_identity"]["initial_fingerprint"]
+            run_identity = {
+                "run_id": payload["execution_context"]["run_id"],
+                "run_attempt": payload["execution_context"]["run_attempt"],
+            }
+        if payload["complete"]:
+            complete += 1
+        else:
+            errors.append(f"FRAGMENT_{index + 1}_INCOMPLETE")
+    if result.error:
+        errors.append(result.error)
+    if action == "collect" and result.returncode != 0:
+        errors.append("WITNESS_COLLECTION_INCOMPLETE")
+    return {
+        "schema_version": 1,
+        "artifact_type": "greengap_pytest_runtime_command",
+        "mode": "witness",
+        "operation": action,
+        "complete": not errors and valid > 0 and (action != "collect" or complete > 0),
+        "command_exit_status": result.returncode,
+        "source_commit": source_commit,
+        "workspace_fingerprint": workspace_fingerprint,
+        "run_identity": run_identity,
+        "fragment_count": len(result.fragment_names),
+        "valid_fragment_count": valid,
+        "complete_fragment_count": complete,
+        "fragment_names": list(result.fragment_names),
+        "errors": list(dict.fromkeys(errors)),
+    }
+
+
+def _run_witness_action(action: str, options: list[str], command: list[str]) -> int:
+    from .util import json_dump
+    from .witness import (
+        WitnessError,
+        analyze_witnesses,
+        create_manifest,
+        execute_witness_command,
+        load_witness,
+        witness_sarif,
+    )
+
+    parser = _witness_action_parser(action)
+    args = parser.parse_args(options)
+    if action in {"collect", "run"}:
+        if not command:
+            parser.error("provide the caller-authorized command after --")
+        root = Path(args.repo_option or args.repo).resolve()
+        result = execute_witness_command(
+            root,
+            command,
+            role="collection" if action == "collect" else "execution",
+            output_dir=args.output_dir,
+            source_commit=args.source_commit,
+            repository=args.repository,
+            surface_id=args.surface_id,
+            run_id=args.run_id,
+            run_attempt=args.run_attempt,
+            collect_only=action == "collect",
+            timeout=args.timeout,
+        )
+        payload = _command_witness_payload(action, result)
+        print(json_dump(payload), end="")
+        if action == "collect":
+            return 0 if payload["complete"] else 2
+        if result.error:
+            return 2
+        return result.returncode
+
+    if action == "analyze":
+        collection_paths = _expand_witness_inputs(args.collection_witnesses)
+        execution_paths = _expand_witness_inputs(args.execution_witnesses)
+        analysis = analyze_witnesses(
+            Path(args.manifest),
+            collection_paths,
+            execution_paths,
+        )
+        payload = witness_sarif(analysis) if args.as_sarif else analysis.to_dict()
+        print(json_dump(payload), end="")
+        if args.as_sarif:
+            return 0 if analysis.complete and not analysis.not_run_files else 1 if analysis.complete else 2
+        return 0 if analysis.outcome == "COMPLETE" else 1 if analysis.outcome == "BLOCKED" else 2
+
+    if action == "manifest":
+        try:
+            collection = load_witness(Path(args.collection_witness))
+            manifest = create_manifest(collection, execution_witness_ids=args.execution_witness_ids)
+            destination = Path(args.output).resolve()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            encoded = json_dump(manifest)
+            temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+            temporary.write_text(encoded, encoding="utf-8", newline="")
+            temporary.replace(destination)
+            payload = {"mode": "witness", "operation": "manifest", "complete": True}
+            code = 0
+        except (OSError, ValueError, TypeError, WitnessError) as exc:
+            payload = {
+                "mode": "witness",
+                "operation": "manifest",
+                "complete": False,
+                "errors": [str(getattr(exc, "code", "MANIFEST_FAILED"))],
+            }
+            code = 2
+        print(json_dump(payload), end="")
+        return code
+
+    return 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         for stream in (sys.stdout, sys.stderr):
@@ -438,8 +655,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reconfigure(encoding="utf-8", errors="backslashreplace")
     except (AttributeError, OSError):
         pass
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if len(raw_argv) >= 2 and raw_argv[0] == "witness" and raw_argv[1] in {
+        "collect",
+        "run",
+        "analyze",
+        "manifest",
+    }:
+        options, command = _split_witness_command(raw_argv[2:])
+        return _run_witness_action(raw_argv[1], options, command)
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
     from .report import REPORT_VERSION, public_report, sarif_report
     from .util import json_dump
 

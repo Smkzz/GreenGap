@@ -1,86 +1,143 @@
-# Runtime pytest witnesses
+# Runtime Witness v1
 
-Runtime Witness mode is GreenGap's high-confidence path when a workflow is too
-dynamic for the static Plan resolver. It observes pytest's own native hooks in
-the test process, rather than trying to reconstruct `tox`, matrices, scripts,
-conditions, or external actions from YAML.
+Runtime Witness is GreenGap's opt-in, high-confidence path for answering a
+narrow question: which repository-relative test files did a declared pytest
+execution surface actually reach during one run? It observes pytest's native
+hooks in the caller-authorized test process. Static `greengap plan` remains a
+separate conservative advisory mode and is not a prerequisite for Witness
+analysis.
 
-The plugin is inert unless the caller explicitly loads it and supplies an
-output path:
+Witness v1 is intentionally file-level. Public fragments contain normalized
+repository-relative paths, never pytest node IDs or parameter values. They do
+not contain the target process environment, secrets, authentication material,
+stdout/stderr, fixture values, or executable content.
+
+## Explicit collection and execution
+
+The caller owns the target environment and must provide the real command after
+`--`. GreenGap does not guess or install target dependencies. It injects the
+local GreenGap source package through the target process environment and adds
+the explicit `-p greengap.pytest_witness` pytest activation. The output
+directory is a fragment directory; every pytest session writes a unique file.
 
 ```powershell
-pytest -p greengap._runtime_plugin `
-  --greengap-witness "$env:RUNNER_TEMP\greengap-witness.json" `
-  --greengap-full-collection
+greengap witness collect C:\work\project `
+  --output-dir C:\evidence\collection `
+  --source-commit <target-head-sha> `
+  -- python -m pytest --collect-only
+
+greengap witness run C:\work\project `
+  --output-dir C:\evidence\execution `
+  --source-commit <target-head-sha> `
+  --surface-id linux `
+  --run-id ci-run-42 `
+  -- python -m pytest
 ```
 
-`--greengap-full-collection` is an explicit caller assertion for the selected
-pytest roots. The plugin rejects keyword, marker, node-ID, deselection, ignore,
-and cache-based selectors when that assertion is supplied. Without it, the
-witness remains valid evidence of the observed process but cannot be used as a
-complete collection denominator.
+`collect` marks the collection as complete only when the caller asserted a
+full unfiltered collection and pytest finalized successfully. A collection
+failure, missing fragment, or incomplete session returns exit `2`. `run`
+executes the supplied command and preserves its test-process exit status while
+retaining the witness fragment. A failing test whose `call` report was
+observed is still an executed file; its bounded call outcome is recorded
+separately. A setup failure is attempted/completed telemetry with no
+`call_executed` entry.
 
-`GREENGAP_WITNESS_FILE` and `GREENGAP_SOURCE_COMMIT` may be used instead of
-the corresponding options. On GitHub Actions, the plugin reads the run,
-attempt, job, repository, and optional `GREENGAP_MATRIX_ID` identity from the
-standard environment. `PYTEST_XDIST_WORKER`, when present, becomes the shard
-identity and the output is suffixed per worker to avoid concurrent writes.
+Supported command boundaries are direct pytest, `python -m pytest`, `uv run …
+pytest`, and tox. For tox 4, an ephemeral `-x testenv.pass_env=...` passes only
+the bounded instrumentation variables into the tox environment; the target
+configuration is not edited. If a tox version or environment rejects that
+explicit boundary, the missing or incomplete fragment is an exit-2 condition
+rather than an inferred pass. xdist workers write independent
+fragments named with a session UUID, process ID, and worker ID. A manifest
+must declare worker shards explicitly when they are part of the expected
+surface.
 
-Each artifact is bounded, UTF-8 JSON only, and contains the schema version,
-GreenGap version, source commit, workspace fingerprints, pytest root, full
-collected node identities, observed node reports, and session status. Test
-output, environment dumps, fixtures, pickle, and executable content are not
-captured. Collection and execution records include an opaque SHA-256
-`node_identity` derived from the exact node ID and repository-relative path.
-This lets a public scan report redact path-like parameter values without
-breaking runtime reconciliation. The schema is
+## Fragment contract
+
+The versioned schema is
 [`schemas/greengap-witness-v1.json`](../schemas/greengap-witness-v1.json).
+Each fragment contains bounded repository/tree identity, initial and final
+workspace fingerprints, pytest version/root/session identity, safe execution
+context, and these file sets:
 
-## Aggregation
-
-The final job must provide both a complete unfiltered runtime witness as
-the denominator and the predeclared set of expected job/shard identities. A
-public `scan` or `plan` report is not an authenticated runtime denominator and
-is rejected by the witness aggregator. For example:
-
-```powershell
-greengap witness . `
-  --denominator "$env:RUNNER_TEMP\full-collection-witness.json" `
-  --witness "$env:RUNNER_TEMP\job-linux.json" `
-  --witness "$env:RUNNER_TEMP\job-windows.json" `
-  --repository "$env:GITHUB_REPOSITORY" `
-  --expected-witness '123456|1|pytest-linux|-|-' `
-  --expected-witness '123456|1|pytest-windows|-|-' `
-  --source-commit "$env:GITHUB_SHA" `
-  --json > greengap-witness-aggregate.json
+```text
+collection.collected_files
+execution.attempted_files
+execution.call_executed_files
+execution.completed_files
+execution.call_outcomes
+session.pytest_exitstatus
+session.finalized
 ```
 
-The identity format is `run_id|run_attempt|job|matrix|shard`; use `-` for an
-unavailable optional value. `--source-commit` and `--repository` are required
-for a complete aggregation, and the aggregator also resolves the current
-checkout's exact Git `HEAD` from the supplied repository root. A mismatch or
-unreadable checkout is incomplete, so a valid artifact from another source
-revision cannot be certified by a direct library call. The denominator's exact
-node identities, collection scope, and provenance are validated as a runtime
-witness before the aggregation joins any observations.
+Fragments are written as UTF-8 JSON using a temporary file, flush/fsync, and
+atomic rename. No process appends to a shared JSON document. The analyzer
+limits fragment count, cumulative bytes, file count, path length, and
+diagnostic count.
 
-Aggregation is incomplete unless every expected witness is present and valid,
-all source commits and repositories agree with the explicit bindings, the
-workspace remained stable, the denominator is complete, and no duplicate or
-conflicting observations exist. Missing jobs, missing shards, malformed
-artifacts, inconsistent source/repository identities, conflicting node paths,
-or an unknown execution phase never become `NOT_SEEN` claims. In those cases
-findings remain `UNKNOWN` and the command exits `2`. The aggregator also caps
-the number and cumulative size of witness inputs.
+## Manifest and analysis
 
-The schema remains version `1` for the pre-release contract, but this recovery
-closure intentionally tightens it: old scan/plan reports and filtered or
-legacy runtime witnesses must be regenerated and are not valid denominators.
+The manifest is a declaration of the complete witness universe, not a list of
+whatever artifacts happened to be found. Its schema is
+[`schemas/greengap-witness-manifest-v1.json`](../schemas/greengap-witness-manifest-v1.json).
+The convenience command binds a complete collection fragment to expected
+execution surface/shard IDs:
 
-With a complete set, an observed node is reported as `EXECUTED_PASS`,
-`EXECUTED_FAIL`, or `SKIPPED`. A denominator node absent from the union of all
-observed witnesses is a blocking `NOT_SEEN` finding and exits `1`.
+```powershell
+greengap witness manifest `
+  --collection-witness C:\evidence\collection\fragment.json `
+  --execution-witness-id linux|- `
+  --execution-witness-id windows|- `
+  --output C:\evidence\manifest.json
+```
 
-Static `greengap plan` remains available as advisory, fail-closed workflow
-analysis. It does not consume runtime witnesses and does not claim runtime
-execution identity.
+Analyze only after all declared artifacts have arrived:
+
+```powershell
+greengap witness analyze `
+  --manifest C:\evidence\manifest.json `
+  --collection-witness C:\evidence\collection `
+  --execution-witness C:\evidence\execution `
+  --json
+```
+
+The calculation is:
+
+```text
+COLLECTED_FILES = union of complete declared collection fragments
+EXECUTED_FILES  = union of call_executed_files from complete declared execution fragments
+NOT_RUN         = COLLECTED_FILES - EXECUTED_FILES
+```
+
+Exit `0` means complete evidence and no gaps. Exit `1` means complete evidence
+and one or more proven `GGW001` gaps. Exit `2` means incomplete, malformed,
+stale, conflicting, source-mismatched, workspace-mismatched, duplicate,
+missing, or undeclared-shard evidence. Incomplete evidence never becomes a
+`NOT_RUN` claim. Each gap is scoped to “this collected test file was not
+observed in the complete declared CI witness set for this run”; it is not a
+claim about all historical execution.
+
+JSON is the primary output. `--sarif` is available on `analyze` after the JSON
+semantics and uses the distinct `GGW001` runtime-witness rule. Unknown or
+incomplete evidence is represented as an incomplete invocation, not as a
+security finding.
+
+## Trust boundary
+
+Witness is intended for accidental or inadvertent CI omission in a repository
+whose test code is trusted to execute. It is not anti-malware attestation:
+target code executing in the same pytest process could forge its own file. The
+contract instead fails closed for malformed artifacts, stale source/run
+identity, cross-run mixing, conflicting duplicates, path traversal, oversized
+or bomb-like JSON, missing sessions/shards, partial downloads, and workspace
+drift. Collection and test execution run target code and are not a sandbox.
+
+The current implementation is local-only. GitHub Actions artifact transport
+and final aggregation are intentionally not added until local witness
+semantics and development-corpus validation are complete and separately
+authorized.
+
+The older `greengap witness . --denominator ... --witness ...` node-level
+aggregator remains available as a compatibility API; new Witness integrations
+should use `greengap.pytest_witness`, the manifest, and `witness analyze`.

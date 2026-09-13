@@ -37,32 +37,40 @@ greengap plan . --trust-collection --python .venv/Scripts/python.exe --json > gr
 greengap plan . --trust-collection --python .venv/Scripts/python.exe --sarif > greengap.sarif
 ```
 
-When workflow control flow is too dynamic for static tracing, explicitly load
-the native witness plugin in the test job and upload its JSON artifact:
+When workflow control flow is too dynamic for static tracing, use the explicit
+file-level Runtime Witness path. It runs the caller's real pytest command and
+keeps one bounded fragment per session:
 
 ```powershell
-pytest -p greengap._runtime_plugin `
-  --greengap-witness "$env:RUNNER_TEMP\greengap-witness.json" `
-  --greengap-full-collection
+greengap witness collect . --output-dir "$env:TEMP\greengap-collection" `
+  --source-commit "$env:GITHUB_SHA" -- python -m pytest --collect-only
+
+greengap witness run . --output-dir "$env:TEMP\greengap-execution" `
+  --source-commit "$env:GITHUB_SHA" --surface-id linux --run-id "$env:GITHUB_RUN_ID" `
+  -- python -m pytest
 ```
 
-Aggregate only after supplying a complete source-bound runtime witness as the
-denominator and a predeclared list of expected job/shard identities:
+Create a manifest for the declared collection and CI surfaces, then analyze
+only after all expected witness fragments are present:
 
 ```powershell
-greengap witness . --denominator "$env:RUNNER_TEMP\full-collection-witness.json" `
-  --witness "$env:RUNNER_TEMP\greengap-witness.json" `
-  --expected-witness '123456|1|pytest|-|-' `
-  --source-commit "$env:GITHUB_SHA" `
-  --repository "$env:GITHUB_REPOSITORY" --json
+greengap witness manifest `
+  --collection-witness "$env:TEMP\greengap-collection" `
+  --execution-witness-id 'linux|-' `
+  --output "$env:TEMP\greengap-manifest.json"
+
+greengap witness analyze `
+  --manifest "$env:TEMP\greengap-manifest.json" `
+  --collection-witness "$env:TEMP\greengap-collection" `
+  --execution-witness "$env:TEMP\greengap-execution" --json
 ```
 
-The runtime plugin's `--greengap-full-collection` declaration is accepted only
-when pytest has no node, keyword, marker, deselection, ignore, or cache-based
-selector active. The runtime aggregator requires a complete runtime witness denominator, both
-explicit source and repository bindings, and opaque exact-node identities so
-public redaction cannot change the denominator. It also applies cumulative
-witness-input bounds. The runtime witness contract and identity format are documented in
+The public plugin is explicitly loaded as `greengap.pytest_witness`; it records
+repository-relative file identities and never publishes parameterized node
+IDs, output, or the target environment. Collection requires the caller's
+full-collection assertion. Missing, stale, conflicting, or incomplete
+fragments remain `UNKNOWN` (exit `2`), while a complete set with a proven file
+gap is exit `1`. The runtime witness contract and manifest are documented in
 [`docs/RUNTIME_WITNESS.md`](docs/RUNTIME_WITNESS.md).
 
 GreenGap never installs target dependencies, invokes package-manager hooks, or

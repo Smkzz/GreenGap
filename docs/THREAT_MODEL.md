@@ -63,6 +63,34 @@ review any diagnostic bundle before sharing it. The reusable workflow uploads
 only the validated inert JSON report and keeps the artifact retention policy in
 the caller's control.
 
+## Runtime Witness boundary
+
+The opt-in `greengap.pytest_witness` plugin is a separate caller-authorized
+execution boundary. It observes pytest's native collection and runtest hooks
+and emits independent, atomically finalized fragments. Each fragment is bound
+to the exact Git source SHA, optional tree, initial/final workspace
+fingerprints, pytest session UUID, process ID, and optional xdist worker. The
+public payload contains only normalized repository-relative file paths and
+bounded call outcomes; it does not contain node IDs, parameter values, full
+environment data, credentials, fixture values, or stdout/stderr.
+
+`witness analyze` validates every fragment and the explicit manifest before
+forming any union. It rejects source/run/workspace disagreement, malformed or
+oversized JSON, path traversal, duplicate session conflicts, missing sessions
+or shards, incomplete finalization, and undeclared witness identities. A
+complete collection denominator and complete declared execution set are
+required before a file can receive `GGW001`; otherwise the result is an
+incomplete invocation (exit `2`). A setup-only observation remains attempted
+telemetry and is not counted as a call-phase execution.
+
+This mechanism is not an anti-malware attestation. Target code running in the
+same pytest process can forge a witness. The guarantee is about conservative
+reconciliation of caller-authorized observations, not hostile-process
+isolation. The local command injects only the instrumentation import path and
+bounded `GREENGAP_*`/pytest options into a supplied target environment; it does
+not claim that tox, uv, a virtual environment, or a hosted runner is a
+sandbox. GitHub artifact transport is not yet part of this local contract.
+
 ## Residual risks
 
 The largest residual risk is intentional execution of an untrusted checkout if

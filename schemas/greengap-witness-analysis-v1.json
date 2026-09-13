@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Smkzz/GreenGap/blob/main/schemas/greengap-witness-analysis-v1.json",
+  "title": "GreenGap runtime witness analysis v1",
+  "description": "File-level reconciliation of a declared collection and execution witness set.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "mode",
+    "complete",
+    "outcome",
+    "runtime_execution_identity",
+    "source_commit",
+    "repository",
+    "run_identity",
+    "expected_witness_count",
+    "received_witness_count",
+    "fragment_count",
+    "collection_file_count",
+    "executed_file_count",
+    "not_run_file_count",
+    "collected_files",
+    "executed_files",
+    "not_run_files",
+    "collection_witness_ids",
+    "execution_witness_ids",
+    "errors",
+    "findings"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "artifact_type": { "const": "greengap_pytest_runtime_analysis" },
+    "mode": { "const": "witness" },
+    "complete": { "type": "boolean" },
+    "outcome": { "enum": ["COMPLETE", "BLOCKED", "INCOMPLETE"] },
+    "runtime_execution_identity": { "enum": ["CERTIFIED", "NOT_CERTIFIED"] },
+    "source_commit": { "$ref": "#/$defs/sha" },
+    "repository": { "$ref": "#/$defs/safe_id" },
+    "run_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "run_attempt"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/safe_id" },
+        "run_attempt": { "$ref": "#/$defs/safe_id" }
+      }
+    },
+    "expected_witness_count": { "type": "integer", "minimum": 0, "maximum": 256 },
+    "received_witness_count": { "type": "integer", "minimum": 0, "maximum": 256 },
+    "fragment_count": { "type": "integer", "minimum": 0, "maximum": 256 },
+    "collection_file_count": { "type": "integer", "minimum": 0 },
+    "executed_file_count": { "type": "integer", "minimum": 0 },
+    "not_run_file_count": { "type": "integer", "minimum": 0 },
+    "collected_files": { "$ref": "#/$defs/file_list" },
+    "executed_files": { "$ref": "#/$defs/file_list" },
+    "not_run_files": { "$ref": "#/$defs/file_list" },
+    "collection_witness_ids": { "$ref": "#/$defs/id_list" },
+    "execution_witness_ids": { "$ref": "#/$defs/id_list" },
+    "errors": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]{1,256}$" }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule_id", "state", "file", "blocking", "reason", "evidence"],
+        "properties": {
+          "rule_id": { "const": "GGW001" },
+          "state": { "const": "NOT_RUN" },
+          "file": { "type": "string", "minLength": 1, "maxLength": 1024 },
+          "blocking": { "const": true },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["collection_witness_ids", "execution_witness_ids", "claim_scope"],
+            "properties": {
+              "collection_witness_ids": { "$ref": "#/$defs/id_list" },
+              "execution_witness_ids": { "$ref": "#/$defs/id_list" },
+              "claim_scope": { "const": "declared witness set for this run" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "safe_id": {
+      "type": ["string", "null"],
+      "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_.:/-]{1,256}$"
+    },
+    "sha": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "file_list": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024,
+        "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]+$"
+      }
+    },
+    "id_list": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]{1,256}\\|(?:[A-Za-z0-9_.:/-]{1,256}|-)$" }
+    }
+  }
+}
