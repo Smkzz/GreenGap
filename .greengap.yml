@@ -1,0 +1,4 @@
+witness:
+  collection: ubuntu-24.04-py3.11-collection
+  required:
+    - ubuntu-24.04-py3.11-execution

@@ -19,13 +19,6 @@ from greengap.witness import (
 SOURCE = "a" * 40
 TREE = "b" * 40
 FINGERPRINT = "c" * 64
-TOX_PASS_ENV = (
-    "PYTHONPATH,PYTEST_ADDOPTS,GREENGAP_FULL_COLLECTION,GREENGAP_MATRIX_ID,"
-    "GREENGAP_REPOSITORY,GREENGAP_RUN_ATTEMPT,GREENGAP_RUN_ID,GREENGAP_SHARD,"
-    "GREENGAP_SOURCE_COMMIT,GREENGAP_SOURCE_FINGERPRINT,GREENGAP_WITNESS_DIR,"
-    "GREENGAP_WITNESS_ID,GREENGAP_WITNESS_ROLE,GITHUB_ACTIONS,GITHUB_EVENT_NAME,"
-    "GITHUB_JOB,GITHUB_REF,GITHUB_REPOSITORY,GITHUB_RUN_ATTEMPT,GITHUB_RUN_ID,GITHUB_SHA"
-)
 
 
 def _fragment(
@@ -322,7 +315,7 @@ def test_multiple_sessions_union_without_shared_mutation(tmp_path: Path) -> None
     assert result.executed_files == ("tests/test_a.py", "tests/test_b.py")
 
 
-def test_command_activation_is_explicit_for_direct_tox_and_uv(monkeypatch, tmp_path: Path) -> None:
+def test_command_activation_does_not_rewrite_direct_tox_or_uv(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(witness_module, "git_repository_identity", lambda root: (SOURCE, TREE))
     seen: list[tuple[list[str], dict[str, str]]] = []
 
@@ -345,40 +338,50 @@ def test_command_activation_is_explicit_for_direct_tox_and_uv(monkeypatch, tmp_p
     ):
         output = tmp_path / Path(command[0]).name
         result = witness_module.execute_witness_command(
-            tmp_path, command, role="execution", output_dir=str(output)
+            tmp_path,
+            command,
+            role="execution",
+            output_dir=str(output),
+            surface_id="unit-py311",
+            run_id="run-1",
         )
         assert result.fragment_names
     collection_output = tmp_path / "collection"
+    collection_command = [
+        "python",
+        "-m",
+        "pytest",
+        "-p",
+        witness_module.WITNESS_PLUGIN_MODULE,
+        "--collect-only",
+        "--greengap-full-collection",
+    ]
     collection_result = witness_module.execute_witness_command(
         tmp_path,
-        ["python", "-m", "pytest"],
+        collection_command,
         role="collection",
         collect_only=True,
         output_dir=str(collection_output),
+        surface_id="collection",
+        run_id="run-1",
     )
     assert collection_result.fragment_names
 
     assert len(seen) == 6
-    for actual_command, env in seen:
-        options = env["PYTEST_ADDOPTS"].split()
-        assert options[-2:] == ["-p", witness_module.WITNESS_PLUGIN_MODULE] or options[
-            -3:-1
-        ] == ["-p", witness_module.WITNESS_PLUGIN_MODULE]
+    assert [entry[0] for entry in seen] == [
+        ["python", "-m", "pytest"],
+        ["tox"],
+        ["python", "-m", "tox"],
+        ["python", "-m", "coverage", "run", "-m", "pytest"],
+        ["uv", "run", "pytest"],
+        collection_command,
+    ]
+    for _actual_command, env in seen:
         assert "PYTHONPATH" in env
-        if witness_module._is_tox_command(actual_command):
-            assert "-x" in actual_command
-            override_index = actual_command.index("-x") + 1
-            assert actual_command[override_index] == f"testenv.pass_env={TOX_PASS_ENV}"
-        else:
-            assert "-x" not in actual_command
-    assert "--collect-only" in seen[-1][1]["PYTEST_ADDOPTS"].split()
-    assert witness_module._is_tox_command(["tox", "--override-ini", "pass_env=PYTHONPATH"])
-    uv_tox = witness_module._tox_instrumented_command(["uv", "run", "--with", "tox", "tox", "-e", "py"])
-    assert uv_tox[5:7] == ["-x", f"testenv.pass_env={TOX_PASS_ENV}"]
-    module_tox = witness_module._tox_instrumented_command(["python", "-m", "tox", "-e", "py"])
-    assert module_tox[3:5] == ["-x", f"testenv.pass_env={TOX_PASS_ENV}"]
-    assert "*" not in module_tox[4]
-    assert "GITHUB_TOKEN" not in module_tox[4]
+        assert "PYTEST_ADDOPTS" not in env
+    assert seen[0][1]["GREENGAP_SURFACE_ID"] == "unit-py311"
+    assert seen[-1][1]["GREENGAP_SURFACE_ID"] == "collection"
+    assert seen[-1][0] == collection_command
 
     fallback_output = tmp_path / "fallback"
     fallback = witness_module.execute_witness_command(
@@ -386,6 +389,8 @@ def test_command_activation_is_explicit_for_direct_tox_and_uv(monkeypatch, tmp_p
         ["no-witness"],
         role="collection",
         output_dir=str(fallback_output),
+        surface_id="collection",
+        run_id="run-1",
     )
     assert fallback.fragment_names
     fallback_payload = load_witness(fallback.output_dir / fallback.fragment_names[0])
@@ -396,6 +401,7 @@ def test_command_activation_is_explicit_for_direct_tox_and_uv(monkeypatch, tmp_p
 
 def test_real_witness_separates_runtime_outputs_from_source_identity(tmp_path: Path) -> None:
     (tmp_path / ".gitignore").write_text(".pytest_cache/\n", encoding="utf-8")
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
     (tests_dir / "test_a.py").write_text(
@@ -425,9 +431,18 @@ def test_real_witness_separates_runtime_outputs_from_source_identity(tmp_path: P
     output_dir = tmp_path / "witness-output"
     result = witness_module.execute_witness_command(
         tmp_path,
-        [sys.executable, "-m", "pytest", "tests/test_a.py"],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            witness_module.WITNESS_PLUGIN_MODULE,
+            "tests/test_a.py",
+        ],
         role="execution",
         output_dir=str(output_dir),
+        surface_id="unit-py311",
+        run_id="run-1",
         timeout=30,
     )
     assert result.fragment_names

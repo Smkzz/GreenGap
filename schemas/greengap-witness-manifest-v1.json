@@ -16,10 +16,17 @@
     "execution",
     "required_witness_ids"
   ],
+  "allOf": [
+    {
+      "if": { "required": ["contract"] },
+      "then": { "required": ["surface_manifest"] }
+    }
+  ],
   "properties": {
     "schema_version": { "const": 1 },
     "manifest_version": { "const": 1 },
     "artifact_type": { "const": "greengap_pytest_runtime_witness_manifest" },
+    "contract": { "const": "explicit" },
     "repository_identity": { "$ref": "#/$defs/repository_identity" },
     "source_identity": {
       "type": "object",
@@ -48,7 +55,8 @@
     },
     "collection": { "$ref": "#/$defs/surface_set" },
     "execution": { "$ref": "#/$defs/surface_set" },
-    "required_witness_ids": { "$ref": "#/$defs/witness_id_list" }
+    "required_witness_ids": { "$ref": "#/$defs/witness_id_list" },
+    "surface_manifest": { "$ref": "#/$defs/surface_manifest" }
   },
   "$defs": {
     "sha": {
@@ -78,6 +86,25 @@
       "maxItems": 256,
       "uniqueItems": true,
       "items": { "$ref": "#/$defs/witness_id" }
+    },
+    "surface_id": {
+      "type": "string",
+      "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_.:/-]{1,256}$"
+    },
+    "surface_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collection_surface_id", "required_execution_surface_ids"],
+      "properties": {
+        "collection_surface_id": { "$ref": "#/$defs/surface_id" },
+        "required_execution_surface_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/surface_id" }
+        }
+      }
     },
     "surface_set": {
       "type": "object",

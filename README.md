@@ -38,40 +38,16 @@ greengap plan . --trust-collection --python .venv/Scripts/python.exe --sarif > g
 ```
 
 When workflow control flow is too dynamic for static tracing, use the explicit
-file-level Runtime Witness path. It runs the caller's real pytest command and
-keeps one bounded fragment per session:
+file-level Runtime Witness path documented in
+[`docs/RUNTIME_WITNESS.md`](docs/RUNTIME_WITNESS.md). Every real pytest
+command visibly loads `greengap.pytest_witness`, receives an explicit
+`GREENGAP_SURFACE_ID`, and writes one bounded fragment per session. A committed
+`.greengap.yml` declares the complete collection and execution surface set;
+missing surfaces remain `UNKNOWN` (exit `2`) rather than being inferred.
 
-```powershell
-greengap witness collect . --output-dir "$env:TEMP\greengap-collection" `
-  --source-commit "$env:GITHUB_SHA" -- python -m pytest --collect-only
-
-greengap witness run . --output-dir "$env:TEMP\greengap-execution" `
-  --source-commit "$env:GITHUB_SHA" --surface-id linux --run-id "$env:GITHUB_RUN_ID" `
-  -- python -m pytest
-```
-
-Create a manifest for the declared collection and CI surfaces, then analyze
-only after all expected witness fragments are present:
-
-```powershell
-greengap witness manifest `
-  --collection-witness "$env:TEMP\greengap-collection" `
-  --execution-witness-id 'linux|-' `
-  --output "$env:TEMP\greengap-manifest.json"
-
-greengap witness analyze `
-  --manifest "$env:TEMP\greengap-manifest.json" `
-  --collection-witness "$env:TEMP\greengap-collection" `
-  --execution-witness "$env:TEMP\greengap-execution" --json
-```
-
-The public plugin is explicitly loaded as `greengap.pytest_witness`; it records
-repository-relative file identities and never publishes parameterized node
-IDs, output, or the target environment. Collection requires the caller's
-full-collection assertion. Missing, stale, conflicting, or incomplete
-fragments remain `UNKNOWN` (exit `2`), while a complete set with a proven file
-gap is exit `1`. The runtime witness contract and manifest are documented in
-[`docs/RUNTIME_WITNESS.md`](docs/RUNTIME_WITNESS.md).
+The supported recipes are direct pytest, tox, uv, and explicit matrix/shard
+commands. GreenGap does not inject `PYTEST_ADDOPTS`, rewrite tox argv, guess
+wrapper behavior, install target dependencies, or mirror `GITHUB_*` variables.
 
 GreenGap never installs target dependencies, invokes package-manager hooks, or
 changes a global environment. A subprocess, virtual environment, or warning

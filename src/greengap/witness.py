@@ -39,6 +39,7 @@ from .util import (
     read_limited_bytes,
     run_process_tree,
 )
+from .witness_config import ExplicitWitnessConfig
 
 WITNESS_SCHEMA_VERSION = 1
 WITNESS_ARTIFACT_TYPE = "greengap_pytest_runtime_witness"
@@ -391,6 +392,41 @@ def _expected_id_list(value: Any, *, required: bool = True) -> list[str]:
     return result
 
 
+def _surface_name(value: Any) -> str:
+    result = _required_id(value)
+    if "|" in result:
+        raise WitnessError("MANIFEST_SURFACE_ID_INVALID")
+    return result
+
+
+def _validate_surface_manifest(
+    value: Any,
+    *,
+    collection_ids: Sequence[str],
+    execution_ids: Sequence[str],
+) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {
+        "collection_surface_id",
+        "required_execution_surface_ids",
+    }:
+        raise WitnessError("MANIFEST_SURFACE_MANIFEST_INVALID")
+    collection_surface = _surface_name(value["collection_surface_id"])
+    raw_execution = value["required_execution_surface_ids"]
+    if not isinstance(raw_execution, list) or not raw_execution:
+        raise WitnessError("MANIFEST_SURFACE_MANIFEST_INVALID")
+    execution_surfaces = sorted({_surface_name(item) for item in raw_execution})
+    if len(execution_surfaces) != len(raw_execution):
+        raise WitnessError("MANIFEST_SURFACE_ID_CONFLICT")
+    expected_collection = [f"{collection_surface}|-"]
+    expected_execution = sorted(f"{surface}|-" for surface in execution_surfaces)
+    if list(collection_ids) != expected_collection or list(execution_ids) != expected_execution:
+        raise WitnessError("MANIFEST_SURFACE_ID_CONFLICT")
+    return {
+        "collection_surface_id": collection_surface,
+        "required_execution_surface_ids": execution_surfaces,
+    }
+
+
 def _validate_manifest_payload(payload: Any) -> dict[str, Any]:
     required = {
         "schema_version",
@@ -403,7 +439,7 @@ def _validate_manifest_payload(payload: Any) -> dict[str, Any]:
         "execution",
         "required_witness_ids",
     }
-    allowed = required | {"source_identity"}
+    allowed = required | {"source_identity", "contract", "surface_manifest"}
     if not isinstance(payload, dict) or not required.issubset(payload) or not set(payload) <= allowed:
         raise WitnessError("MANIFEST_SCHEMA_INVALID")
     if payload["schema_version"] != 1 or payload["manifest_version"] != 1:
@@ -441,7 +477,19 @@ def _validate_manifest_payload(payload: Any) -> dict[str, Any]:
         raise WitnessError("MANIFEST_REQUIRED_SET_CONFLICT")
     if len(required_ids) > MAX_RUNTIME_EXPECTED_IDENTITIES:
         raise WitnessError("MANIFEST_WITNESS_SET_LIMIT_EXCEEDED")
-    return {
+    contract = payload.get("contract")
+    if contract is not None and contract != "explicit":
+        raise WitnessError("MANIFEST_CONTRACT_UNSUPPORTED")
+    surface_manifest = None
+    if contract == "explicit" or "surface_manifest" in payload:
+        if "surface_manifest" not in payload:
+            raise WitnessError("MANIFEST_SURFACE_MANIFEST_MISSING")
+        surface_manifest = _validate_surface_manifest(
+            payload["surface_manifest"],
+            collection_ids=collection_ids,
+            execution_ids=execution_ids,
+        )
+    normalized = {
         "schema_version": 1,
         "manifest_version": 1,
         "artifact_type": WITNESS_MANIFEST_ARTIFACT_TYPE,
@@ -453,6 +501,11 @@ def _validate_manifest_payload(payload: Any) -> dict[str, Any]:
         "execution": {"expected_witness_ids": execution_ids},
         "required_witness_ids": required_ids,
     }
+    if contract is not None:
+        normalized["contract"] = contract
+    if surface_manifest is not None:
+        normalized["surface_manifest"] = surface_manifest
+    return normalized
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -829,8 +882,14 @@ def create_manifest(
     collection_witness: Mapping[str, Any],
     *,
     execution_witness_ids: Sequence[str],
+    explicit_config: ExplicitWitnessConfig | None = None,
 ) -> dict[str, Any]:
-    """Create a manifest bound to a validated collection fragment."""
+    """Create a manifest bound to a validated collection fragment.
+
+    ``explicit_config`` is the redesigned path.  The legacy ID-only form is
+    retained for consumers of the stopped v1 API, but it does not claim the
+    explicit surface contract.
+    """
 
     payload = _validate_witness_payload(collection_witness)
     if not payload["complete"] or not payload["collection"]["complete"]:
@@ -838,7 +897,15 @@ def create_manifest(
     identity = payload["repository_identity"]
     context = payload["execution_context"]
     collection_id = witness_id(payload)
-    execution_ids = sorted({_normalize_witness_id(item) for item in execution_witness_ids})
+    if explicit_config is not None:
+        expected_collection_id = explicit_config.collection_witness_id
+        if collection_id != expected_collection_id:
+            raise WitnessError("MANIFEST_COLLECTION_SURFACE_MISMATCH")
+        if execution_witness_ids:
+            raise WitnessError("MANIFEST_CONFIG_ID_OVERRIDE_FORBIDDEN")
+        execution_ids = list(explicit_config.execution_witness_ids)
+    else:
+        execution_ids = sorted({_normalize_witness_id(item) for item in execution_witness_ids})
     if not execution_ids:
         raise WitnessError("MANIFEST_EXECUTION_SET_MISSING")
     required = sorted({collection_id, *execution_ids})
@@ -857,6 +924,9 @@ def create_manifest(
         "execution": {"expected_witness_ids": execution_ids},
         "required_witness_ids": required,
     }
+    if explicit_config is not None:
+        manifest["contract"] = "explicit"
+        manifest["surface_manifest"] = explicit_config.to_dict()
     return _validate_manifest_payload(manifest)
 
 
@@ -866,70 +936,6 @@ class CommandRun:
     output_dir: Path
     fragment_names: tuple[str, ...]
     error: str | None = None
-
-
-def _is_tox_command(command: Sequence[str]) -> bool:
-    lowered = [Path(token).name.casefold() for token in command]
-    if _tox_executable_index(command) is not None:
-        return True
-    for index, token in enumerate(lowered):
-        if (
-            token in {"python", "python.exe", "py", "py.exe"}
-            and index + 2 < len(lowered)
-            and lowered[index + 1] == "-m"
-            and lowered[index + 2] == "tox"
-        ):
-            return True
-    return False
-
-
-def _tox_executable_index(command: Sequence[str]) -> int | None:
-    for index, token in enumerate(command):
-        if Path(token).name.casefold() not in {"tox", "tox.exe"}:
-            continue
-        if index > 0 and command[index - 1] in {"--with", "--with-editable", "--from"}:
-            continue
-        return index
-    return None
-
-
-def _tox_instrumented_command(command: Sequence[str]) -> list[str]:
-    actual = list(command)
-    tox_index = _tox_executable_index(actual)
-    if tox_index is not None:
-        insertion_index = tox_index + 1
-    else:
-        lowered = [Path(token).name.casefold() for token in actual]
-        insertion_index = None
-        for index, token in enumerate(lowered):
-            if (
-                token in {"python", "python.exe", "py", "py.exe"}
-                and index + 2 < len(lowered)
-                and lowered[index + 1] == "-m"
-                and lowered[index + 2] == "tox"
-            ):
-                insertion_index = index + 3
-                break
-    if insertion_index is None:
-        return actual
-    pass_env = (
-        "PYTHONPATH,PYTEST_ADDOPTS,GREENGAP_FULL_COLLECTION,GREENGAP_MATRIX_ID,"
-        "GREENGAP_REPOSITORY,GREENGAP_RUN_ATTEMPT,GREENGAP_RUN_ID,GREENGAP_SHARD,"
-        "GREENGAP_SOURCE_COMMIT,GREENGAP_SOURCE_FINGERPRINT,GREENGAP_WITNESS_DIR,"
-        "GREENGAP_WITNESS_ID,GREENGAP_WITNESS_ROLE,GITHUB_ACTIONS,GITHUB_EVENT_NAME,"
-        "GITHUB_JOB,GITHUB_REF,GITHUB_REPOSITORY,GITHUB_RUN_ATTEMPT,GITHUB_RUN_ID,GITHUB_SHA"
-    )
-    override = f"testenv.pass_env={pass_env}"
-    if override in actual:
-        return actual
-    # Tox 4's bounded configuration override is inserted before the command
-    # subparser. Unsupported tox versions fail closed through the missing
-    # fragment path instead of inheriting ambient instrumentation.
-    actual[insertion_index:insertion_index] = [
-        "-x",
-        override,
-    ]
-    return actual
 
 
 def _normalized_returncode(value: Any) -> tuple[int, str | None]:
@@ -945,12 +951,6 @@ def _normalized_returncode(value: Any) -> tuple[int, str | None]:
         if -1 <= signed <= 255:
             return signed, None
     return 127, "COMMAND_EXITSTATUS_INVALID"
-
-
-def _append_pytest_options(existing: str | None, options: Sequence[str]) -> str:
-    current = (existing or "").strip()
-    injection = " ".join(options)
-    return f"{current} {injection}".strip()
 
 
 def _safe_snapshot(root: Path) -> Any | None:
@@ -1032,9 +1032,12 @@ def _fallback_payload(
         diagnostics.append("SOURCE_IDENTITY_INCOMPLETE")
     if not source_stable:
         diagnostics.append("SOURCE_IDENTITY_UNSTABLE")
-    provider = "github_actions" if os.environ.get("GITHUB_ACTIONS") == "true" else "local"
-    worker_id = _safe_context_id(os.environ.get("PYTEST_XDIST_WORKER"))
-    shard = _safe_context_id(os.environ.get("GREENGAP_SHARD")) or worker_id
+    provider = _safe_context_id(os.environ.get("GREENGAP_PROVIDER")) or "local"
+    if provider not in {"local", "github_actions", "ci"}:
+        provider = "local"
+    worker_id = _safe_context_id(os.environ.get("GREENGAP_WORKER_ID"))
+    shard = _safe_context_id(os.environ.get("GREENGAP_SURFACE_SHARD"))
+    job_id = _safe_context_id(os.environ.get("GREENGAP_JOB_ID")) or surface_id
     status = exitstatus if -1 <= exitstatus <= 255 else -1
     return {
         "schema_version": WITNESS_SCHEMA_VERSION,
@@ -1064,10 +1067,10 @@ def _fallback_payload(
             "provider": provider,
             "run_id": run_id,
             "run_attempt": run_attempt,
-            "job": _safe_context_id(os.environ.get("GITHUB_JOB")) or surface_id,
+            "job": job_id,
             "matrix_identity": _safe_context_id(os.environ.get("GREENGAP_MATRIX_ID")),
-            "event": _safe_context_id(os.environ.get("GITHUB_EVENT_NAME")),
-            "ref": _safe_context_id(os.environ.get("GITHUB_REF")),
+            "event": None,
+            "ref": None,
             "surface_id": surface_id,
             "shard": shard,
             "worker_id": worker_id,
@@ -1160,7 +1163,15 @@ def execute_witness_command(
     collect_only: bool = False,
     timeout: float = 300.0,
 ) -> CommandRun:
-    """Run the caller's real command with explicit witness activation."""
+    """Run exactly the caller's command while supplying bounded identity inputs.
+
+    This helper is intentionally not the primary integration contract.  It
+    supplies the local source package and identity environment for local
+    qualification, but it never edits tox/uv/coverage arguments, injects
+    ``PYTEST_ADDOPTS``, or assumes that a wrapper will forward environment
+    variables.  A command that did not explicitly load the pytest plugin
+    produces no valid witness and therefore remains exit-2 incomplete.
+    """
 
     if role not in {"collection", "execution", "both"}:
         return CommandRun(2, Path(output_dir or "."), (), "WITNESS_ROLE_INVALID")
@@ -1185,7 +1196,7 @@ def execute_witness_command(
         destination = _output_directory(output_dir)
     except WitnessError as exc:
         return CommandRun(2, root, (), exc.code)
-    selected_surface = surface_id or ("collection" if role == "collection" else "execution")
+    selected_surface = surface_id
     selected_run_id = run_id or f"local-{uuid.uuid4().hex}"
     if (
         not isinstance(selected_surface, str)
@@ -1210,21 +1221,24 @@ def execute_witness_command(
     env["PYTHONPATH"] = source_root + (os.pathsep + prior_pythonpath if prior_pythonpath else "")
     env["GREENGAP_WITNESS_DIR"] = str(destination)
     env["GREENGAP_WITNESS_ROLE"] = role
+    env["GREENGAP_SOURCE_SHA"] = selected_source
     env["GREENGAP_SOURCE_COMMIT"] = selected_source
     if initial_source_snapshot is not None and _SHA256_RE.fullmatch(initial_source_snapshot.fingerprint):
         env["GREENGAP_SOURCE_FINGERPRINT"] = initial_source_snapshot.fingerprint
     env["GREENGAP_RUN_ID"] = selected_run_id
     env["GREENGAP_RUN_ATTEMPT"] = run_attempt
+    env["GREENGAP_JOB_ID"] = selected_surface
+    env["GREENGAP_PROVIDER"] = env.get("GREENGAP_PROVIDER") or "local"
+    env["GREENGAP_SURFACE_ID"] = selected_surface
     env["GREENGAP_WITNESS_ID"] = selected_surface
     if selected_repository is not None:
         env["GREENGAP_REPOSITORY"] = selected_repository
-    if role == "collection":
-        env["GREENGAP_FULL_COLLECTION"] = "1"
-    options = ["-p", WITNESS_PLUGIN_MODULE]
-    if collect_only:
-        options.append("--collect-only")
-    env["PYTEST_ADDOPTS"] = _append_pytest_options(env.get("PYTEST_ADDOPTS"), options)
-    actual_command = _tox_instrumented_command(command) if _is_tox_command(command) else list(command)
+    # ``collect_only`` is retained as a source-compatible argument for
+    # callers of the stopped RC helper.  The redesigned contract requires
+    # ``--collect-only`` to be visible in the caller's command instead of
+    # silently adding it here.
+    _ = collect_only
+    actual_command = list(command)
     try:
         completed = run_process_tree(
             actual_command,

@@ -446,7 +446,7 @@ def _witness_action_parser(action: str) -> argparse.ArgumentParser:
             dest="output_dir",
             help="directory for unique witness fragments (defaults to a temporary directory)",
         )
-        parser.add_argument("--source-commit", dest="source_commit")
+        parser.add_argument("--source-commit", "--source-sha", dest="source_commit")
         parser.add_argument("--repository", dest="repository")
         parser.add_argument("--surface-id", dest="surface_id")
         parser.add_argument("--run-id", dest="run_id")
@@ -489,10 +489,15 @@ def _witness_action_parser(action: str) -> argparse.ArgumentParser:
     if action == "manifest":
         parser.add_argument("--collection-witness", required=True)
         parser.add_argument(
+            "--config",
+            dest="config_path",
+            help="explicit .greengap.yml surface manifest",
+        )
+        parser.add_argument(
             "--execution-witness-id",
             action="append",
-            required=True,
             dest="execution_witness_ids",
+            help="compatibility surface identity (use --config for the explicit contract)",
         )
         parser.add_argument("--output", required=True)
         parser.add_argument("--json", action="store_true", default=True, dest="as_json")
@@ -580,6 +585,7 @@ def _run_witness_action(action: str, options: list[str], command: list[str]) -> 
         create_manifest,
         execute_witness_command,
         load_witness,
+        resolve_witness_output_path,
         witness_sarif,
     )
 
@@ -606,7 +612,7 @@ def _run_witness_action(action: str, options: list[str], command: list[str]) -> 
         print(json_dump(payload), end="")
         if action == "collect":
             return 0 if payload["complete"] else 2
-        if result.error:
+        if result.error or not payload["complete"]:
             return 2
         return result.returncode
 
@@ -626,10 +632,25 @@ def _run_witness_action(action: str, options: list[str], command: list[str]) -> 
 
     if action == "manifest":
         try:
+            from .witness_config import WitnessConfigError, load_explicit_witness_config
+
             collection = load_witness(Path(args.collection_witness))
-            manifest = create_manifest(collection, execution_witness_ids=args.execution_witness_ids)
-            destination = Path(args.output).resolve()
+            explicit_config = None
+            if args.config_path:
+                if args.execution_witness_ids:
+                    raise WitnessConfigError("WITNESS_CONFIG_ID_OVERRIDE_FORBIDDEN")
+                explicit_config = load_explicit_witness_config(Path(args.config_path))
+            elif not args.execution_witness_ids:
+                raise WitnessConfigError("WITNESS_CONFIG_REQUIRED")
+            manifest = create_manifest(
+                collection,
+                execution_witness_ids=args.execution_witness_ids or (),
+                explicit_config=explicit_config,
+            )
+            destination = resolve_witness_output_path(args.output)
             destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists() and (destination.is_symlink() or not destination.is_file()):
+                raise WitnessError("WITNESS_OUTPUT_DIRECTORY_INVALID")
             encoded = json_dump(manifest)
             temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
             temporary.write_text(encoded, encoding="utf-8", newline="")

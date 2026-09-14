@@ -61,6 +61,16 @@ def _option(config: Any, name: str, default: Any = None) -> Any:
         return default
 
 
+def _first_option(config: Any, *names: str) -> Any:
+    """Return the first explicitly configured value, including legacy aliases."""
+
+    for name in names:
+        value = _option(config, name)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def pytest_addoption(parser: Any) -> None:
     group = parser.getgroup("greengap witness")
     group.addoption(
@@ -79,37 +89,74 @@ def pytest_addoption(parser: Any) -> None:
     )
     group.addoption(
         "--greengap-source-commit",
+        "--greengap-source-sha",
+        dest="greengap_source_sha",
         action="store",
-        default=os.environ.get("GREENGAP_SOURCE_COMMIT") or os.environ.get("GITHUB_SHA"),
+        default=os.environ.get("GREENGAP_SOURCE_SHA") or os.environ.get("GREENGAP_SOURCE_COMMIT"),
         metavar="SHA",
-        help="exact source commit to bind to this witness",
+        help="exact source commit to bind to this witness (explicit GreenGap identity)",
     )
     group.addoption(
         "--greengap-repository",
         action="store",
-        default=os.environ.get("GREENGAP_REPOSITORY") or os.environ.get("GITHUB_REPOSITORY"),
+        default=os.environ.get("GREENGAP_REPOSITORY"),
         metavar="OWNER/REPOSITORY",
-        help="optional safe repository identity",
+        help="optional safe repository identity supplied by the caller",
     )
     group.addoption(
         "--greengap-witness-role",
+        dest="greengap_witness_role",
         action="store",
         choices=("collection", "execution", "both"),
-        default=os.environ.get("GREENGAP_WITNESS_ROLE", "execution"),
+        default=os.environ.get("GREENGAP_WITNESS_ROLE"),
         help="kind of surface represented by this pytest session",
     )
     group.addoption(
+        "--greengap-surface-id",
         "--greengap-witness-id",
+        dest="greengap_surface_id",
         action="store",
-        default=os.environ.get("GREENGAP_WITNESS_ID"),
+        default=os.environ.get("GREENGAP_SURFACE_ID") or os.environ.get("GREENGAP_WITNESS_ID"),
         metavar="ID",
-        help="bounded manifest surface identity",
+        help="stable explicit GreenGap surface identity",
     )
     group.addoption(
         "--greengap-full-collection",
         action="store_true",
         default=os.environ.get("GREENGAP_FULL_COLLECTION", "") == "1",
         help="assert that collection has no selectors or node filters",
+    )
+    group.addoption(
+        "--greengap-run-id",
+        dest="greengap_run_id",
+        action="store",
+        default=os.environ.get("GREENGAP_RUN_ID"),
+        metavar="ID",
+        help="explicit run identity shared by collection and execution witnesses",
+    )
+    group.addoption(
+        "--greengap-run-attempt",
+        dest="greengap_run_attempt",
+        action="store",
+        default=os.environ.get("GREENGAP_RUN_ATTEMPT", "1"),
+        metavar="ID",
+        help="explicit attempt identity for this run",
+    )
+    group.addoption(
+        "--greengap-job-id",
+        dest="greengap_job_id",
+        action="store",
+        default=os.environ.get("GREENGAP_JOB_ID"),
+        metavar="ID",
+        help="optional bounded job identity; never inferred from provider variables",
+    )
+    group.addoption(
+        "--greengap-provider",
+        dest="greengap_provider",
+        action="store",
+        choices=("local", "ci", "github_actions"),
+        default=os.environ.get("GREENGAP_PROVIDER", "local"),
+        help="explicit evidence provider label",
     )
 
 
@@ -160,7 +207,9 @@ def _source_identity(config: Any, errors: list[str]) -> tuple[str | None, str | 
     root = _config_root(config)
     actual = _git_value(root, "HEAD", _SHA_RE)
     tree = _git_value(root, "HEAD^{tree}", _TREE_RE)
-    claim = _option(config, "greengap_source_commit")
+    claim = _first_option(config, "greengap_source_sha", "greengap_source_commit")
+    if claim in (None, ""):
+        errors.append("SOURCE_COMMIT_CLAIM_MISSING")
     if claim not in (None, ""):
         if not isinstance(claim, str) or _SHA_RE.fullmatch(claim) is None:
             errors.append("SOURCE_COMMIT_INVALID")
@@ -204,8 +253,21 @@ def _collection_is_unfiltered(config: Any, errors: list[str]) -> bool:
     if any(getattr(option, name, None) for name in selector_options):
         errors.append("COLLECTION_SELECTOR_PRESENT")
         return False
-    args = tuple(getattr(config, "args", ()))
-    if args or any("::" in str(value) or "[" in str(value) for value in args):
+    args = tuple(str(value) for value in getattr(config, "args", ()))
+    invocation_args = tuple(
+        str(value)
+        for value in getattr(getattr(config, "invocation_params", None), "args", ())
+    )
+    # ``config.args`` also contains project-configured testpaths.  Only reject
+    # a path that is present in the caller's actual argv; configured testpaths
+    # are part of the project's declared pytest surface, not a hidden runtime
+    # selector introduced by this integration.
+    meaningful_args = tuple(
+        value
+        for value in args
+        if value not in {"", ".", "./"} and value in invocation_args
+    )
+    if meaningful_args or any("::" in value or "[" in value for value in meaningful_args):
         errors.append("COLLECTION_SELECTOR_PRESENT")
         return False
     return True
@@ -231,16 +293,22 @@ class _Witness:
         self.root = _config_root(config)
         self.output_dir = output_dir
         self.errors: list[str] = []
-        self.role = str(_option(config, "greengap_witness_role", "execution"))
+        configured_role = _first_option(config, "greengap_witness_role")
+        self.role = str(configured_role or "execution")
         if self.role not in {"collection", "execution", "both"}:
             self.role = "execution"
             self.errors.append("WITNESS_ROLE_INVALID")
+        if configured_role in (None, ""):
+            self.errors.append("WITNESS_ROLE_MISSING")
         self.session_id = uuid.uuid4().hex
-        self.worker_id = _safe_identifier(os.environ.get("PYTEST_XDIST_WORKER"))
-        self.shard = _safe_identifier(os.environ.get("GREENGAP_SHARD")) or self.worker_id
-        self.surface_id = _safe_identifier(_option(config, "greengap_witness_id"))
+        self.worker_id = _safe_identifier(os.environ.get("GREENGAP_WORKER_ID"))
+        self.shard = _safe_identifier(os.environ.get("GREENGAP_SURFACE_SHARD"))
+        self.surface_id = _safe_identifier(
+            _first_option(config, "greengap_surface_id", "greengap_witness_id")
+        )
         if self.surface_id is None:
-            self.surface_id = "collection" if self.role == "collection" else "execution"
+            self.surface_id = "unknown"
+            self.errors.append("SURFACE_ID_MISSING")
         source, tree = _source_identity(config, self.errors)
         self.git_sha = source
         self.git_tree = tree
@@ -257,9 +325,11 @@ class _Witness:
         self.final_snapshot: WorkspaceSnapshot | None = None
         self.source_start_snapshot: WorkspaceSnapshot | None = None
         self.source_final_snapshot: WorkspaceSnapshot | None = None
-        self.collection_unfiltered = _collection_is_unfiltered(config, self.errors)
-        if self.role in {"collection", "both"} and not self.collection_unfiltered:
-            self.errors.append("FULL_COLLECTION_NOT_DECLARED")
+        # The early pytest hook can run before command-line options have been
+        # parsed.  Evaluate collection declarations at collection finish so
+        # an explicit --collect-only/--greengap-full-collection command is
+        # observed rather than mistaken for a missing declaration.
+        self.collection_unfiltered = False
         self._take_start_snapshot()
 
     def _take_start_snapshot(self) -> None:
@@ -296,6 +366,12 @@ class _Witness:
         return _path_from_nodeid(self.root, text)
 
     def collection_finish(self, session: Any) -> None:
+        if self.role in {"collection", "both"}:
+            self.collection_unfiltered = _collection_is_unfiltered(self.config, self.errors)
+            if not self.collection_unfiltered:
+                self.errors.append("FULL_COLLECTION_NOT_DECLARED")
+            if not bool(getattr(getattr(self.config, "option", None), "collectonly", False)):
+                self.errors.append("COLLECTION_ONLY_REQUIRED")
         for item in getattr(session, "items", ()):
             path = self._file_for(getattr(item, "nodeid", ""), getattr(item, "path", None))
             if path is None:
@@ -349,25 +425,39 @@ class _Witness:
         self._mark(self.completed, nodeid, raw_path)
 
     def _context(self) -> dict[str, Any]:
-        provider = "github_actions" if os.environ.get("GITHUB_ACTIONS") == "true" else "local"
-        run_id = _safe_identifier(os.environ.get("GREENGAP_RUN_ID"))
+        provider = _safe_identifier(
+            _first_option(self.config, "greengap_provider")
+            or os.environ.get("GREENGAP_PROVIDER")
+            or "local"
+        )
+        if provider not in {"local", "github_actions", "ci"}:
+            self.errors.append("WITNESS_PROVIDER_INVALID")
+            provider = "local"
+        run_id = _safe_identifier(
+            _first_option(self.config, "greengap_run_id") or os.environ.get("GREENGAP_RUN_ID")
+        )
         if run_id is None:
-            run_id = _safe_identifier(os.environ.get("GITHUB_RUN_ID"), numeric=True)
-        if run_id is None:
-            run_id = f"local-{self.session_id}"
-        run_attempt = _safe_identifier(os.environ.get("GREENGAP_RUN_ATTEMPT"))
+            self.errors.append("RUN_ID_MISSING")
+            run_id = "unknown-run"
+        run_attempt = _safe_identifier(
+            _first_option(self.config, "greengap_run_attempt")
+            or os.environ.get("GREENGAP_RUN_ATTEMPT")
+            or "1"
+        )
         if run_attempt is None:
-            run_attempt = _safe_identifier(os.environ.get("GITHUB_RUN_ATTEMPT"), numeric=True)
-        if run_attempt is None:
-            run_attempt = "1"
+            self.errors.append("RUN_ATTEMPT_INVALID")
+            run_attempt = "unknown-attempt"
+        job_id = _safe_identifier(
+            _first_option(self.config, "greengap_job_id") or os.environ.get("GREENGAP_JOB_ID")
+        )
         values: dict[str, Any] = {
             "provider": provider,
             "run_id": run_id,
             "run_attempt": run_attempt,
-            "job": _safe_identifier(os.environ.get("GITHUB_JOB")) or self.surface_id,
+            "job": job_id or self.surface_id,
             "matrix_identity": _safe_identifier(os.environ.get("GREENGAP_MATRIX_ID")),
-            "event": _safe_identifier(os.environ.get("GITHUB_EVENT_NAME")),
-            "ref": _safe_identifier(os.environ.get("GITHUB_REF")),
+            "event": None,
+            "ref": None,
             "surface_id": self.surface_id,
             "shard": self.shard,
             "worker_id": self.worker_id,

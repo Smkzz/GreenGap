@@ -1,155 +1,230 @@
-# Runtime Witness v1
+# Runtime Witness: explicit integration contract
 
-Runtime Witness is GreenGap's opt-in, high-confidence path for answering a
-narrow question: which repository-relative test files did a declared pytest
-execution surface actually reach during one run? It observes pytest's native
-hooks in the caller-authorized test process. Static `greengap plan` remains a
-separate conservative advisory mode and is not a prerequisite for Witness
-analysis.
+Runtime Witness is GreenGap's opt-in, file-level evidence path for one narrow
+question: which repository-relative test files did a declared pytest surface
+actually reach during one run? It observes pytest's native hooks in the
+caller-authorized test process. `greengap plan` remains a separate,
+non-executing static advisory path and may return `UNKNOWN`.
 
-Witness v1 is intentionally file-level. Public fragments contain normalized
-repository-relative paths, never pytest node IDs or parameter values. They do
-not contain the target process environment, secrets, authentication material,
-stdout/stderr, fixture values, or executable content.
+The redesigned contract is explicit. GreenGap does not inject itself into
+tox, uv, coverage, shell wrappers, or matrix jobs. Every relevant pytest
+command must visibly load `greengap.pytest_witness`; every execution surface
+must have a stable `surface_id`; and the manifest must name the complete
+expected surface set. A missing declared surface is `INCOMPLETE`, never an
+inferred pass.
 
-## Explicit collection and execution
+## Small identity contract
 
-The caller owns the target environment and must provide the real command after
-`--`. GreenGap does not guess or install target dependencies. It injects the
-local GreenGap source package through the target process environment and adds
-the explicit `-p greengap.pytest_witness` pytest activation. The output
-directory is a fragment directory; every pytest session writes a unique file.
+The caller provides only these GreenGap variables to each instrumented
+pytest process:
 
-```powershell
-greengap witness collect C:\work\project `
-  --output-dir C:\evidence\collection `
-  --source-commit <target-head-sha> `
-  -- python -m pytest --collect-only
+| Variable | Meaning |
+| --- | --- |
+| `GREENGAP_WITNESS_DIR` | directory for this session's JSON fragment |
+| `GREENGAP_SURFACE_ID` | stable identity of this collection or execution surface |
+| `GREENGAP_SOURCE_SHA` | exact Git `HEAD` expected for the run |
+| `GREENGAP_RUN_ID` | shared run identity for collection and all executions |
+| `GREENGAP_RUN_ATTEMPT` | run attempt, normally `1` |
+| `GREENGAP_JOB_ID` | optional bounded job label |
+| `GREENGAP_WITNESS_ROLE` | `collection` or `execution` |
 
-greengap witness run C:\work\project `
-  --output-dir C:\evidence\execution `
-  --source-commit <target-head-sha> `
-  --surface-id linux `
-  --run-id ci-run-42 `
-  -- python -m pytest
+The plugin accepts equivalent command-line options. It does not mirror
+`GITHUB_*`, arbitrary environment variables, node IDs, parameter values,
+stdout/stderr, secrets, or target process objects into the artifact. The
+source package must be installed in the target environment (or be available
+on `PYTHONPATH` for a local qualification run).
+
+The collection command is a separate, full, unfiltered `--collect-only`
+command. The execution command is the real command used by that CI surface.
+Both commands explicitly include `-p greengap.pytest_witness`.
+
+## `.greengap.yml` surface manifest
+
+Commit a small declaration of the complete witness universe:
+
+```yaml
+witness:
+  collection: collection
+  required:
+    - unit-py311
+    - unit-py312
 ```
 
-`collect` marks the collection as complete only when the caller asserted a
-full unfiltered collection and pytest finalized successfully. A collection
-failure, missing fragment, or incomplete session returns exit `2`. `run`
-executes the supplied command and preserves its test-process exit status while
-retaining the witness fragment. A failing test whose `call` report was
-observed is still an executed file; its bounded call outcome is recorded
-separately. A setup failure is attempted/completed telemetry with no
-`call_executed` entry.
+Surface IDs are opaque bounded identifiers, not paths or commands. For a
+matrix or shard, give each execution a distinct ID such as
+`unit-py311-shard-0`; do not rely on an automatically discovered worker name.
+The manifest command copies this declaration into the evidence manifest and
+binds it to the collection witness.
 
-Supported command boundaries are direct pytest, `python -m pytest`,
-`python -m coverage run -m pytest`, `uv run … pytest`, and tox. For tox 4, an
-ephemeral `-x testenv.pass_env=...` passes an explicit finite allowlist of
-instrumentation variables into the tox environment; no wildcard or secret
-environment pattern is used and the target configuration is not edited. If a
-tox version or environment rejects that explicit boundary, the missing or
-incomplete fragment is an exit-2 condition rather than an inferred pass. xdist workers write independent
-fragments named with a session UUID, process ID, and worker ID. A manifest
-must declare worker shards explicitly when they are part of the expected
-surface.
+## Primary recipe 1: direct pytest
 
-## Fragment contract
+Install GreenGap in the same target environment as pytest. In development,
+install the exact local wheel produced from this checkout; do not depend on a
+global installation:
 
-The versioned schema is
-[`schemas/greengap-witness-v1.json`](../schemas/greengap-witness-v1.json).
-Each fragment contains bounded repository/tree identity, a source identity, a
-runtime workspace state, pytest version/root/session identity, safe execution
-context, and these file sets:
+```powershell
+python -m pip install greengap
+```
+
+Run collection once, then run every declared surface with the same run ID.
+The command lines below are the complete pytest semantics; GreenGap does not
+add options behind the caller's back.
+
+```powershell
+$env:GREENGAP_WITNESS_DIR = "$pwd\evidence\collection"
+$env:GREENGAP_SURFACE_ID = "collection"
+$env:GREENGAP_SOURCE_SHA = (git rev-parse HEAD)
+$env:GREENGAP_RUN_ID = "ci-run-42"
+$env:GREENGAP_RUN_ATTEMPT = "1"
+$env:GREENGAP_WITNESS_ROLE = "collection"
+python -m pytest -p greengap.pytest_witness --collect-only --greengap-full-collection
+
+$env:GREENGAP_WITNESS_DIR = "$pwd\evidence\unit-py311"
+$env:GREENGAP_SURFACE_ID = "unit-py311"
+$env:GREENGAP_WITNESS_ROLE = "execution"
+python -m pytest -p greengap.pytest_witness
+```
+
+For CI, set the variables in the job environment and use the job's own
+pytest interpreter. A test failure is still an execution witness when its
+`call` phase was observed; a setup failure is not.
+
+## Primary recipe 2: tox
+
+Declare the GreenGap dependency and forwarding allowlist in the tox
+environment. The pytest invocation stays visible in `commands`:
+
+```ini
+[testenv:greengap]
+deps =
+    greengap
+    pytest
+pass_env =
+    GREENGAP_WITNESS_DIR
+    GREENGAP_SURFACE_ID
+    GREENGAP_SOURCE_SHA
+    GREENGAP_RUN_ID
+    GREENGAP_RUN_ATTEMPT
+    GREENGAP_JOB_ID
+    GREENGAP_PROVIDER
+    GREENGAP_WITNESS_ROLE
+commands =
+    python -m pytest -p greengap.pytest_witness
+```
+
+The target project may keep its existing dependency entries alongside these
+GreenGap-specific lines. Use a separate explicit tox environment for
+collection, with `--collect-only --greengap-full-collection`, and invoke the
+execution environment once for each manifest surface. Do not depend on a
+GreenGap wrapper to add `pass_env`, rewrite tox argv, or select a tox
+environment.
+
+<!-- The compact block above is the primary recipe; the expanded form below
+     intentionally shows the required forwarding contract once. -->
+```ini
+[testenv:greengap-collection]
+deps =
+    greengap
+    pytest
+pass_env =
+    GREENGAP_WITNESS_DIR
+    GREENGAP_SURFACE_ID
+    GREENGAP_SOURCE_SHA
+    GREENGAP_RUN_ID
+    GREENGAP_RUN_ATTEMPT
+    GREENGAP_JOB_ID
+    GREENGAP_WITNESS_ROLE
+commands =
+    python -m pytest -p greengap.pytest_witness --collect-only --greengap-full-collection
+```
+
+## Primary recipe 3: uv
+
+Keep the target dependency set locked and put the plugin in the visible pytest
+command:
+
+```powershell
+uv run --locked pytest -p greengap.pytest_witness --collect-only --greengap-full-collection
+uv run --locked pytest -p greengap.pytest_witness
+```
+
+Declare `greengap` in the project's test or development dependency group and
+commit the resulting `uv.lock`. For development before publication, use the
+exact local GreenGap wheel in that dependency declaration or an equivalent
+locked local wheel source.
+
+The first command runs with `GREENGAP_WITNESS_ROLE=collection` and
+`GREENGAP_SURFACE_ID=collection`; the second runs with the execution surface
+ID. Use `--frozen` when the CI image intentionally forbids lockfile
+resolution. GreenGap does not install target dependencies or infer whether
+uv forwarded an environment variable.
+
+## GitHub matrix and shards
+
+The collection job emits the `collection` witness. Each matrix row or shard
+emits one execution witness with a unique explicit ID, uploads its fragment,
+and uses the same `GREENGAP_RUN_ID`, `GREENGAP_RUN_ATTEMPT`, and
+`GREENGAP_SOURCE_SHA`. An aggregator downloads only the named artifacts and
+runs:
+
+```powershell
+greengap witness manifest --collection-witness evidence\collection --config .greengap.yml --output evidence\manifest.json
+greengap witness analyze --manifest evidence\manifest.json --collection-witness evidence\collection --execution-witness evidence\unit-py311 --execution-witness evidence\unit-py312 --json
+```
+
+An optional GitHub helper may transport artifacts, but it must leave the
+pytest command and surface IDs visible in the workflow. The helper is not a
+test runner and must not hide tox/uv/wrapper semantics.
+
+## Analysis and exit semantics
+
+The analyzer computes only after validating every declared artifact:
 
 ```text
-collection.collected_files
-execution.attempted_files
-execution.call_executed_files
-execution.completed_files
-execution.call_outcomes
-session.pytest_exitstatus
-session.finalized
+COLLECTED = union of complete collection witness files
+EXECUTED  = union of call_executed_files from complete execution witnesses
+NOT_RUN   = COLLECTED - EXECUTED
 ```
 
-`source_identity` is the fail-closed binding for repository source and
-test/configuration inputs. It must be complete and stable from session start to
-finish. The legacy `workspace_identity` field remains an alias for
-`runtime_workspace_state` so v1 consumers continue to parse the artifact.
-Runtime output such as coverage files, dependency environments, and test
-reports may change `runtime_workspace_state`; that transient drift is telemetry
-and does not invalidate an otherwise stable source identity. A source or
-configuration mutation, or an incomplete source snapshot, still invalidates
-the fragment.
+At the primary file-level boundary:
 
-Fragments are written as UTF-8 JSON using a temporary file, flush/fsync, and
-atomic rename. No process appends to a shared JSON document. The analyzer
-limits fragment count, cumulative bytes, file count, path length, and
-diagnostic count.
+| Exit | Result | Meaning |
+| --- | --- | --- |
+| `0` | `COMPLETE` | all required witnesses are valid and no file is omitted |
+| `1` | `BLOCKED` | all required witnesses are valid and one or more files are `NOT_RUN` |
+| `2` | `INCOMPLETE` | missing/malformed/conflicting/stale/source-mismatched evidence |
 
-## Manifest and analysis
+Incomplete evidence never produces a `NOT_RUN` claim. The analyzer binds
+source SHA/tree, source identity, repository identity, run identity, role,
+surface IDs, session finalization, and the complete manifest before computing
+the difference. Runtime output drift is telemetry; source/configuration
+drift invalidates the witness.
 
-The manifest is a declaration of the complete witness universe, not a list of
-whatever artifacts happened to be found. Its schema is
-[`schemas/greengap-witness-manifest-v1.json`](../schemas/greengap-witness-manifest-v1.json).
-The convenience command binds a complete collection fragment to expected
-execution surface/shard IDs:
+## Controlled omission validation
 
-```powershell
-greengap witness manifest `
-  --collection-witness C:\evidence\collection\fragment.json `
-  --execution-witness-id linux|- `
-  --execution-witness-id windows|- `
-  --output C:\evidence\manifest.json
-```
+The development acceptance test establishes a complete baseline, selects one
+deterministic file from `COLLECTED ∩ EXECUTED`, and changes only a disposable
+execution command/configuration to exclude it. It requires the selected file
+to remain collected, absent from `call_executed_files`, and reported as
+`NOT_RUN` with exit `1`. It then restores the disposable configuration and
+requires the result to equal the baseline. Missing, malformed, or
+source-mismatched witnesses must remain exit `2`.
 
-Analyze only after all declared artifacts have arrived:
+The four reference fixtures are under
+[`examples/reference-fixtures`](../examples/reference-fixtures): direct
+pytest, tox, uv, and matrix/sharded pytest. They are intentionally small and
+are evaluated from disposable Git copies rather than by changing an upstream
+repository.
 
-```powershell
-greengap witness analyze `
-  --manifest C:\evidence\manifest.json `
-  --collection-witness C:\evidence\collection `
-  --execution-witness C:\evidence\execution `
-  --json
-```
+## Trust boundary and privacy
 
-The calculation is:
-
-```text
-COLLECTED_FILES = union of complete declared collection fragments
-EXECUTED_FILES  = union of call_executed_files from complete declared execution fragments
-NOT_RUN         = COLLECTED_FILES - EXECUTED_FILES
-```
-
-Exit `0` means complete evidence and no gaps. Exit `1` means complete evidence
-and one or more proven `GGW001` gaps. Exit `2` means incomplete, malformed,
-stale, conflicting, source-mismatched, source-identity-incomplete, duplicate,
-missing, or undeclared-shard evidence. Incomplete evidence never becomes a
-`NOT_RUN` claim. Each gap is scoped to “this collected test file was not
-observed in the complete declared CI witness set for this run”; it is not a
-claim about all historical execution.
-
-JSON is the primary output. `--sarif` is available on `analyze` after the JSON
-semantics and uses the distinct `GGW001` runtime-witness rule. Unknown or
-incomplete evidence is represented as an incomplete invocation, not as a
-security finding.
-
-## Trust boundary
-
-Witness is intended for accidental or inadvertent CI omission in a repository
-whose test code is trusted to execute. It is not anti-malware attestation:
-target code executing in the same pytest process could forge its own file. The
-contract instead fails closed for malformed artifacts, stale source/run
-identity, cross-run mixing, conflicting duplicates, path traversal, oversized
-or bomb-like JSON, missing sessions/shards, partial downloads, and source
-drift. Runtime workspace output drift alone is not a source mismatch. Collection
-and test execution run target code and are not a sandbox.
-
-The current implementation is local-only. GitHub Actions artifact transport
-and final aggregation are intentionally not added until local witness
-semantics and development-corpus validation are complete and separately
-authorized.
+The plugin observes target code in the same pytest process; it is not
+anti-malware attestation or a sandbox. It is intended for accidental CI
+omissions in a trusted checkout. JSON fragments are bounded, written with
+temporary-file plus atomic rename, and contain repository-relative paths only.
+Symlink/reparse boundaries, path traversal, oversized inputs, conflicting
+duplicates, source drift, and undeclared surfaces fail closed.
 
 The older `greengap witness . --denominator ... --witness ...` node-level
-aggregator remains available as a compatibility API; new Witness integrations
-should use `greengap.pytest_witness`, the manifest, and `witness analyze`.
+aggregator remains a compatibility API. New integrations should use the
+explicit plugin, `.greengap.yml`, manifest, and `witness analyze` path.

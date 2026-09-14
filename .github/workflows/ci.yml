@@ -97,52 +97,44 @@ jobs:
           echo "source_tree=${source_tree}" >> "${GITHUB_OUTPUT}"
       - name: Collect the complete pytest denominator
         id: witness_collect
+        env:
+          GREENGAP_WITNESS_DIR: ${{ runner.temp }}/greengap-${{ github.run_id }}-${{ github.run_attempt }}/collection
+          GREENGAP_SURFACE_ID: ubuntu-24.04-py3.11-collection
+          GREENGAP_SOURCE_SHA: ${{ steps.witness_source.outputs.source_sha }}
+          GREENGAP_RUN_ID: ${{ github.run_id }}
+          GREENGAP_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GREENGAP_JOB_ID: runtime-witness-collection
+          GREENGAP_REPOSITORY: ${{ github.repository }}
+          GREENGAP_WITNESS_ROLE: collection
         run: |
-          set +e
-          witness_root="${RUNNER_TEMP}/greengap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -p "${witness_root}/collection"
-          python -m greengap witness collect . \
-            --output-dir "${witness_root}/collection" \
-            --source-commit "${{ steps.witness_source.outputs.source_sha }}" \
-            --repository "${GITHUB_REPOSITORY}" \
-            --surface-id "ubuntu-24.04-py3.11-collection" \
-            --run-id "${GITHUB_RUN_ID}" \
-            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
-            -- python -m pytest > "${witness_root}/collection-command.json"
-          status=$?
-          set -e
-          cat "${witness_root}/collection-command.json"
-          echo "status=${status}" >> "${GITHUB_OUTPUT}"
-          exit "${status}"
+          set -euo pipefail
+          mkdir -p "${GREENGAP_WITNESS_DIR}"
+          python -m pytest -p greengap.pytest_witness --collect-only --greengap-full-collection
       - name: Execute the real pytest command under Witness
         id: witness_execute
+        env:
+          GREENGAP_WITNESS_DIR: ${{ runner.temp }}/greengap-${{ github.run_id }}-${{ github.run_attempt }}/execution
+          GREENGAP_SURFACE_ID: ubuntu-24.04-py3.11-execution
+          GREENGAP_SOURCE_SHA: ${{ steps.witness_source.outputs.source_sha }}
+          GREENGAP_RUN_ID: ${{ github.run_id }}
+          GREENGAP_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GREENGAP_JOB_ID: runtime-witness-execution
+          GREENGAP_REPOSITORY: ${{ github.repository }}
+          GREENGAP_WITNESS_ROLE: execution
         run: |
-          set +e
-          witness_root="${RUNNER_TEMP}/greengap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -p "${witness_root}/execution"
-          python -m greengap witness run . \
-            --output-dir "${witness_root}/execution" \
-            --source-commit "${{ steps.witness_source.outputs.source_sha }}" \
-            --repository "${GITHUB_REPOSITORY}" \
-            --surface-id "ubuntu-24.04-py3.11-execution" \
-            --run-id "${GITHUB_RUN_ID}" \
-            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
-            -- python -m pytest > "${witness_root}/execution-command.json"
-          status=$?
-          set -e
-          cat "${witness_root}/execution-command.json"
-          echo "status=${status}" >> "${GITHUB_OUTPUT}"
-          exit "${status}"
+          set -euo pipefail
+          mkdir -p "${GREENGAP_WITNESS_DIR}"
+          python -m pytest -p greengap.pytest_witness
       - name: Create the declared witness manifest
         if: ${{ always() }}
         run: |
           set -euo pipefail
           witness_root="${RUNNER_TEMP}/greengap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mapfile -t collection_files < <(find "${witness_root}/collection" -maxdepth 1 -type f -name 'greengap-*.json' -print)
+          mapfile -t collection_files < <(find "${witness_root}/collection" -type f -name 'greengap-*.json' -print)
           [[ "${#collection_files[@]}" -eq 1 ]]
           python -m greengap witness manifest \
             --collection-witness "${collection_files[0]}" \
-            --execution-witness-id "ubuntu-24.04-py3.11-execution|-" \
+            --config .greengap.yml \
             --output "${witness_root}/manifest.json"
       - name: Analyze the complete witness set
         if: ${{ always() }}
@@ -162,7 +154,7 @@ jobs:
           exit "${status}"
       - name: Require a complete, gap-free witness result
         run: |
-          python -c "import json; from pathlib import Path; root=Path(r'${RUNNER_TEMP}') / f'greengap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'; analysis=json.loads((root/'analysis.json').read_text()); execution=json.loads((root/'execution-command.json').read_text()); assert analysis['complete'] is True and analysis['outcome'] == 'COMPLETE' and not analysis['errors'] and not analysis['not_run_files']; assert execution['complete'] is True and execution['command_exit_status'] == 0; print('RUNTIME_WITNESS_REMOTE_VALIDATION=PASS')"
+          python -c "import json; from pathlib import Path; root=Path(r'${RUNNER_TEMP}') / f'greengap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'; analysis=json.loads((root/'analysis.json').read_text()); assert analysis['complete'] is True and analysis['outcome'] == 'COMPLETE' and not analysis['errors'] and not analysis['not_run_files']; print('RUNTIME_WITNESS_REMOTE_VALIDATION=PASS')"
       - name: Stage the inert witness evidence
         if: ${{ always() }}
         run: |
@@ -171,7 +163,7 @@ jobs:
           mkdir -p runtime-witness/collection runtime-witness/execution
           if [[ -d "${witness_root}/collection" ]]; then cp -a "${witness_root}/collection/." runtime-witness/collection/; fi
           if [[ -d "${witness_root}/execution" ]]; then cp -a "${witness_root}/execution/." runtime-witness/execution/; fi
-          for name in collection-command.json execution-command.json manifest.json analysis.json; do
+          for name in manifest.json analysis.json; do
             if [[ -f "${witness_root}/${name}" ]]; then cp "${witness_root}/${name}" "runtime-witness/${name}"; fi
           done
           find runtime-witness -type f -print
