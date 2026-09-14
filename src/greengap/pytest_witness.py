@@ -19,7 +19,7 @@ from typing import Any
 
 from . import __version__
 from .model import WorkspaceSnapshot
-from .snapshot import workspace_snapshot
+from .snapshot import source_snapshot, workspace_snapshot
 from .util import (
     MAX_RUNTIME_WITNESS_BYTES,
     MAX_RUNTIME_WITNESS_FILES,
@@ -34,6 +34,7 @@ from .witness import (
 )
 
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+_FINGERPRINT_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _TREE_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.:/-]{1,256}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}/[A-Za-z0-9_.-]{1,128}$")
@@ -254,6 +255,8 @@ class _Witness:
         self.exitstatus: int | None = None
         self.start_snapshot: WorkspaceSnapshot | None = None
         self.final_snapshot: WorkspaceSnapshot | None = None
+        self.source_start_snapshot: WorkspaceSnapshot | None = None
+        self.source_final_snapshot: WorkspaceSnapshot | None = None
         self.collection_unfiltered = _collection_is_unfiltered(config, self.errors)
         if self.role in {"collection", "both"} and not self.collection_unfiltered:
             self.errors.append("FULL_COLLECTION_NOT_DECLARED")
@@ -261,8 +264,24 @@ class _Witness:
 
     def _take_start_snapshot(self) -> None:
         self.start_snapshot = workspace_snapshot(self.root, timeout=10.0)
-        if not self.start_snapshot.complete:
-            self.errors.append("WORKSPACE_FINGERPRINT_INCOMPLETE")
+        self.source_start_snapshot = source_snapshot(self.root, timeout=10.0)
+        if not self.source_start_snapshot.complete:
+            self.errors.append("SOURCE_IDENTITY_INCOMPLETE")
+        claimed = os.environ.get("GREENGAP_SOURCE_FINGERPRINT")
+        if claimed is not None:
+            if _FINGERPRINT_RE.fullmatch(claimed) is None:
+                self.errors.append("SOURCE_IDENTITY_INVALID")
+            elif (
+                self.source_start_snapshot is None
+                or self.source_start_snapshot.fingerprint != claimed.lower()
+            ):
+                self.errors.append("SOURCE_IDENTITY_MISMATCH")
+
+    def _take_final_snapshots(self) -> None:
+        self.final_snapshot = workspace_snapshot(self.root, timeout=10.0)
+        self.source_final_snapshot = source_snapshot(self.root, timeout=10.0)
+        if not self.source_final_snapshot.complete:
+            self.errors.append("SOURCE_IDENTITY_INCOMPLETE")
 
     def _file_for(self, nodeid: Any, raw_path: Any = None) -> str | None:
         text = str(nodeid or "")
@@ -357,17 +376,34 @@ class _Witness:
         return values
 
     def _payload(self, exitstatus: Any) -> dict[str, Any]:
-        start = self.start_snapshot.fingerprint if self.start_snapshot is not None else "0" * 64
-        final = self.final_snapshot.fingerprint if self.final_snapshot is not None else "0" * 64
-        stable = (
+        runtime_start = self.start_snapshot.fingerprint if self.start_snapshot is not None else "0" * 64
+        runtime_final = self.final_snapshot.fingerprint if self.final_snapshot is not None else "0" * 64
+        runtime_stable = (
             self.start_snapshot is not None
             and self.final_snapshot is not None
             and self.start_snapshot.complete
             and self.final_snapshot.complete
-            and start == final
+            and runtime_start == runtime_final
         )
-        if not stable:
-            self.errors.append("WORKSPACE_UNSTABLE")
+        source_start = (
+            self.source_start_snapshot.fingerprint
+            if self.source_start_snapshot is not None
+            else "0" * 64
+        )
+        source_final = (
+            self.source_final_snapshot.fingerprint
+            if self.source_final_snapshot is not None
+            else "0" * 64
+        )
+        source_complete = (
+            self.source_start_snapshot is not None
+            and self.source_final_snapshot is not None
+            and self.source_start_snapshot.complete
+            and self.source_final_snapshot.complete
+        )
+        source_stable = source_complete and source_start == source_final
+        if source_complete and not source_stable:
+            self.errors.append("SOURCE_IDENTITY_UNSTABLE")
         if self.attempted - self.completed:
             self.errors.append("EXECUTION_INCOMPLETE")
         try:
@@ -392,7 +428,7 @@ class _Witness:
         diagnostics = sorted(set(self.errors))[:64]
         complete = (
             self.git_sha is not None
-            and stable
+            and source_stable
             and finalized
             and not diagnostics
             and (self.role == "execution" or collection_complete)
@@ -415,10 +451,20 @@ class _Witness:
                 "git_tree": self.git_tree,
                 "repository": self.repository,
             },
+            "source_identity": {
+                "initial_fingerprint": source_start,
+                "final_fingerprint": source_final,
+                "stable": source_stable,
+            },
+            "runtime_workspace_state": {
+                "initial_fingerprint": runtime_start,
+                "final_fingerprint": runtime_final,
+                "stable": runtime_stable,
+            },
             "workspace_identity": {
-                "initial_fingerprint": start,
-                "final_fingerprint": final,
-                "stable": stable,
+                "initial_fingerprint": runtime_start,
+                "final_fingerprint": runtime_final,
+                "stable": runtime_stable,
             },
             "pytest": {
                 "version": pytest_version,
@@ -453,9 +499,7 @@ class _Witness:
             self.exitstatus = int(exitstatus)
         except (TypeError, ValueError):
             self.exitstatus = -1
-        self.final_snapshot = workspace_snapshot(self.root, timeout=10.0)
-        if not self.final_snapshot.complete:
-            self.errors.append("WORKSPACE_FINGERPRINT_INCOMPLETE")
+        self._take_final_snapshots()
         self.session_finalized = True
         self._write(exitstatus)
 
@@ -592,9 +636,7 @@ def pytest_unconfigure(config: Any) -> None:
     witness = _instance(config)
     if witness is None or witness.session_finalized:
         return
-    witness.final_snapshot = workspace_snapshot(witness.root, timeout=10.0)
-    if not witness.final_snapshot.complete:
-        witness.errors.append("WORKSPACE_FINGERPRINT_INCOMPLETE")
+    witness._take_final_snapshots()
     witness.session_finalized = True
     witness._write(witness.exitstatus if witness.exitstatus is not None else 4)
 
@@ -606,8 +648,6 @@ def pytest_internalerror(excrepr: Any, excinfo: Any) -> None:
     witness = _instance(config) if config is not None else None
     if witness is None or witness.session_finalized:
         return
-    witness.final_snapshot = workspace_snapshot(witness.root, timeout=10.0)
-    if not witness.final_snapshot.complete:
-        witness.errors.append("WORKSPACE_FINGERPRINT_INCOMPLETE")
+    witness._take_final_snapshots()
     witness.session_finalized = True
     witness._write(4)

@@ -43,12 +43,13 @@ observed is still an executed file; its bounded call outcome is recorded
 separately. A setup failure is attempted/completed telemetry with no
 `call_executed` entry.
 
-Supported command boundaries are direct pytest, `python -m pytest`, `uv run …
-pytest`, and tox. For tox 4, an ephemeral `-x testenv.pass_env=...` passes only
-the bounded instrumentation variables into the tox environment; the target
-configuration is not edited. If a tox version or environment rejects that
-explicit boundary, the missing or incomplete fragment is an exit-2 condition
-rather than an inferred pass. xdist workers write independent
+Supported command boundaries are direct pytest, `python -m pytest`,
+`python -m coverage run -m pytest`, `uv run … pytest`, and tox. For tox 4, an
+ephemeral `-x testenv.pass_env=...` passes an explicit finite allowlist of
+instrumentation variables into the tox environment; no wildcard or secret
+environment pattern is used and the target configuration is not edited. If a
+tox version or environment rejects that explicit boundary, the missing or
+incomplete fragment is an exit-2 condition rather than an inferred pass. xdist workers write independent
 fragments named with a session UUID, process ID, and worker ID. A manifest
 must declare worker shards explicitly when they are part of the expected
 surface.
@@ -57,8 +58,8 @@ surface.
 
 The versioned schema is
 [`schemas/greengap-witness-v1.json`](../schemas/greengap-witness-v1.json).
-Each fragment contains bounded repository/tree identity, initial and final
-workspace fingerprints, pytest version/root/session identity, safe execution
+Each fragment contains bounded repository/tree identity, a source identity, a
+runtime workspace state, pytest version/root/session identity, safe execution
 context, and these file sets:
 
 ```text
@@ -70,6 +71,16 @@ execution.call_outcomes
 session.pytest_exitstatus
 session.finalized
 ```
+
+`source_identity` is the fail-closed binding for repository source and
+test/configuration inputs. It must be complete and stable from session start to
+finish. The legacy `workspace_identity` field remains an alias for
+`runtime_workspace_state` so v1 consumers continue to parse the artifact.
+Runtime output such as coverage files, dependency environments, and test
+reports may change `runtime_workspace_state`; that transient drift is telemetry
+and does not invalidate an otherwise stable source identity. A source or
+configuration mutation, or an incomplete source snapshot, still invalidates
+the fragment.
 
 Fragments are written as UTF-8 JSON using a temporary file, flush/fsync, and
 atomic rename. No process appends to a shared JSON document. The analyzer
@@ -112,7 +123,7 @@ NOT_RUN         = COLLECTED_FILES - EXECUTED_FILES
 
 Exit `0` means complete evidence and no gaps. Exit `1` means complete evidence
 and one or more proven `GGW001` gaps. Exit `2` means incomplete, malformed,
-stale, conflicting, source-mismatched, workspace-mismatched, duplicate,
+stale, conflicting, source-mismatched, source-identity-incomplete, duplicate,
 missing, or undeclared-shard evidence. Incomplete evidence never becomes a
 `NOT_RUN` claim. Each gap is scoped to “this collected test file was not
 observed in the complete declared CI witness set for this run”; it is not a
@@ -130,8 +141,9 @@ whose test code is trusted to execute. It is not anti-malware attestation:
 target code executing in the same pytest process could forge its own file. The
 contract instead fails closed for malformed artifacts, stale source/run
 identity, cross-run mixing, conflicting duplicates, path traversal, oversized
-or bomb-like JSON, missing sessions/shards, partial downloads, and workspace
-drift. Collection and test execution run target code and are not a sandbox.
+or bomb-like JSON, missing sessions/shards, partial downloads, and source
+drift. Runtime workspace output drift alone is not a source mismatch. Collection
+and test execution run target code and are not a sandbox.
 
 The current implementation is local-only. GitHub Actions artifact transport
 and final aggregation are intentionally not added until local witness

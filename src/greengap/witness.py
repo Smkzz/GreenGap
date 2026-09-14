@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .snapshot import workspace_snapshot
+from .snapshot import source_snapshot, workspace_snapshot
 from .util import (
     MAX_RUNTIME_AGGREGATE_BYTES,
     MAX_RUNTIME_EXPECTED_IDENTITIES,
@@ -37,6 +37,7 @@ from .util import (
     MAX_RUNTIME_WITNESS_FRAGMENTS,
     MAX_RUNTIME_WITNESS_MANIFEST_ENTRIES,
     read_limited_bytes,
+    run_process_tree,
 )
 
 WITNESS_SCHEMA_VERSION = 1
@@ -158,20 +159,24 @@ def _validate_repository_identity(value: Any) -> dict[str, str | None]:
     }
 
 
-def _validate_workspace_identity(value: Any) -> dict[str, Any]:
+def _validate_identity_state(value: Any, *, error_code: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != {
         "initial_fingerprint",
         "final_fingerprint",
         "stable",
     }:
-        raise WitnessError("WITNESS_WORKSPACE_IDENTITY_INVALID")
+        raise WitnessError(error_code)
     if not isinstance(value["stable"], bool):
-        raise WitnessError("WITNESS_WORKSPACE_IDENTITY_INVALID")
+        raise WitnessError(error_code)
     return {
         "initial_fingerprint": _fingerprint(value["initial_fingerprint"]),
         "final_fingerprint": _fingerprint(value["final_fingerprint"]),
         "stable": value["stable"],
     }
+
+
+def _validate_workspace_identity(value: Any) -> dict[str, Any]:
+    return _validate_identity_state(value, error_code="WITNESS_WORKSPACE_IDENTITY_INVALID")
 
 
 def _validate_pytest_identity(value: Any) -> dict[str, str]:
@@ -244,7 +249,8 @@ def _validate_witness_payload(payload: Any) -> dict[str, Any]:
         "complete",
         "diagnostics",
     }
-    if not isinstance(payload, dict) or set(payload) != required:
+    allowed = required | {"source_identity", "runtime_workspace_state"}
+    if not isinstance(payload, dict) or not required.issubset(payload) or not set(payload) <= allowed:
         raise WitnessError("WITNESS_SCHEMA_INVALID")
     if payload["schema_version"] != WITNESS_SCHEMA_VERSION or payload["witness_version"] != WITNESS_SCHEMA_VERSION:
         raise WitnessError("WITNESS_SCHEMA_UNSUPPORTED")
@@ -258,6 +264,16 @@ def _validate_witness_payload(payload: Any) -> dict[str, Any]:
     assert version is not None
     repository = _validate_repository_identity(payload["repository_identity"])
     workspace = _validate_workspace_identity(payload["workspace_identity"])
+    runtime_workspace = _validate_identity_state(
+        payload.get("runtime_workspace_state", workspace),
+        error_code="WITNESS_RUNTIME_WORKSPACE_STATE_INVALID",
+    )
+    if "runtime_workspace_state" in payload and runtime_workspace != workspace:
+        raise WitnessError("WITNESS_WORKSPACE_IDENTITY_CONFLICT")
+    source_identity = _validate_identity_state(
+        payload.get("source_identity", workspace),
+        error_code="WITNESS_SOURCE_IDENTITY_INVALID",
+    )
     pytest_identity = _validate_pytest_identity(payload["pytest"])
     context = _validate_execution_context(payload["execution_context"])
     collection = payload["collection"]
@@ -314,6 +330,8 @@ def _validate_witness_payload(payload: Any) -> dict[str, Any]:
         "role": role,
         "greengap_version": version,
         "repository_identity": repository,
+        "source_identity": source_identity,
+        "runtime_workspace_state": runtime_workspace,
         "workspace_identity": workspace,
         "pytest": pytest_identity,
         "execution_context": context,
@@ -385,7 +403,8 @@ def _validate_manifest_payload(payload: Any) -> dict[str, Any]:
         "execution",
         "required_witness_ids",
     }
-    if not isinstance(payload, dict) or set(payload) != required:
+    allowed = required | {"source_identity"}
+    if not isinstance(payload, dict) or not required.issubset(payload) or not set(payload) <= allowed:
         raise WitnessError("MANIFEST_SCHEMA_INVALID")
     if payload["schema_version"] != 1 or payload["manifest_version"] != 1:
         raise WitnessError("MANIFEST_SCHEMA_UNSUPPORTED")
@@ -398,7 +417,11 @@ def _validate_manifest_payload(payload: Any) -> dict[str, Any]:
     workspace = payload["workspace_identity"]
     if not isinstance(workspace, dict) or set(workspace) != {"fingerprint"}:
         raise WitnessError("MANIFEST_WORKSPACE_IDENTITY_INVALID")
-    fingerprint = _fingerprint(workspace["fingerprint"])
+    workspace_fingerprint = _fingerprint(workspace["fingerprint"])
+    source_payload = payload.get("source_identity", workspace)
+    if not isinstance(source_payload, dict) or set(source_payload) != {"fingerprint"}:
+        raise WitnessError("MANIFEST_SOURCE_IDENTITY_INVALID")
+    source_fingerprint = _fingerprint(source_payload["fingerprint"])
     run_identity = payload["run_identity"]
     if not isinstance(run_identity, dict) or set(run_identity) != {"run_id", "run_attempt"}:
         raise WitnessError("MANIFEST_RUN_IDENTITY_INVALID")
@@ -423,7 +446,8 @@ def _validate_manifest_payload(payload: Any) -> dict[str, Any]:
         "manifest_version": 1,
         "artifact_type": WITNESS_MANIFEST_ARTIFACT_TYPE,
         "repository_identity": repository,
-        "workspace_identity": {"fingerprint": fingerprint},
+        "source_identity": {"fingerprint": source_fingerprint},
+        "workspace_identity": {"fingerprint": workspace_fingerprint},
         "run_identity": {"run_id": run_id, "run_attempt": run_attempt},
         "collection": {"expected_witness_ids": collection_ids},
         "execution": {"expected_witness_ids": execution_ids},
@@ -585,7 +609,7 @@ def analyze_witnesses(
     source = manifest["repository_identity"]["git_sha"]
     tree = manifest["repository_identity"]["git_tree"]
     repository = manifest["repository_identity"]["repository"]
-    fingerprint = manifest["workspace_identity"]["fingerprint"]
+    fingerprint = manifest["source_identity"]["fingerprint"]
     run_id = manifest["run_identity"]["run_id"]
     run_attempt = manifest["run_identity"]["run_attempt"]
     input_groups = (("collection", collection_paths), ("execution", execution_paths))
@@ -609,7 +633,7 @@ def analyze_witnesses(
                 errors.append(f"{group.upper()}_{index + 1}_{exc.code}")
                 continue
             identity = payload["repository_identity"]
-            workspace = payload["workspace_identity"]
+            source_identity = payload["source_identity"]
             context = payload["execution_context"]
             if identity["git_sha"] != source:
                 errors.append("SOURCE_COMMIT_MISMATCH")
@@ -617,10 +641,16 @@ def analyze_witnesses(
                 errors.append("SOURCE_TREE_MISMATCH")
             if repository != identity["repository"]:
                 errors.append("REPOSITORY_MISMATCH")
-            if workspace["initial_fingerprint"] != fingerprint:
+            if source_identity["initial_fingerprint"] != fingerprint:
+                errors.append("SOURCE_IDENTITY_MISMATCH")
+                # Preserve the v1 diagnostic used by the retained legacy
+                # analysis while making the source-bound cause explicit.
                 errors.append("WORKSPACE_FINGERPRINT_MISMATCH")
-            if not workspace["stable"] or workspace["initial_fingerprint"] != workspace["final_fingerprint"]:
-                errors.append("WORKSPACE_UNSTABLE")
+            if (
+                not source_identity["stable"]
+                or source_identity["initial_fingerprint"] != source_identity["final_fingerprint"]
+            ):
+                errors.append("SOURCE_IDENTITY_UNSTABLE")
             if context["run_id"] != run_id or context["run_attempt"] != run_attempt:
                 errors.append("RUN_IDENTITY_MISMATCH")
             key = witness_id(payload)
@@ -817,6 +847,7 @@ def create_manifest(
         "manifest_version": 1,
         "artifact_type": WITNESS_MANIFEST_ARTIFACT_TYPE,
         "repository_identity": identity,
+        "source_identity": {"fingerprint": payload["source_identity"]["initial_fingerprint"]},
         "workspace_identity": {"fingerprint": payload["workspace_identity"]["initial_fingerprint"]},
         "run_identity": {
             "run_id": context["run_id"],
@@ -865,16 +896,38 @@ def _tox_executable_index(command: Sequence[str]) -> int | None:
 def _tox_instrumented_command(command: Sequence[str]) -> list[str]:
     actual = list(command)
     tox_index = _tox_executable_index(actual)
-    if tox_index is None:
+    if tox_index is not None:
+        insertion_index = tox_index + 1
+    else:
+        lowered = [Path(token).name.casefold() for token in actual]
+        insertion_index = None
+        for index, token in enumerate(lowered):
+            if (
+                token in {"python", "python.exe", "py", "py.exe"}
+                and index + 2 < len(lowered)
+                and lowered[index + 1] == "-m"
+                and lowered[index + 2] == "tox"
+            ):
+                insertion_index = index + 3
+                break
+    if insertion_index is None:
         return actual
-    if any("pass_env=" in token for token in actual):
+    pass_env = (
+        "PYTHONPATH,PYTEST_ADDOPTS,GREENGAP_FULL_COLLECTION,GREENGAP_MATRIX_ID,"
+        "GREENGAP_REPOSITORY,GREENGAP_RUN_ATTEMPT,GREENGAP_RUN_ID,GREENGAP_SHARD,"
+        "GREENGAP_SOURCE_COMMIT,GREENGAP_SOURCE_FINGERPRINT,GREENGAP_WITNESS_DIR,"
+        "GREENGAP_WITNESS_ID,GREENGAP_WITNESS_ROLE,GITHUB_ACTIONS,GITHUB_EVENT_NAME,"
+        "GITHUB_JOB,GITHUB_REF,GITHUB_REPOSITORY,GITHUB_RUN_ATTEMPT,GITHUB_RUN_ID,GITHUB_SHA"
+    )
+    override = f"testenv.pass_env={pass_env}"
+    if override in actual:
         return actual
     # Tox 4's bounded configuration override is inserted before the command
     # subparser. Unsupported tox versions fail closed through the missing
     # fragment path instead of inheriting ambient instrumentation.
-    actual[tox_index + 1 : tox_index + 1] = [
+    actual[insertion_index:insertion_index] = [
         "-x",
-        "testenv.pass_env=PYTHONPATH,PYTEST_ADDOPTS,GREENGAP_*,GITHUB_*",
+        override,
     ]
     return actual
 
@@ -907,6 +960,13 @@ def _safe_snapshot(root: Path) -> Any | None:
         return None
 
 
+def _safe_source_snapshot(root: Path) -> Any | None:
+    try:
+        return source_snapshot(root, timeout=10.0)
+    except (OSError, TypeError, ValueError):
+        return None
+
+
 def _safe_context_id(value: Any) -> str | None:
     return value if isinstance(value, str) and _SAFE_ID_RE.fullmatch(value) is not None else None
 
@@ -923,9 +983,11 @@ def _fallback_payload(
     run_attempt: str,
     exitstatus: int,
     initial_snapshot: Any | None,
+    initial_source_snapshot: Any | None,
     diagnostic: str,
 ) -> dict[str, Any]:
     final_snapshot = _safe_snapshot(root)
+    final_source_snapshot = _safe_source_snapshot(root)
     initial_fingerprint = (
         initial_snapshot.fingerprint
         if initial_snapshot is not None and _SHA256_RE.fullmatch(initial_snapshot.fingerprint)
@@ -943,11 +1005,33 @@ def _fallback_payload(
         and final_snapshot.complete
     )
     stable = snapshots_complete and initial_fingerprint == final_fingerprint
+    source_initial_fingerprint = (
+        initial_source_snapshot.fingerprint
+        if initial_source_snapshot is not None
+        and _SHA256_RE.fullmatch(initial_source_snapshot.fingerprint)
+        else "0" * 64
+    )
+    source_final_fingerprint = (
+        final_source_snapshot.fingerprint
+        if final_source_snapshot is not None
+        and _SHA256_RE.fullmatch(final_source_snapshot.fingerprint)
+        else "0" * 64
+    )
+    source_snapshots_complete = (
+        initial_source_snapshot is not None
+        and final_source_snapshot is not None
+        and initial_source_snapshot.complete
+        and final_source_snapshot.complete
+    )
+    source_stable = (
+        source_snapshots_complete
+        and source_initial_fingerprint == source_final_fingerprint
+    )
     diagnostics = ["WITNESS_PROCESS_INCOMPLETE", diagnostic]
-    if not snapshots_complete:
-        diagnostics.append("WORKSPACE_FINGERPRINT_INCOMPLETE")
-    if not stable:
-        diagnostics.append("WORKSPACE_UNSTABLE")
+    if not source_snapshots_complete:
+        diagnostics.append("SOURCE_IDENTITY_INCOMPLETE")
+    if not source_stable:
+        diagnostics.append("SOURCE_IDENTITY_UNSTABLE")
     provider = "github_actions" if os.environ.get("GITHUB_ACTIONS") == "true" else "local"
     worker_id = _safe_context_id(os.environ.get("PYTEST_XDIST_WORKER"))
     shard = _safe_context_id(os.environ.get("GREENGAP_SHARD")) or worker_id
@@ -960,6 +1044,16 @@ def _fallback_payload(
         "role": role,
         "greengap_version": __version__,
         "repository_identity": {"git_sha": source, "git_tree": tree, "repository": repository},
+        "source_identity": {
+            "initial_fingerprint": source_initial_fingerprint,
+            "final_fingerprint": source_final_fingerprint,
+            "stable": source_stable,
+        },
+        "runtime_workspace_state": {
+            "initial_fingerprint": initial_fingerprint,
+            "final_fingerprint": final_fingerprint,
+            "stable": stable,
+        },
         "workspace_identity": {
             "initial_fingerprint": initial_fingerprint,
             "final_fingerprint": final_fingerprint,
@@ -1108,6 +1202,7 @@ def execute_witness_command(
             return CommandRun(2, destination, (), "REPOSITORY_IDENTITY_INVALID")
         selected_repository = repository
     initial_snapshot = _safe_snapshot(root)
+    initial_source_snapshot = _safe_source_snapshot(root)
     before_names = set(_fragment_names(destination))
     env = os.environ.copy()
     source_root = str(Path(__file__).resolve().parent.parent)
@@ -1116,6 +1211,8 @@ def execute_witness_command(
     env["GREENGAP_WITNESS_DIR"] = str(destination)
     env["GREENGAP_WITNESS_ROLE"] = role
     env["GREENGAP_SOURCE_COMMIT"] = selected_source
+    if initial_source_snapshot is not None and _SHA256_RE.fullmatch(initial_source_snapshot.fingerprint):
+        env["GREENGAP_SOURCE_FINGERPRINT"] = initial_source_snapshot.fingerprint
     env["GREENGAP_RUN_ID"] = selected_run_id
     env["GREENGAP_RUN_ATTEMPT"] = run_attempt
     env["GREENGAP_WITNESS_ID"] = selected_surface
@@ -1129,15 +1226,12 @@ def execute_witness_command(
     env["PYTEST_ADDOPTS"] = _append_pytest_options(env.get("PYTEST_ADDOPTS"), options)
     actual_command = _tox_instrumented_command(command) if _is_tox_command(command) else list(command)
     try:
-        completed = subprocess.run(
+        completed = run_process_tree(
             actual_command,
             cwd=root,
             env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
             timeout=timeout,
-            check=False,
+            capture_output=False,
         )
         returncode, error = _normalized_returncode(completed.returncode)
     except subprocess.TimeoutExpired:
@@ -1160,6 +1254,7 @@ def execute_witness_command(
             run_attempt=run_attempt,
             exitstatus=returncode,
             initial_snapshot=initial_snapshot,
+            initial_source_snapshot=initial_source_snapshot,
             diagnostic=error,
         )
         fallback_name = _write_incomplete_fragment(destination, fallback)

@@ -21,6 +21,14 @@
     "manifest_version": { "const": 1 },
     "artifact_type": { "const": "greengap_pytest_runtime_witness_manifest" },
     "repository_identity": { "$ref": "#/$defs/repository_identity" },
+    "source_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint"],
+      "properties": {
+        "fingerprint": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+      }
+    },
     "workspace_identity": {
       "type": "object",
       "additionalProperties": false,

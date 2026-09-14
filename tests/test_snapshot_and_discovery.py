@@ -7,7 +7,7 @@ import pytest
 
 import greengap.util as util_module
 from greengap.pytest_adapter import discover_candidates, scan_pytest
-from greengap.snapshot import workspace_snapshot
+from greengap.snapshot import source_snapshot, workspace_snapshot
 from greengap.util import (
     PathReadContext,
     bounded_filesystem_paths,
@@ -198,6 +198,59 @@ def test_snapshot_includes_nonignored_untracked_file(tmp_path) -> None:
     assert first.fingerprint != second.fingerprint
     assert "new.txt" in second.files
     assert "ignored.txt" not in second.files
+
+
+def test_source_snapshot_ignores_runtime_workspace_outputs(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".gitignore": ".tox/\n.venv/\n.pytest_cache/\n",
+            "README.md": "base\n",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+            "tox.ini": "[tox]\n",
+        },
+    )
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    first = source_snapshot(tmp_path)
+
+    for relative in (".tox/marker", ".venv/marker", ".pytest_cache/marker", "coverage.xml", "uv.lock"):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("generated\n", encoding="utf-8")
+
+    second = source_snapshot(tmp_path)
+    assert first.complete and second.complete
+    assert first.fingerprint == second.fingerprint
+    assert "coverage.xml" not in second.files
+    assert "uv.lock" not in second.files
+
+
+def test_source_snapshot_changes_for_tracked_source_mutation(tmp_path) -> None:
+    write_files(tmp_path, {"tests/test_a.py": "def test_a():\n    pass\n"})
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    first = source_snapshot(tmp_path)
+    (tmp_path / "tests" / "test_a.py").write_text(
+        "def test_a():\n    assert False\n", encoding="utf-8"
+    )
+    second = source_snapshot(tmp_path)
+    assert first.fingerprint != second.fingerprint
+
+
+def test_source_snapshot_includes_untracked_source_but_not_report(tmp_path) -> None:
+    write_files(tmp_path, {"README.md": "base\n"})
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    first = source_snapshot(tmp_path)
+    source = tmp_path / "tests" / "test_new.py"
+    source.parent.mkdir()
+    source.write_text("def test_new():\n    pass\n", encoding="utf-8")
+    (tmp_path / "coverage.xml").write_text("report\n", encoding="utf-8")
+    second = source_snapshot(tmp_path)
+    assert first.fingerprint != second.fingerprint
+    assert "tests/test_new.py" in second.files
+    assert "coverage.xml" not in second.files
 
 
 def test_large_snapshot_parallel_path_is_deterministic(tmp_path) -> None:

@@ -30,6 +30,8 @@
     "role": { "enum": ["collection", "execution", "both"] },
     "greengap_version": { "type": "string", "minLength": 1, "maxLength": 4096 },
     "repository_identity": { "$ref": "#/$defs/repository_identity" },
+    "source_identity": { "$ref": "#/$defs/workspace_identity" },
+    "runtime_workspace_state": { "$ref": "#/$defs/workspace_identity" },
     "workspace_identity": { "$ref": "#/$defs/workspace_identity" },
     "pytest": { "$ref": "#/$defs/pytest" },
     "execution_context": { "$ref": "#/$defs/execution_context" },

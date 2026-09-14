@@ -527,7 +527,7 @@ def _command_witness_payload(action: str, result: Any) -> dict[str, Any]:
     complete = 0
     errors: list[str] = []
     source_commit = None
-    workspace_fingerprint = None
+    source_fingerprint = None
     run_identity: dict[str, Any] = {"run_id": None, "run_attempt": None}
     for index, name in enumerate(result.fragment_names):
         try:
@@ -538,7 +538,7 @@ def _command_witness_payload(action: str, result: Any) -> dict[str, Any]:
         valid += 1
         if source_commit is None:
             source_commit = payload["repository_identity"]["git_sha"]
-            workspace_fingerprint = payload["workspace_identity"]["initial_fingerprint"]
+            source_fingerprint = payload["source_identity"]["initial_fingerprint"]
             run_identity = {
                 "run_id": payload["execution_context"]["run_id"],
                 "run_attempt": payload["execution_context"]["run_attempt"],
@@ -559,7 +559,10 @@ def _command_witness_payload(action: str, result: Any) -> dict[str, Any]:
         "complete": not errors and valid > 0 and (action != "collect" or complete > 0),
         "command_exit_status": result.returncode,
         "source_commit": source_commit,
-        "workspace_fingerprint": workspace_fingerprint,
+        "source_fingerprint": source_fingerprint,
+        # Retain the v1 field name for consumers that only display the
+        # summary; reconciliation is now bound to source_fingerprint.
+        "workspace_fingerprint": source_fingerprint,
         "run_identity": run_identity,
         "fragment_count": len(result.fragment_names),
         "valid_fragment_count": valid,

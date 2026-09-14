@@ -729,16 +729,21 @@ def run_process_tree(
     cwd: Path,
     env: dict[str, str],
     timeout: float,
+    capture_output: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a command with a timeout that also reaps its descendant tree."""
+    """Run a command with a timeout that also reaps its descendant tree.
+
+    Witness execution can opt out of capturing target stdout/stderr because
+    those streams are neither part of the public artifact nor safely bounded.
+    """
 
     process = subprocess.Popen(
         list(args),
         cwd=cwd,
         env=env,
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
+        stderr=subprocess.PIPE if capture_output else subprocess.DEVNULL,
         text=True,
         **process_group_options(),
     )
