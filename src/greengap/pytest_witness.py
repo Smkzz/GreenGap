@@ -304,7 +304,7 @@ class _Witness:
         return path
 
     def log_start(self, nodeid: str, location: Any) -> None:
-        raw_path = location[0] if isinstance(location, (tuple, list)) and location else None
+        raw_path = location[0] if isinstance(location, tuple | list) and location else None
         self._mark(self.attempted, nodeid, raw_path)
 
     def log_report(self, report: Any) -> None:
@@ -326,7 +326,7 @@ class _Witness:
                     self.call_outcomes[path] = outcome
 
     def log_finish(self, nodeid: str, location: Any) -> None:
-        raw_path = location[0] if isinstance(location, (tuple, list)) and location else None
+        raw_path = location[0] if isinstance(location, tuple | list) and location else None
         self._mark(self.completed, nodeid, raw_path)
 
     def _context(self) -> dict[str, Any]:
