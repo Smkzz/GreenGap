@@ -1,0 +1,26 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-10",
+  "repository": "https://github.com/Smkzz/greengap-launch-probe-20260910",
+  "pull_request": 1,
+  "branch": "gap-case",
+  "head_sha": "217ddbbb6683bb22b2c0dd83f26a9cb0ba300151",
+  "workflow": ".github/workflows/probe.yml",
+  "event": "pull_request",
+  "run_id": 34420304738,
+  "run_url": "https://github.com/Smkzz/greengap-launch-probe-20260910/actions/runs/34420304738",
+  "exact_greengap_workflow_sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+  "mutation": "ci.yml runs only tests/test_present.py; tests/test_omitted.py is collected but omitted from the CI command",
+  "expected_exit": 1,
+  "actual_exit": 2,
+  "report_sha256": "b72fde4e199070d1eae4cfbae7f9f25901237de4114ad6b414ca088c5a9e2dde",
+  "report": {
+    "complete": false,
+    "collection_complete": true,
+    "finding_states": ["UNKNOWN", "UNKNOWN"],
+    "trace_complete": false,
+    "trace_issue_codes": ["EXTERNAL_WORKFLOW_UNRESOLVED"],
+    "changed_files": [".github/workflows/ci.yml"]
+  },
+  "interpretation": "The exact-candidate pull-request path preserves fail-closed semantics and does not turn the omitted test into a confident NOT_PLANNED claim. Exit 1 remains unavailable until the reusable workflow runs with a compatible immutable artifact; this is an open artifact gate, not a product claim."
+}

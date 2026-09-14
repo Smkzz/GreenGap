@@ -1,15 +1,117 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
-from greengap.pytest_adapter import discover_candidates
-from greengap.snapshot import workspace_snapshot
+import pytest
+
+import greengap.util as util_module
+from greengap.pytest_adapter import discover_candidates, scan_pytest
+from greengap.snapshot import source_snapshot, workspace_snapshot
+from greengap.util import (
+    PathReadContext,
+    bounded_filesystem_paths,
+    checkout_source_equivalent_to_head,
+    read_limited_bytes,
+)
 
 from .conftest import write_files
 
 
 def git_init(root):
     subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+
+
+def git_commit(root):
+    subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=GreenGap tests",
+            "-c",
+            "user.email=greengap-tests@example.invalid",
+            "commit",
+            "-qm",
+            "base",
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_checkout_source_equivalence_ignores_transient_dependency_and_cache_paths(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".gitignore": ".venv/\n.tox/\n.pytest_cache/\n",
+            "README.md": "base\n",
+        },
+    )
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    for directory in (".venv", ".tox", ".pytest_cache"):
+        path = tmp_path / directory / "marker"
+        path.parent.mkdir(parents=True)
+        path.write_text("generated\n", encoding="utf-8")
+
+    assert checkout_source_equivalent_to_head(tmp_path) is True
+
+
+def test_checkout_source_equivalence_ignores_common_tool_output_paths(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".gitignore": ".coverage*\n*.egg-info/\ntest-results/\n",
+            "README.md": "base\n",
+        },
+    )
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    for relative in (".coverage", ".coverage.123", "src/example.egg-info/PKG-INFO", "test-results/result.xml"):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("generated\n", encoding="utf-8")
+
+    assert checkout_source_equivalent_to_head(tmp_path) is True
+
+
+def test_checkout_source_equivalence_rejects_nonignored_source_drift(tmp_path) -> None:
+    write_files(tmp_path, {"README.md": "base\n"})
+    git_init(tmp_path)
+    git_commit(tmp_path)
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_new.py").write_text(
+        "def test_new():\n    pass\n", encoding="utf-8"
+    )
+
+    assert checkout_source_equivalent_to_head(tmp_path) is False
+
+
+def test_checkout_source_equivalence_fails_closed_for_ignored_nontransient_file(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {".gitignore": "local-selection.cfg\n", "README.md": "base\n"},
+    )
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    (tmp_path / "local-selection.cfg").write_text("pytest tests\n", encoding="utf-8")
+
+    assert checkout_source_equivalent_to_head(tmp_path) is None
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_checkout_source_equivalence_rejects_tracked_changes(tmp_path, staged: bool) -> None:
+    write_files(tmp_path, {"README.md": "base\n"})
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    (tmp_path / "README.md").write_text("changed\n", encoding="utf-8")
+    if staged:
+        subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True, capture_output=True)
+
+    assert checkout_source_equivalent_to_head(tmp_path) is False
 
 
 def test_snapshot_changes_for_tracked_dirty_bytes(tmp_path) -> None:
@@ -20,6 +122,58 @@ def test_snapshot_changes_for_tracked_dirty_bytes(tmp_path) -> None:
     (tmp_path / "tracked.txt").write_text("two\n", encoding="utf-8")
     second = workspace_snapshot(tmp_path)
     assert first.fingerprint != second.fingerprint
+
+
+def test_prepared_batch_read_fails_closed_when_file_changes(tmp_path) -> None:
+    path = tmp_path / "candidate.py"
+    path.write_text("def test_before():\n    pass\n", encoding="utf-8")
+    context = PathReadContext(tmp_path)
+
+    assert context.prepare((path,)) is None
+    assert read_limited_bytes(path, 1024, parent_context=context)
+
+    path.write_text("def test_after():\n    pass\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="changed during inspection"):
+        read_limited_bytes(path, 1024, parent_context=context)
+    assert context.verify() is not None
+
+
+def test_prepared_context_reuses_a_safe_subset(monkeypatch, tmp_path) -> None:
+    paths = tuple(tmp_path / name for name in ("first.py", "second.py", "third.py"))
+    for path in paths:
+        path.write_text("def test_case():\n    pass\n", encoding="utf-8")
+    context = PathReadContext(tmp_path)
+    calls: list[tuple[Path, frozenset[str]]] = []
+    original = util_module._scan_selected_entries
+
+    def counted_scan(parent, names, device):
+        calls.append((parent, frozenset(names)))
+        return original(parent, names, device)
+
+    monkeypatch.setattr(util_module, "_scan_selected_entries", counted_scan)
+
+    assert context.prepare(paths) is None
+    assert context.prepare((paths[0],)) is None
+    assert read_limited_bytes(paths[0], 1024, parent_context=context)
+    paths[0].write_text("changed", encoding="utf-8")
+    assert context.verify() is not None
+    assert calls == [
+        (tmp_path, frozenset(path.name for path in paths)),
+        (tmp_path, frozenset({"first.py"})),
+    ]
+
+
+def test_filesystem_inventory_limits_directory_entries(monkeypatch, tmp_path) -> None:
+    (tmp_path / "first").mkdir()
+    (tmp_path / "second").mkdir()
+    monkeypatch.setattr("greengap.util.MAX_PATH_INVENTORY_ITEMS", 1)
+
+    paths, error = bounded_filesystem_paths(tmp_path)
+
+    assert paths == ()
+    assert error is not None
+    assert "directory-entry" in error
 
 
 def test_snapshot_ignores_ignored_cache_bytes(tmp_path) -> None:
@@ -44,6 +198,96 @@ def test_snapshot_includes_nonignored_untracked_file(tmp_path) -> None:
     assert first.fingerprint != second.fingerprint
     assert "new.txt" in second.files
     assert "ignored.txt" not in second.files
+
+
+def test_source_snapshot_ignores_runtime_workspace_outputs(tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {
+            ".gitignore": ".tox/\n.venv/\n.pytest_cache/\n",
+            "README.md": "base\n",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+            "tox.ini": "[tox]\n",
+        },
+    )
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    first = source_snapshot(tmp_path)
+
+    for relative in (".tox/marker", ".venv/marker", ".pytest_cache/marker", "coverage.xml", "uv.lock"):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("generated\n", encoding="utf-8")
+
+    second = source_snapshot(tmp_path)
+    assert first.complete and second.complete
+    assert first.fingerprint == second.fingerprint
+    assert "coverage.xml" not in second.files
+    assert "uv.lock" not in second.files
+
+
+def test_source_snapshot_changes_for_tracked_source_mutation(tmp_path) -> None:
+    write_files(tmp_path, {"tests/test_a.py": "def test_a():\n    pass\n"})
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    first = source_snapshot(tmp_path)
+    (tmp_path / "tests" / "test_a.py").write_text(
+        "def test_a():\n    assert False\n", encoding="utf-8"
+    )
+    second = source_snapshot(tmp_path)
+    assert first.fingerprint != second.fingerprint
+
+
+def test_source_snapshot_includes_untracked_source_but_not_report(tmp_path) -> None:
+    write_files(tmp_path, {"README.md": "base\n"})
+    git_init(tmp_path)
+    git_commit(tmp_path)
+    first = source_snapshot(tmp_path)
+    source = tmp_path / "tests" / "test_new.py"
+    source.parent.mkdir()
+    source.write_text("def test_new():\n    pass\n", encoding="utf-8")
+    (tmp_path / "coverage.xml").write_text("report\n", encoding="utf-8")
+    second = source_snapshot(tmp_path)
+    assert first.fingerprint != second.fingerprint
+    assert "tests/test_new.py" in second.files
+    assert "coverage.xml" not in second.files
+
+
+def test_large_snapshot_parallel_path_is_deterministic(tmp_path) -> None:
+    for index in range(260):
+        path = tmp_path / "files" / f"file-{index:03d}.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"value-{index}\n", encoding="utf-8")
+    first = workspace_snapshot(tmp_path)
+    second = workspace_snapshot(tmp_path)
+
+    assert first.method == "filesystem"
+    assert first.fingerprint == second.fingerprint
+
+
+def test_snapshot_inventory_limit_is_incomplete(monkeypatch, tmp_path) -> None:
+    write_files(tmp_path, {f"file-{index}.txt": "value\n" for index in range(3)})
+    monkeypatch.setattr("greengap.util.MAX_PATH_INVENTORY_ITEMS", 2)
+
+    snapshot = workspace_snapshot(tmp_path)
+
+    assert not snapshot.complete
+    assert any("path inventory exceeds" in error for error in snapshot.errors)
+    assert len(snapshot.files) <= 2
+
+
+def test_discovery_inventory_limit_is_incomplete(monkeypatch, tmp_path) -> None:
+    write_files(
+        tmp_path,
+        {f"tests/test_{index}.py": f"def test_{index}():\n    pass\n" for index in range(3)},
+    )
+    monkeypatch.setattr("greengap.util.MAX_PATH_INVENTORY_ITEMS", 2)
+
+    candidates, collection = scan_pytest(tmp_path, collect=False)
+
+    assert candidates == ()
+    assert not collection.complete
+    assert "path inventory exceeds" in (collection.error or "")
 
 
 def test_default_discovery_marks_symbol_file_high(tmp_path) -> None:

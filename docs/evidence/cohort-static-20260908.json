@@ -1,0 +1,98 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-08",
+  "candidate_version": "1.0.0rc1",
+  "candidate_base_sha": "2de5f22a0a1fe1aa8f5e30712e96077d923b104f",
+  "candidate_base_tree": "c21113d1192dcd68a117c89b1805da41bc63e32d",
+  "execution_mode": "SAFE_STATIC_ONLY",
+  "command_template": "python -m greengap plan <checkout> --no-collect --json",
+  "isolation_profile": {
+    "target_code_executed": false,
+    "collection_hooks_executed": false,
+    "ambient_environment_inherited": false,
+    "trusted_collection_performed": false,
+    "available_isolation_probe": {
+      "docker_client": "PRESENT",
+      "docker_service": "STOPPED_MANUAL",
+      "container_runtime_available": false,
+      "wsl_client": "PRESENT",
+      "wsl_enumeration": "ACCESS_DENIED_E_ACCESSDENIED",
+      "alternative_isolation_available": false
+    },
+    "reason_trusted_collection_not_performed": "The workspace did not provide the documented OS-level isolation profile for untrusted public checkouts."
+  },
+  "oracle_source": "GitHub Actions workflow files and repository configuration at the recorded commit; no upstream findings were sent.",
+  "repositories": [
+    {
+      "cohort_id": "C08",
+      "url": "https://github.com/pydantic/pydantic",
+      "commit": "2261ae19e2e09f792f06613360c83fc829238111",
+      "license": "MIT",
+      "workflow_count": 10,
+      "pytest_reference_count": 14,
+      "candidate_count": 234,
+      "finding_count": 234,
+      "useful_determinations": 0,
+      "unknown_count": 234,
+      "reason_codes": {"COLLECTION_INCOMPLETE": 234},
+      "status": "ACQUIRED_SAFE_STATIC_ONLY"
+    },
+    {
+      "cohort_id": "C09",
+      "url": "https://github.com/pallets/flask",
+      "commit": "d318b683471101618febed18996405ad26462110",
+      "license": "BSD-3-Clause",
+      "workflow_count": 5,
+      "pytest_reference_count": 3,
+      "candidate_count": 27,
+      "finding_count": 27,
+      "useful_determinations": 0,
+      "unknown_count": 27,
+      "reason_codes": {"COLLECTION_INCOMPLETE": 27},
+      "status": "ACQUIRED_SAFE_STATIC_ONLY"
+    },
+    {
+      "cohort_id": "C10",
+      "url": "https://github.com/pytest-dev/pytest",
+      "commit": "0fabaa620d204fd040066eefd2a3ea2aad8d84cc",
+      "license": "MIT",
+      "workflow_count": 6,
+      "pytest_reference_count": 16,
+      "candidate_count": 123,
+      "finding_count": 123,
+      "useful_determinations": 0,
+      "unknown_count": 123,
+      "reason_codes": {"COLLECTION_INCOMPLETE": 5, "LOW_CONFIDENCE_CANDIDATE": 118},
+      "status": "ACQUIRED_SAFE_STATIC_ONLY"
+    },
+    {
+      "cohort_id": "C11",
+      "url": "https://github.com/python/cpython",
+      "commit": "23180c50082fe98784c78511b335d7274ed87fb7",
+      "license": "PSF-2.0",
+      "workflow_count": 25,
+      "pytest_reference_count": 5,
+      "candidate_count": 891,
+      "finding_count": 891,
+      "useful_determinations": 0,
+      "unknown_count": 891,
+      "reason_codes": {"COLLECTION_INCOMPLETE": 353, "LOW_CONFIDENCE_CANDIDATE": 538},
+      "status": "ACQUIRED_NEGATIVE_SHAPE_EXCLUSION_REVIEW"
+    },
+    {
+      "cohort_id": "C12",
+      "url": "https://github.com/scientific-python/array-api",
+      "commit": "ff497ed83220372eb689a4fb0878c831470f93bc",
+      "license": "MIT",
+      "workflow_count": 3,
+      "pytest_reference_count": 0,
+      "candidate_count": 0,
+      "finding_count": 0,
+      "useful_determinations": 0,
+      "unknown_count": 0,
+      "reason_codes": {},
+      "status": "ACQUIRED_NEGATIVE_SHAPE_EXCLUSION_REVIEW"
+    }
+  ],
+  "launch_interpretation": "The five repositories were acquired and safely exercised at the static boundary, but no trusted collection or useful determination was claimed. The frozen cohort launch requirement remains open."
+}

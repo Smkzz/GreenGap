@@ -1,0 +1,23 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-08",
+  "machine": {
+    "os": "Windows",
+    "os_release": "11",
+    "architecture": "AMD64",
+    "python": "3.13.3"
+  },
+  "runs": 5,
+  "command_template": "python -m greengap --version / --help",
+  "seconds": {
+    "version": [0.299848, 0.252041, 0.390333, 0.235502, 0.287485],
+    "help": [0.290641, 0.267698, 0.209005, 0.186179, 0.156738]
+  },
+  "p95_seconds": {
+    "version": 0.390333,
+    "help": 0.290641
+  },
+  "budget_seconds": 1.0,
+  "status": "PASS",
+  "scope": "Fresh process startup only; no hosted platform claim."
+}

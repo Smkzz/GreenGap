@@ -2,7 +2,18 @@
 
 ## Unreleased
 
-No unreleased changes.
+Adds the opt-in native pytest Runtime Witness plugin and conservative JSON
+aggregator. Runtime evidence is source-bound to an explicit source and
+repository identity, binds exact nodes through opaque identities, cumulatively
+bounded, and incomplete on missing jobs, shards, or conflicting observations;
+static Plan mode remains advisory and fail-closed.
+
+## 1.0.0rc1 - launch candidate
+
+Adds the stable report contract, SARIF 2.1.0 export, explicit target-Python
+selection, a non-executing default, a copyable GitHub Actions integration, and
+launch-readiness evidence. This is a release candidate; publication and any
+registry distribution remain owner-authorized actions.
 
 ## 0.1.3 - 2026-08-24
 

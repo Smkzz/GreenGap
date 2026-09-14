@@ -1,0 +1,16 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-09",
+  "candidate_version": "1.0.0rc1",
+  "source_freeze_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "source_freeze_tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
+  "session_package": "docs/evidence/human-usability-session-package-1.0.md",
+  "required_sessions": 5,
+  "required_successful_integrations": 4,
+  "completed_sessions": 0,
+  "successful_integrations": 0,
+  "trusted_collection_boundary_understood": null,
+  "ai_or_agent_sessions_counted_as_humans": false,
+  "status": "NOT_RUN_EXTERNAL_BLOCKER",
+  "interpretation": "No consenting human session has been run or claimed. The package is ready for five fresh-context humans using a packaged candidate."
+}

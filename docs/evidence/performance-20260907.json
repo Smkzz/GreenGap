@@ -1,0 +1,17 @@
+{
+  "collection_enabled": false,
+  "disk_delta_bytes": null,
+  "fixture": ".",
+  "note": "Python allocation is measured; process RSS and disk delta are intentionally UNKNOWN.",
+  "outcomes": ["INCOMPLETE", "INCOMPLETE", "INCOMPLETE", "INCOMPLETE", "INCOMPLETE"],
+  "p50_wall_seconds": 1.0101765,
+  "p95_wall_seconds": 1.0818968,
+  "peak_python_allocated_bytes": 9733294,
+  "process_rss_bytes": null,
+  "report_json_bytes": 42493,
+  "runs": 5,
+  "wall_seconds": [1.0818968, 1.0101765, 0.9770262, 0.9948668, 1.0523756],
+  "machine_note": "Windows host, Python 3.13 audit environment; exact host hardware was not captured.",
+  "version_seconds": 0.2150246,
+  "help_seconds": 0.2035951
+}

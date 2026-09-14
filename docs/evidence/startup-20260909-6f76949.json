@@ -1,0 +1,25 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-09",
+  "candidate_version": "1.0.0rc1",
+  "source_freeze_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "source_freeze_tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
+  "machine": {
+    "os": "Windows 11",
+    "architecture": "AMD64",
+    "python": "3.13.3"
+  },
+  "runs": 5,
+  "command_template": "python -m greengap --version / --help",
+  "seconds": {
+    "version": [0.1676245, 0.117985, 0.1180268, 0.1209729, 0.1152211],
+    "help": [0.1077791, 0.1168607, 0.1120681, 0.1043226, 0.1349856]
+  },
+  "p95_seconds": {
+    "version": 0.1676245,
+    "help": 0.1349856
+  },
+  "budget_seconds": 1.0,
+  "status": "PASS",
+  "scope": "Fresh process startup only; no hosted platform claim."
+}

@@ -20,9 +20,20 @@ def test_scorecard_raw_artifact_survives_clean_findings_failure() -> None:
 
     assert upload_start < gate_start
     assert "if: always()" in upload_block
-    assert "path: results.sarif" in upload_block
+    assert "path: scorecard-artifact" in upload_block
+    assert "SCORECARD_SARIF_SHA256" in workflow
     assert 'findings="$(jq' in workflow
     assert 'test "${findings}" -eq 0' in workflow
+
+    assert "security-events: write" not in workflow
+    assert "upload-sarif" not in workflow
+    report_workflow = read_repository_file(".github/workflows/scorecard-report.yml")
+    assert "workflow_run:" in report_workflow
+    assert "github.event.workflow_run.event == 'pull_request'" not in report_workflow
+    assert "github.event.workflow_run.event == 'schedule'" in report_workflow
+    assert "github.event.workflow_run.event == 'push'" in report_workflow
+    assert "SCORECARD_SARIF_SHA256" in report_workflow
+    assert "security-events: write" in report_workflow
 
 
 def test_clusterfuzzlite_actions_are_immutable_v1_pins() -> None:
@@ -46,6 +57,35 @@ def test_clusterfuzzlite_actions_are_immutable_v1_pins() -> None:
         in workflow
     )
     assert "keep-unaffected-fuzz-targets: true" in workflow
+    assert "security-events: write" not in workflow
+    assert "Stage fuzz SARIF and receipt for trusted uploader" in workflow
+    assert "FUZZ_REPOSITORY" in workflow
+    assert "FUZZ_EVENT" in workflow
+    assert "FUZZ_RUN_ID" in workflow
+    assert "FUZZ_WORKFLOW_SHA" in workflow
+    assert "FUZZ_SARIF_SHA256" in workflow
+    assert "fuzz-receipt.txt" in workflow
+
+    report_workflow = read_repository_file(".github/workflows/fuzz-report.yml")
+    assert "workflow_run:" in report_workflow
+    assert "github.event.workflow_run.event == 'pull_request'" not in report_workflow
+    assert "github.event.workflow_run.event == 'schedule'" in report_workflow
+    assert "github.event.workflow_run.event == 'workflow_dispatch'" in report_workflow
+    assert "actions: read" in report_workflow
+    assert "security-events: write" in report_workflow
+    assert "Validate inert SARIF shape and size" in report_workflow
+    assert "Verify exact fuzz run provenance" in report_workflow
+    assert "actions/runs/${FUZZ_RUN_ID}" in report_workflow
+    assert ".path" in report_workflow
+    assert ".head_sha" in report_workflow
+    assert "FUZZ_WORKFLOW_SHA" in report_workflow
+    assert "FUZZ_HEAD_REPOSITORY" in report_workflow
+    assert "FUZZ_SARIF_SHA256" in report_workflow
+    assert "upload-sarif" in report_workflow
+
+    codeql_workflow = read_repository_file(".github/workflows/codeql.yml")
+    assert "pull_request:" not in codeql_workflow
+    assert "security-events: write" in codeql_workflow
 
 
 def test_clusterfuzzlite_python_configuration_is_real() -> None:

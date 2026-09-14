@@ -12,15 +12,29 @@ as a mutation experiment.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_PATH = str(PROJECT_ROOT / "src")
+if SOURCE_PATH not in sys.path:
+    sys.path.insert(0, SOURCE_PATH)
+
+from greengap.environment import collection_environment  # noqa: E402
+from greengap.util import (  # noqa: E402
+    MAX_WORKSPACE_FILE_BYTES,
+    read_limited_bytes,
+    run_process_tree,
+)
 
 PINNED = {
     "outcome": ("python-trio/outcome", "03ed6218b08001877745bb1a9e180c8c5cf7c903"),
@@ -158,7 +172,7 @@ def sparse_checkout_enabled(root: Path) -> bool:
 
 
 def digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(read_limited_bytes(path, MAX_WORKSPACE_FILE_BYTES)).hexdigest()
 
 
 def digest_bytes(value: bytes) -> str:
@@ -237,19 +251,28 @@ def run_plan(
     event: str = "pull_request",
     ref: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
-    project_root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    source_path = str(project_root / "src")
-    env["PYTHONPATH"] = source_path + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
-    # Qualification inspects prepared checkouts.  It never needs a package
-    # download, Git prompt, or uv's automatic project synchronization.
-    env["PIP_NO_INDEX"] = "1"
-    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
-    env["UV_OFFLINE"] = "1"
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    command = [python_executable, "-m", "greengap", "plan", str(repo), "--json"]
+    env = collection_environment(
+        {
+            "PYTHONPATH": SOURCE_PATH,
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
+            # Qualification inspects prepared checkouts.  It never needs a
+            # package download, Git prompt, or uv's automatic synchronization.
+            "PIP_NO_INDEX": "1",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "UV_OFFLINE": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    command = [
+        python_executable,
+        "-m",
+        "greengap",
+        "plan",
+        str(repo),
+        "--json",
+        "--trust-collection",
+    ]
     command.extend(("--event", event))
     if base_ref:
         command.extend(("--base-ref", base_ref))
@@ -267,13 +290,11 @@ def run_plan(
     for changed_file in changed_files:
         command.extend(("--changed-file", changed_file))
     try:
-        result = subprocess.run(
+        result = run_process_tree(
             command,
-            text=True,
-            capture_output=True,
+            cwd=repo,
             env=env,
             timeout=300,
-            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 2, {"error": f"GreenGap plan execution failed: {exc}"}
@@ -291,6 +312,8 @@ def expected_unknown_baseline(name: str, plan: dict[str, Any]) -> bool:
     snapshot = plan.get("snapshot", {})
     findings = plan.get("findings", [])
     expected_evidence = EXPECTED_UNKNOWN_EVIDENCE_BY_REPOSITORY.get(name)
+    if expected_evidence is None:
+        return False
     trace = plan.get("trace", {})
     trace_issues = trace.get("issues", []) if isinstance(trace, dict) else []
     relevant_codes = {
@@ -346,12 +369,73 @@ def expected_unknown_baseline(name: str, plan: dict[str, Any]) -> bool:
 
 def _safe_mutation_target(root: Path, relative: str) -> Path | None:
     try:
-        repository = root.resolve()
-        target = (repository / relative).resolve()
-        target.relative_to(repository)
+        repository = root.resolve(strict=True)
+        raw = Path(relative)
+        if raw.is_absolute() or ".." in raw.parts:
+            return None
+        target = repository
+        for part in raw.parts:
+            target /= part
+            info = target.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                return None
+        info = target.lstat()
+        if not stat.S_ISREG(info.st_mode) or getattr(info, "st_nlink", 1) != 1:
+            return None
+        resolved = target.resolve(strict=True)
+        resolved.relative_to(repository)
+        if os.path.normcase(os.path.normpath(os.fspath(resolved))) != os.path.normcase(
+            os.path.normpath(os.fspath(target))
+        ):
+            return None
     except (OSError, RuntimeError, ValueError):
         return None
     return target
+
+
+def _write_mutation_bytes(root: Path, relative: str, value: bytes) -> None:
+    """Write only to the already-verified file descriptor for a mutation target."""
+
+    if len(value) > MAX_WORKSPACE_FILE_BYTES:
+        raise OSError("mutation file exceeds the workspace file-size limit")
+    target = _safe_mutation_target(root, relative)
+    if target is None:
+        raise OSError("mutation target is not a safe regular file")
+    before = target.lstat()
+    flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(target, flags)
+        opened = os.fstat(descriptor)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+            getattr(opened, "st_nlink", 1),
+        ) != (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            getattr(before, "st_nlink", 1),
+        ):
+            raise OSError("mutation target changed before it was opened")
+        with os.fdopen(descriptor, "r+b") as handle:
+            descriptor = None
+            handle.seek(0)
+            handle.truncate()
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        after = _safe_mutation_target(root, relative)
+        if after is None:
+            raise OSError("mutation target changed type or containment during write")
+        after_info = after.lstat()
+        if (after_info.st_dev, after_info.st_ino) != (before.st_dev, before.st_ino):
+            raise OSError("mutation target changed identity during write")
+    finally:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
 
 
 def complete_mutation_baseline(code: int, plan: dict[str, Any]) -> tuple[bool, str]:
@@ -523,7 +607,7 @@ def qualify_case(
     restored_runs = 0
     for _ in range(runs):
         try:
-            target.write_bytes(mutated)
+            _write_mutation_bytes(root, mutation.path, mutated)
         except OSError as exc:
             return {
                 "repository": name,
@@ -546,7 +630,7 @@ def qualify_case(
             observations.append(mutation_observation(code, mutation_payload, mutation.expected))
         finally:
             try:
-                target.write_bytes(original)
+                _write_mutation_bytes(root, mutation.path, original)
             except OSError as exc:
                 restore_error = exc
         if restore_error is not None:

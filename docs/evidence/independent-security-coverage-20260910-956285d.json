@@ -1,0 +1,42 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-10",
+  "scan_id": "3a9dbd66-ad9b-4cac-a489-3563747487cb",
+  "mode": "diff",
+  "range": {
+    "base": "83b4b59c4b9cd91481b4a2cd18a25f87e62ca656",
+    "head": "956285d9e8cf7e7aa1cb3351b90d8135e40a2e20"
+  },
+  "model": "gpt-5.6-luna",
+  "reasoning_effort": "max",
+  "security_surfaces_reviewed": [
+    "src/greengap/trace.py",
+    "src/greengap/cli.py"
+  ],
+  "coverage": "complete_changed_coverage",
+  "delegated_workers": false,
+  "finding_count": 0,
+  "status": "COMPLETE_NO_REPORTABLE_FINDINGS",
+  "usage": {
+    "input_tokens_raw": 3137380,
+    "cached_input_tokens": 3099136,
+    "uncached_input_tokens": 38244,
+    "output_tokens": 5771,
+    "reasoning_output_tokens": 2708,
+    "total_tokens": 3143151,
+    "thread_count": 1
+  },
+  "lineage": {
+    "current_candidate_head": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+    "test_only_follow_up_commits": [
+      "90340a1cf5dc1eed2d1a104088609f294d3a133d",
+      "c30543a4e3442a5238cf714c31f333e6cdfbb45e"
+    ]
+  },
+  "limitations": [
+    "No delegated security workers were available; the parent completed the bounded changed-file review.",
+    "The exact c30543a follow-up commits are test-fixture-only changes and are covered by the exact-head hosted test matrix; no source product bytes changed after the reviewed 956285d product-fix head.",
+    "Independent security review is evidence, not owner approval, merge authorization, or publication authorization."
+  ],
+  "approval_claim": "NONE"
+}

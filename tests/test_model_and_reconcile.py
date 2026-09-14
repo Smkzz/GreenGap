@@ -137,6 +137,7 @@ def test_low_confidence_is_unknown_and_nonblocking() -> None:
     )
     assert findings[0].state == FindingState.UNKNOWN
     assert not findings[0].blocking
+    assert not plan_is_complete(findings, collection(), True, trace=TraceResult())
 
 
 def test_incomplete_collection_downgrades_observed_and_candidates() -> None:
@@ -178,6 +179,13 @@ def test_unrelated_incomplete_trace_does_not_erase_broad_plan() -> None:
         (Candidate("tests/test_a.py", "high"),), collection("tests/test_a.py"), trace
     )
     assert findings[0].state == FindingState.PLANNED
+
+
+def test_relevant_incomplete_trace_prevents_empty_analysis_from_being_complete() -> None:
+    trace = TraceResult(issues=(TraceIssue("DYNAMIC", "unknown selector"),))
+    empty_collection = collection()
+
+    assert not plan_is_complete((), empty_collection, True, trace=trace)
 
 
 def test_no_invocation_on_complete_graph_is_blocking() -> None:

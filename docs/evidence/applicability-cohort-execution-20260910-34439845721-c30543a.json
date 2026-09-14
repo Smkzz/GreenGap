@@ -1,0 +1,222 @@
+{
+  "evidence_version": "1.0",
+  "artifact_type": "applicability_cohort_execution_and_adjudication",
+  "recorded_at": "2026-09-10",
+  "status": "APPLICABILITY_COHORT_FAILED",
+  "candidate_source": {
+    "repository": "Smkzz/GreenGap",
+    "sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+    "tree": "89071e9aafdd92ddf7001f9ccdc60083289b5e86",
+    "version": "1.0.0rc1"
+  },
+  "selection": {
+    "receipt": "docs/evidence/applicability-cohort-selection-20260910-c30543a.json",
+    "discovered": 100,
+    "eligible": 38,
+    "omission_capable": 33,
+    "selected": 12,
+    "non_holdouts": 9,
+    "final_holdouts": 3,
+    "controlled_omission_subjects": 6,
+    "selection_seed": 20260910,
+    "selection_changed_after_execution": false
+  },
+  "execution_binding": {
+    "repository": "Smkzz/greengap-launch-probe-20260910",
+    "workflow": ".github/workflows/applicability-cohort.yml",
+    "run_id": "34439845721",
+    "run_url": "https://github.com/Smkzz/greengap-launch-probe-20260910/actions/runs/34439845721",
+    "run_conclusion": "failure",
+    "workflow_head_sha": "638eb82122522b604d4eae34b2797b82088d3a9e",
+    "manifest_sha256": "c6930e5c6dbf8233d8f2e136ec519b45951458a6e9641078d04069503e951abd",
+    "remote_final_receipt_sha256": "4efc141cb2e8fd8118cf7c58dd514d346d3deddc74cad92e88a713d68fd4c848",
+    "runner_image": "ubuntu-24.04",
+    "permissions": {
+      "contents": "read"
+    },
+    "checkout_persist_credentials": false,
+    "personal_secrets_provided": false,
+    "cloud_credentials_provided": false,
+    "pypi_credentials_provided": false,
+    "target_credentials_provided": false,
+    "target_write_token_exposed": false,
+    "target_network_requested": false,
+    "target_repository_mutation": "disposable checkout workflow file only; never committed or pushed",
+    "source_tuning_after_holdout_boundary": false
+  },
+  "superseded_probe_runs": [
+    {
+      "run_id": "34438733714",
+      "workflow_head_sha": "d51c75635751b929e4a94e8ce8618209468f24e5",
+      "status": "INFRASTRUCTURE_INCOMPLETE",
+      "reason": "The qualification gate glob also matched GreenGap report JSON files; no cohort result was used."
+    },
+    {
+      "run_id": "34439144423",
+      "workflow_head_sha": "d51c75635751b929e4a94e8ce8618209468f24e5",
+      "status": "INFRASTRUCTURE_INCOMPLETE",
+      "reason": "A01 and A04 disposable omission anchors were stale; no holdout was run and no cohort result was used."
+    }
+  ],
+  "qualification": {
+    "expected": 9,
+    "receipts_received": 9,
+    "useful_determinations": 0,
+    "false_confident_conclusions": 0,
+    "exit_codes": {
+      "2": 9
+    },
+    "complete": 0,
+    "collection_complete": 4,
+    "trace_complete": 0,
+    "case_classification": {
+      "collection_or_environment_incomplete": [
+        "A01",
+        "A03",
+        "A04",
+        "A05",
+        "A06"
+      ],
+      "collection_complete_but_trace_incomplete": [
+        "A02",
+        "A07",
+        "A08",
+        "A09"
+      ]
+    }
+  },
+  "controlled_omissions": {
+    "expected": 6,
+    "receipts_received": 6,
+    "omission_detected": 0,
+    "restored_baselines_verified": 6,
+    "all_mutation_anchors_matched_once": true,
+    "all_mutated_witnesses_exit_code": 2,
+    "all_mutated_witnesses_complete": false,
+    "cases": {
+      "A01": {
+        "workflow": ".github/workflows/build.yml",
+        "before_sha256": "0cefbb167662a42b0d6364d947085028dbdff78fb8adc84c383509357d835a9f",
+        "mutated_sha256": "8159d197a263f3559d140668a7f037587bfcb8ead262972d210d80c2ad0752e0",
+        "mutation_match_count": 1,
+        "omission_detected": false,
+        "restored_baseline_verified": true
+      },
+      "A02": {
+        "workflow": ".github/workflows/run-checks.yml",
+        "before_sha256": "3d5570118b41dc036d7814a66fa7b7d8ce95e831bef82fc9e4221666038e1565",
+        "mutated_sha256": "44a98821ee82660bbe7b556b3ebe41e300dd2d82aa66d854bd51aaa40bc1d128",
+        "mutation_match_count": 1,
+        "omission_detected": false,
+        "restored_baseline_verified": true
+      },
+      "A03": {
+        "workflow": ".github/workflows/main.yml",
+        "before_sha256": "b8a023c71548660d5f331d189a2459d0c544620f6f20c7242bbc4a5ef1f5125f",
+        "mutated_sha256": "ff6bbef7777e1b3374d652a0bcf5e4cdc37e00e656572db5539aa1345d0a834c",
+        "mutation_match_count": 1,
+        "omission_detected": false,
+        "restored_baseline_verified": true
+      },
+      "A04": {
+        "workflow": ".github/workflows/tox.yml",
+        "before_sha256": "13ebce986b0f29618522670c1dc6ae8d0127acc9bcec2c820ec5b1ac9533b1d9",
+        "mutated_sha256": "c9e23d8d5f4f669a2cc675daff84712cd71d94b9f4bfaee712a99c13bf73b6d1",
+        "mutation_match_count": 1,
+        "omission_detected": false,
+        "restored_baseline_verified": true
+      },
+      "A05": {
+        "workflow": ".github/workflows/tests.yaml",
+        "before_sha256": "9b092564fa677428017fa2d1e2dd2870bf4bc37564e4e5eb460ea93fe5b7fb00",
+        "mutated_sha256": "726889af833c3449384371fa17f8065b5619edd2324fe359ded264a2e0c55ab6",
+        "mutation_match_count": 1,
+        "omission_detected": false,
+        "restored_baseline_verified": true
+      },
+      "A06": {
+        "workflow": ".github/workflows/ci.yml",
+        "before_sha256": "3b75e8a889f77ce369054038c68f947670ce558eb8892d500ab30968b85a2758",
+        "mutated_sha256": "5508b93217dc21cd2fa602ab813dad1eb54f28e2d03da8ca202c6f2be111611d",
+        "mutation_match_count": 1,
+        "omission_detected": false,
+        "restored_baseline_verified": true
+      }
+    }
+  },
+  "final_holdouts": {
+    "expected": 3,
+    "receipts_received": 3,
+    "useful_determinations": 0,
+    "adjudicated_false_confident_conclusions": 0,
+    "cases": {
+      "A10": {
+        "repository": "nteract/testbook",
+        "pinned_sha": "9d48dbb18d4b3620fcd962929e3b404af4afeea6",
+        "status": "RESULT_RECORDED",
+        "useful_determination": false,
+        "exit_code": 2,
+        "complete": false,
+        "collection_complete": false,
+        "trace_complete": false
+      },
+      "A11": {
+        "repository": "okken/pytest-check",
+        "pinned_sha": "4fbeec2549403ca77dfd57fcc4b633092316dc1e",
+        "status": "RESULT_RECORDED",
+        "useful_determination": false,
+        "exit_code": 2,
+        "complete": false,
+        "collection_complete": true,
+        "trace_complete": false
+      },
+      "A12": {
+        "repository": "pytest-dev/pytest-splinter",
+        "pinned_sha": "1b0aa1efaec40919d79d424bb6d5c418925f2ad6",
+        "status": "SETUP_INCOMPLETE",
+        "useful_determination": false,
+        "setup_failure": "The frozen hash-locked collection requirements reached pytest==9.0.3 on Python 3.10, whose exceptiongroup>=1 transitive dependency is not hash-pinned; pip --require-hashes therefore exited 1 before a target Python path was written.",
+        "target_code_executed": false
+      }
+    },
+    "full_holdout_execution_complete": false
+  },
+  "gate_evaluation": {
+    "usefulness_threshold": {
+      "observed": "0/12",
+      "required": "at least 8/12",
+      "pass": false
+    },
+    "final_holdout_requirement": {
+      "observed": "0/3 useful",
+      "required": "at least 2/3 useful",
+      "pass": false
+    },
+    "false_confident_conclusions_zero": {
+      "observed": 0,
+      "pass_for_adjudicated_receipts": true,
+      "full_gate_claim": false
+    },
+    "controlled_omission_requirement": {
+      "observed": "0/6 detected; 6/6 restored",
+      "required": "6/6 detected and 6/6 restored",
+      "pass": false
+    },
+    "applicability_cohort": "FAIL",
+    "promotion_action": "STOPPED_AT_APPLICABILITY_GATE"
+  },
+  "remote_final_receipt": {
+    "status": "FAILED",
+    "applicability_cohort": "FAIL",
+    "execution_complete_claim": true,
+    "execution_complete_claim_note": "The hosted adjudicator counted three holdout receipt files; independent readback records A12 as SETUP_INCOMPLETE, so full holdout evidence is not complete."
+  },
+  "preserved_original_stress_cohort": {
+    "original_gate_result": "COHORT_USEFULNESS_GATE_FAILED",
+    "useful_determinations_literal": "USEFUL_DETERMINATIONS=0",
+    "false_confident_conclusions_literal": "FALSE_CONFIDENT_CONCLUSIONS=0",
+    "soundness": "PASS — 0 false confident conclusions",
+    "usefulness": "FAILED — 0 useful determinations"
+  },
+  "launch_conclusion": "The documented 1.0 applicability gate did not pass. No product tuning, source change, merge, tag, release, registry upload, or publication was performed."
+}

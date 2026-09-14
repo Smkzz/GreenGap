@@ -1,0 +1,63 @@
+{
+  "collection_enabled": false,
+  "disk_delta_bytes": 0,
+  "disk_delta_bytes_per_run": [
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fixture_definition": {
+    "name": "large",
+    "test_files": 10000,
+    "workflow_files": 4,
+    "workflow_shapes": 4
+  },
+  "instrumentation": [
+    "none"
+  ],
+  "measurement_scope": {
+    "disk_delta": "regular-file byte delta under the fixture root, excluding .git and symlinks",
+    "process_rss": "GreenGap parent process peak RSS from the platform API",
+    "report_serialization": "public_report and JSON serialization measured after run_plan",
+    "timed_wall": "run_plan only; no tracemalloc, profiler, debugger, or coverage instrumentation"
+  },
+  "mode": "production_uninstrumented",
+  "outcomes": [
+    "INCOMPLETE",
+    "INCOMPLETE",
+    "INCOMPLETE",
+    "INCOMPLETE",
+    "INCOMPLETE"
+  ],
+  "p50_wall_seconds": 3.500273200000038,
+  "p95_wall_seconds": 3.5654067000000396,
+  "peak_process_rss_bytes": 81440768,
+  "process_rss_bytes_per_run": [
+    65085440,
+    80752640,
+    81440768,
+    81440768,
+    81440768
+  ],
+  "report_json_bytes": 3744208,
+  "report_serialization_p50_seconds": 0.3747870000000262,
+  "report_serialization_p95_seconds": 0.408967500000017,
+  "report_serialization_wall_seconds": [
+    0.37712229999999636,
+    0.3747870000000262,
+    0.408967500000017,
+    0.3457595999999512,
+    0.3279715999999553
+  ],
+  "runs": 5,
+  "wall_seconds": [
+    3.5654067000000396,
+    3.2826914999999985,
+    3.5441754999999944,
+    3.500273200000038,
+    3.205761499999994
+  ],
+  "warmup_runs": 1
+}

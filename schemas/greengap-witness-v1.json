@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Smkzz/GreenGap/blob/main/schemas/greengap-witness-v1.json",
+  "title": "GreenGap pytest runtime witness v1",
+  "description": "Bounded inert file-level evidence emitted by the explicitly loaded GreenGap pytest plugin.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "witness_version",
+    "artifact_type",
+    "kind",
+    "role",
+    "greengap_version",
+    "repository_identity",
+    "workspace_identity",
+    "pytest",
+    "execution_context",
+    "collection",
+    "execution",
+    "session",
+    "complete",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "witness_version": { "const": 1 },
+    "artifact_type": { "const": "greengap_pytest_runtime_witness" },
+    "kind": { "const": "pytest_runtime" },
+    "role": { "enum": ["collection", "execution", "both"] },
+    "greengap_version": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "repository_identity": { "$ref": "#/$defs/repository_identity" },
+    "source_identity": { "$ref": "#/$defs/workspace_identity" },
+    "runtime_workspace_state": { "$ref": "#/$defs/workspace_identity" },
+    "workspace_identity": { "$ref": "#/$defs/workspace_identity" },
+    "pytest": { "$ref": "#/$defs/pytest" },
+    "execution_context": { "$ref": "#/$defs/execution_context" },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["complete", "collected_files"],
+      "properties": {
+        "complete": { "type": "boolean" },
+        "collected_files": { "$ref": "#/$defs/file_list" }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempted_files", "call_executed_files", "completed_files"],
+      "properties": {
+        "attempted_files": { "$ref": "#/$defs/file_list" },
+        "call_executed_files": { "$ref": "#/$defs/file_list" },
+        "completed_files": { "$ref": "#/$defs/file_list" },
+        "call_outcomes": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file", "outcome"],
+            "properties": {
+              "file": { "type": "string", "minLength": 1, "maxLength": 1024 },
+              "outcome": { "enum": ["passed", "failed", "skipped"] }
+            }
+          }
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pytest_exitstatus", "finalized"],
+      "properties": {
+        "pytest_exitstatus": { "type": "integer", "minimum": -1, "maximum": 255 },
+        "finalized": { "type": "boolean" }
+      }
+    },
+    "complete": { "type": "boolean" },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]{1,256}$" }
+    }
+  },
+  "$defs": {
+    "safe_id": {
+      "type": ["string", "null"],
+      "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_.:/-]{1,256}$"
+    },
+    "sha": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{64}$"
+    },
+    "repository_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git_sha", "git_tree", "repository"],
+      "properties": {
+        "git_sha": { "$ref": "#/$defs/sha" },
+        "git_tree": { "$ref": "#/$defs/sha" },
+        "repository": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9_.-]{1,128}/[A-Za-z0-9_.-]{1,128}$"
+        }
+      }
+    },
+    "workspace_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["initial_fingerprint", "final_fingerprint", "stable"],
+      "properties": {
+        "initial_fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "final_fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "stable": { "type": "boolean" }
+      }
+    },
+    "pytest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "rootpath", "session_id"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "rootpath": {
+          "type": "string",
+          "pattern": "^(?:\\.|(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\r\\n]+)$"
+        },
+        "session_id": { "type": "string", "pattern": "^[0-9a-fA-F]{32}$" }
+      }
+    },
+    "execution_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "run_id",
+        "run_attempt",
+        "job",
+        "matrix_identity",
+        "event",
+        "ref",
+        "surface_id",
+        "shard",
+        "worker_id",
+        "pid"
+      ],
+      "properties": {
+        "provider": { "enum": ["local", "github_actions", "ci"] },
+        "run_id": { "$ref": "#/$defs/safe_id" },
+        "run_attempt": { "$ref": "#/$defs/safe_id" },
+        "job": { "$ref": "#/$defs/safe_id" },
+        "matrix_identity": { "$ref": "#/$defs/safe_id" },
+        "event": { "$ref": "#/$defs/safe_id" },
+        "ref": { "$ref": "#/$defs/safe_id" },
+        "surface_id": { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]{1,256}$" },
+        "shard": { "$ref": "#/$defs/safe_id" },
+        "worker_id": { "$ref": "#/$defs/safe_id" },
+        "pid": { "type": "integer", "minimum": 1, "maximum": 2147483647 }
+      }
+    },
+    "file_list": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024,
+        "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]+$"
+      }
+    }
+  }
+}

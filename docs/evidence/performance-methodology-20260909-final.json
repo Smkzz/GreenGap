@@ -1,0 +1,204 @@
+{
+  "collection_enabled": false,
+  "decision": {
+    "legacy_instrumented_p95_seconds": 31.21845410001697,
+    "previous_timing_miss_classification": "PRODUCTION_PATH_TIMING_MISS",
+    "production_path_p95_seconds": 8.10288419999415,
+    "production_performance": "BLOCKED",
+    "slo_seconds": 5.0
+  },
+  "fixture": "large",
+  "fixture_creation_seconds": 5.920149199984735,
+  "fixture_definition": {
+    "name": "large",
+    "test_files": 10000,
+    "workflow_files": 4,
+    "workflow_shapes": 4
+  },
+  "fixture_root": "C:\\Projects\\GreenGap\\qualification\\perf-methodology-large-20260909-final",
+  "machine": {
+    "architecture": "AMD64",
+    "os": "Windows",
+    "os_release": "11",
+    "python": "3.13.3"
+  },
+  "methods": {
+    "harness": {
+      "collection_enabled": false,
+      "filesystem_and_rss_measurement": {
+        "p50_wall_seconds": 2.124324699980207,
+        "p95_wall_seconds": 2.1998906999942847,
+        "wall_seconds": [
+          2.025004600000102,
+          2.124324699980207,
+          2.1284378999844193,
+          2.1998906999942847,
+          2.017808900011005
+        ]
+      },
+      "fixture_definition": {
+        "name": "large",
+        "test_files": 10000,
+        "workflow_files": 4,
+        "workflow_shapes": 4
+      },
+      "instrumentation": [
+        "report serialization",
+        "disk measurement",
+        "RSS measurement"
+      ],
+      "measurement_scope": {
+        "analysis": "not included; one un-timed run_plan call only supplies a report object",
+        "filesystem_and_rss_measurement": "two fixture byte walks plus platform RSS query",
+        "report_serialization": "public_report and JSON serialization of the same report object"
+      },
+      "mode": "harness_overhead",
+      "report_serialization": {
+        "p50_wall_seconds": 0.7552165999950375,
+        "p95_wall_seconds": 0.8140171999984886,
+        "wall_seconds": [
+          0.7552165999950375,
+          0.7891681999899447,
+          0.7310751999903005,
+          0.8140171999984886,
+          0.7463473999814596
+        ]
+      },
+      "runs": 5,
+      "warmup_runs": 1
+    },
+    "instrumented": {
+      "collection_enabled": false,
+      "disk_delta_bytes": 0,
+      "disk_delta_bytes_per_run": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fixture": "large",
+      "fixture_definition": {
+        "name": "large",
+        "test_files": 10000,
+        "workflow_files": 4,
+        "workflow_shapes": 4
+      },
+      "instrumentation": [
+        "tracemalloc"
+      ],
+      "machine": {
+        "architecture": "AMD64",
+        "os": "Windows",
+        "os_release": "11",
+        "python": "3.13.3"
+      },
+      "measurement_scope": {
+        "disk_delta": "regular-file byte delta under the fixture root, excluding .git and symlinks",
+        "process_rss": "GreenGap parent process peak RSS; child collection processes are not included",
+        "timed_wall": "existing scripts/measure_performance.py method, including tracemalloc overhead"
+      },
+      "mode": "legacy_tracemalloc_instrumented",
+      "note": "Process RSS uses the platform process API and disk delta covers only regular files under the fixture root.",
+      "outcomes": [
+        "INCOMPLETE",
+        "INCOMPLETE",
+        "INCOMPLETE",
+        "INCOMPLETE",
+        "INCOMPLETE"
+      ],
+      "p50_wall_seconds": 30.012622400012333,
+      "p95_wall_seconds": 31.21845410001697,
+      "peak_python_allocated_bytes": 32629080,
+      "process_rss_bytes": 125272064,
+      "process_rss_bytes_per_run": [
+        108163072,
+        124952576,
+        124952576,
+        124952576,
+        125272064
+      ],
+      "report_json_bytes": 3744208,
+      "runs": 5,
+      "wall_seconds": [
+        26.34310430000187,
+        27.770974399987608,
+        30.725047000014456,
+        31.21845410001697,
+        30.012622400012333
+      ],
+      "warmup_runs": 1
+    },
+    "production": {
+      "collection_enabled": false,
+      "disk_delta_bytes": 0,
+      "disk_delta_bytes_per_run": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fixture_definition": {
+        "name": "large",
+        "test_files": 10000,
+        "workflow_files": 4,
+        "workflow_shapes": 4
+      },
+      "instrumentation": [
+        "none"
+      ],
+      "measurement_scope": {
+        "disk_delta": "regular-file byte delta under the fixture root, excluding .git and symlinks",
+        "process_rss": "GreenGap parent process peak RSS from the platform API",
+        "report_serialization": "public_report and JSON serialization measured after run_plan",
+        "timed_wall": "run_plan only; no tracemalloc, profiler, debugger, or coverage instrumentation"
+      },
+      "mode": "production_uninstrumented",
+      "outcomes": [
+        "INCOMPLETE",
+        "INCOMPLETE",
+        "INCOMPLETE",
+        "INCOMPLETE",
+        "INCOMPLETE"
+      ],
+      "p50_wall_seconds": 7.9101405999972485,
+      "p95_wall_seconds": 8.10288419999415,
+      "peak_process_rss_bytes": 82755584,
+      "process_rss_bytes_per_run": [
+        69722112,
+        80769024,
+        80769024,
+        82755584,
+        82755584
+      ],
+      "report_json_bytes": 3744208,
+      "report_serialization_p50_seconds": 0.7294342999812216,
+      "report_serialization_p95_seconds": 0.7932433999958448,
+      "report_serialization_wall_seconds": [
+        0.7932433999958448,
+        0.7110906000016257,
+        0.7343039000115823,
+        0.7294342999812216,
+        0.6770238000026438
+      ],
+      "runs": 5,
+      "wall_seconds": [
+        7.800107499992009,
+        7.9101405999972485,
+        8.10288419999415,
+        7.912676800013287,
+        7.866677499987418
+      ],
+      "warmup_runs": 1
+    }
+  },
+  "notes": [
+    "Production timing excludes tracemalloc and measures only run_plan; report serialization and platform measurements are recorded separately.",
+    "The legacy method is delegated to scripts/measure_performance.py unchanged for comparability.",
+    "Each method runs in a fresh child process against the same deterministic fixture."
+  ],
+  "receipt_type": "greengap-performance-methodology",
+  "runs": 5,
+  "warmup_runs": 1
+}

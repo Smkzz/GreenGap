@@ -1,0 +1,57 @@
+{
+  "collection_enabled": false,
+  "disk_delta_bytes": 0,
+  "disk_delta_bytes_per_run": [
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fixture": "large",
+  "fixture_definition": {
+    "name": "large",
+    "test_files": 10000,
+    "workflow_files": 4,
+    "workflow_shapes": 4
+  },
+  "machine": {
+    "architecture": "AMD64",
+    "os": "Windows",
+    "os_release": "11",
+    "python": "3.13.3"
+  },
+  "measurement_scope": {
+    "disk_delta": "regular-file byte delta under the fixture root, excluding .git and symlinks",
+    "process_rss": "GreenGap parent process peak RSS; child collection processes are not included"
+  },
+  "note": "Process RSS uses the platform process API and disk delta covers only regular files under the fixture root. This receipt includes bounded parallel snapshot/candidate inspection and one-time report-redaction context; fail-closed binding remains unchanged.",
+  "outcomes": [
+    "INCOMPLETE",
+    "INCOMPLETE",
+    "INCOMPLETE",
+    "INCOMPLETE",
+    "INCOMPLETE"
+  ],
+  "p50_wall_seconds": 56.593239600013476,
+  "p95_wall_seconds": 57.92564639999182,
+  "peak_python_allocated_bytes": 71798659,
+  "process_rss_bytes": 145252352,
+  "process_rss_bytes_per_run": [
+    128114688,
+    144969728,
+    144969728,
+    144969728,
+    145252352
+  ],
+  "report_json_bytes": 3743178,
+  "runs": 5,
+  "wall_seconds": [
+    54.18209509999724,
+    55.46388540000771,
+    56.593239600013476,
+    57.21628499997314,
+    57.92564639999182
+  ],
+  "warmup_runs": 1
+}

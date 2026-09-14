@@ -1,0 +1,41 @@
+{
+  "report_version": "1.0",
+  "mode": "plan",
+  "repository": ".",
+  "outcome": "INCOMPLETE",
+  "stable": true,
+  "complete": false,
+  "blocker_count": 0,
+  "tool": { "name": "greengap", "version": "1.0.0rc1", "runtime_proof": false },
+  "source": {
+    "repository": ".",
+    "workspace_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "snapshot_method": "git",
+    "file_count": 12
+  },
+  "environment": {
+    "collection_mode": "non_executing",
+    "execution_consent": false,
+    "network_access": "not requested by the analyzer"
+  },
+  "completeness": {
+    "analysis": false,
+    "workspace_stable": true,
+    "collection_complete": false,
+    "environment_valid": true,
+    "ci_trace_complete": true,
+    "runtime_execution_identity": "NOT_CERTIFIED",
+    "reason_codes": ["COLLECTION_INCOMPLETE"]
+  },
+  "findings": [
+    {
+      "path": "tests/test_fast.py",
+      "state": "UNKNOWN",
+      "blocking": false,
+      "confidence": "high",
+      "reason": "pytest collection was intentionally disabled",
+      "reason_code": "COLLECTION_INCOMPLETE",
+      "evidence": []
+    }
+  ]
+}

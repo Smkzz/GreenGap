@@ -1,0 +1,65 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-10T00:48:09Z",
+  "status": "PASS",
+  "repository": "https://github.com/Smkzz/greengap-launch-probe-20260910",
+  "workflow": ".github/workflows/live-validation-set.yml",
+  "workflow_run": {
+    "run_id": 34422824736,
+    "event": "push",
+    "head_sha": "d073dae4db0fb94c1182e8e871aaff0cde74de49",
+    "url": "https://github.com/Smkzz/greengap-launch-probe-20260910/actions/runs/34422824736"
+  },
+  "runner_image": "ubuntu-24.04",
+  "permissions": "contents: read",
+  "write_permission": false,
+  "checkout_persist_credentials": false,
+  "fixture_commit": "d073dae4db0fb94c1182e8e871aaff0cde74de49",
+  "green_gap_sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+    "green_gap_tree": "89071e9aafdd92ddf7001f9ccdc60083289b5e86",
+  "collection_mode": "trusted_checkout",
+  "target_code_executed": true,
+  "binding_event": "push",
+  "binding_ref": "refs/heads/main",
+  "cases": [
+    {
+      "name": "pass",
+      "determination": "PASS_NO_GAP",
+      "expected_exit": 0,
+      "actual_exit": 0,
+      "outcome": "COMPLETE",
+      "complete": true,
+      "collection_complete": true,
+      "blocker_count": 0,
+      "finding_states": {"PLANNED": 1},
+      "report_sha256": "a528bc35e46c232c9c4059c99d25b17db287bbf03fb315c0df2a7bd152b191c2"
+    },
+    {
+      "name": "gap",
+      "determination": "PROVEN_GAP_BLOCKING",
+      "expected_exit": 1,
+      "actual_exit": 1,
+      "outcome": "BLOCKED",
+      "complete": true,
+      "collection_complete": true,
+      "blocker_count": 1,
+      "finding_states": {"NOT_PLANNED": 1, "PLANNED": 1},
+      "blocking_state": "NOT_PLANNED",
+      "report_sha256": "85294cc347b052156a9dc5191b1443eab9170df01cc9c3e5ce58fc226532af1e"
+    },
+    {
+      "name": "unknown",
+      "determination": "UNKNOWN_FAIL_CLOSED",
+      "expected_exit": 2,
+      "actual_exit": 2,
+      "outcome": "INCOMPLETE",
+      "complete": false,
+      "collection_complete": true,
+      "blocker_count": 0,
+      "finding_states": {"UNKNOWN": 2},
+      "reason_codes": ["TRACE_INCOMPLETE"],
+      "report_sha256": "bc93dc8ac74562225f8a48cc5662a8e5b65b254d1d8fffb1158ebe3dc780e438"
+    }
+  ],
+  "interpretation": "The exact c305 candidate produced the three required live fixture outcomes on a disposable GitHub-hosted runner. This direct-source validation set demonstrates CLI and fail-closed semantics; it does not replace the separate reusable-workflow caller gate, which remains open until a compatible final artifact exists."
+}

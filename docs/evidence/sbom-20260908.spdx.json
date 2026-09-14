@@ -1,0 +1,67 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "GreenGap 1.0.0rc1 candidate runtime SBOM",
+  "documentNamespace": "https://github.com/Smkzz/GreenGap/spdx/1.0.0rc1/candidate-2026-09-08",
+  "creationInfo": {
+    "created": "2026-09-07T21:49:28Z",
+    "creators": [
+      "Tool: GreenGap candidate evidence generator"
+    ]
+  },
+  "documentDescribes": [
+    "SPDXRef-Package-greengap"
+  ],
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-greengap",
+      "name": "greengap",
+      "versionInfo": "1.0.0rc1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/greengap@1.0.0rc1"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-Package-PyYAML",
+      "name": "PyYAML",
+      "versionInfo": "6.0.3",
+      "downloadLocation": "https://pypi.org/project/PyYAML/",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pyyaml@6.0.3"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-Package-greengap",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-PyYAML"
+    }
+  ],
+  "annotations": [
+    {
+      "annotationDate": "2026-09-07T21:49:28Z",
+      "annotationType": "OTHER",
+      "annotator": "Tool: GreenGap candidate evidence generator",
+      "comment": "Runtime dependency scope is the declared greengap package dependency resolved in the audit environment; build and development tools are intentionally excluded. Candidate source is dirty and not a release identity."
+    }
+  ]
+}

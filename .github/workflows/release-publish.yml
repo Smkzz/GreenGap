@@ -1,0 +1,175 @@
+name: Publish release artifacts
+
+on:
+  workflow_run:
+    workflows: ["Release artifacts"]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: release-publish-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Required reviewers must be configured on this environment in repository
+    # settings. This workflow is loaded from the default branch, not the build
+    # run's selected ref, and it never checks out candidate source code.
+    environment:
+      name: release-publish
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download exact unprivileged build inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: greengap-release-artifacts
+          path: .
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Verify trusted build run and exact binding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
+          BUILD_REPOSITORY: ${{ github.event.workflow_run.repository.full_name }}
+          BUILD_EVENT: ${{ github.event.workflow_run.event }}
+          BUILD_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          BUILD_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          test -f RELEASE_BINDING.json
+          test -f RELEASE_TITLE.txt
+          test -f RELEASE_NOTES.txt
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${BUILD_RUN_ID}")"
+          test "$(jq -er '.path' <<<"${run_json}")" = ".github/workflows/release.yml"
+          test "$(jq -er '.event' <<<"${run_json}")" = "workflow_dispatch"
+          test "$(jq -er '.repository.full_name' <<<"${run_json}")" = "${GITHUB_REPOSITORY}"
+          test "$(jq -er '.head_branch' <<<"${run_json}")" = "$(jq -er '.repository.default_branch' <<<"${run_json}")"
+          test "${BUILD_REPOSITORY}" = "${GITHUB_REPOSITORY}"
+          test "${BUILD_EVENT}" = "workflow_dispatch"
+          test "${BUILD_HEAD_SHA}" = "$(jq -er '.head_sha' <<<"${run_json}")"
+          test "${BUILD_HEAD_BRANCH}" = "$(jq -er '.head_branch' <<<"${run_json}")"
+          test "$(jq -er '.workflow_run_id' RELEASE_BINDING.json)" = "${BUILD_RUN_ID}"
+          test "$(jq -er '.workflow_repository' RELEASE_BINDING.json)" = "${GITHUB_REPOSITORY}"
+          test "$(jq -er '.workflow_event' RELEASE_BINDING.json)" = "workflow_dispatch"
+          test "$(jq -er '.workflow_sha' RELEASE_BINDING.json)" = "${BUILD_HEAD_SHA}"
+          release_tag="$(jq -er '.tag' RELEASE_BINDING.json)"
+          release_commit="$(jq -er '.commit' RELEASE_BINDING.json)"
+          release_tree="$(jq -er '.tree' RELEASE_BINDING.json)"
+          test "$(jq -er '.commit' PROVENANCE.json)" = "${release_commit}"
+          test "$(jq -er '.tree' PROVENANCE.json)" = "${release_tree}"
+          echo "RELEASE_TAG=${release_tag}" >> "${GITHUB_ENV}"
+          echo "RELEASE_COMMIT=${release_commit}" >> "${GITHUB_ENV}"
+          echo "RELEASE_TREE=${release_tree}" >> "${GITHUB_ENV}"
+      - name: Verify immutable tag policy and binding before privileged effects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          protected_tags="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/tags/protection")"
+          jq -e --arg tag "${RELEASE_TAG}" '
+            flatten | any(.[];
+              .pattern as $pattern |
+              ($pattern | rtrimstr("*")) as $prefix |
+              ($pattern == $tag) or
+              (($pattern | endswith("*")) and ($tag | startswith($prefix)))
+            )
+          ' <<<"${protected_tags}" >/dev/null || {
+            echo "release tag ${RELEASE_TAG} is not covered by an active immutable tag-protection rule" >&2
+            exit 1
+          }
+          tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          tag_type="$(jq -er '.object.type' <<<"${tag_ref}")"
+          tag_object="$(jq -er '.object.sha' <<<"${tag_ref}")"
+          if [ "${tag_type}" = tag ]; then
+            tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}" --jq '.object.sha')"
+          fi
+          test "${tag_object}" = "${RELEASE_COMMIT}"
+      - name: Recheck downloaded artifact bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum -c SHA256SUMS
+      - name: Attest exact release bytes
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: |
+            dist/*
+            SHA256SUMS
+            PROVENANCE.json
+            sbom.spdx.json
+      - name: Create draft release at the bound commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_response=""
+          set +e
+          release_response="$(gh api --include "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" 2>&1)"
+          release_status=$?
+          set -e
+          if [ "${release_status}" -eq 0 ]; then
+            echo "release ${RELEASE_TAG} already exists; refusing to replace or resume it" >&2
+            exit 1
+          fi
+          http_status="$(printf '%s\n' "${release_response}" | awk 'NR == 1 { print $2 }')"
+          test "${http_status}" = 404 || {
+            echo "unable to prove release ${RELEASE_TAG} is absent" >&2
+            printf '%s\n' "${release_response}" >&2
+            exit 1
+          }
+          gh release create "${RELEASE_TAG}" \
+            --draft \
+            --verify-tag \
+            --target "${RELEASE_COMMIT}" \
+            --title "$(<RELEASE_TITLE.txt)" \
+            --notes-file RELEASE_NOTES.txt
+          release_json="$(gh release view "${RELEASE_TAG}" --json tagName,targetCommitish,isDraft)"
+          test "$(jq -er '.tagName' <<<"${release_json}")" = "${RELEASE_TAG}"
+          test "$(jq -er '.targetCommitish' <<<"${release_json}")" = "${RELEASE_COMMIT}"
+          test "$(jq -er '.isDraft' <<<"${release_json}")" = true
+          test -z "$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name')"
+      - name: Recheck exact tag binding before attaching assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          protected_tags="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/tags/protection")"
+          jq -e --arg tag "${RELEASE_TAG}" '
+            flatten | any(.[];
+              .pattern as $pattern |
+              ($pattern | rtrimstr("*")) as $prefix |
+              ($pattern == $tag) or
+              (($pattern | endswith("*")) and ($tag | startswith($prefix)))
+            )
+          ' <<<"${protected_tags}" >/dev/null
+          tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          tag_type="$(jq -er '.object.type' <<<"${tag_ref}")"
+          tag_object="$(jq -er '.object.sha' <<<"${tag_ref}")"
+          if [ "${tag_type}" = tag ]; then
+            tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}" --jq '.object.sha')"
+          fi
+          test "${tag_object}" = "${RELEASE_COMMIT}"
+      - name: Attach release artifacts once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" dist/* SHA256SUMS sbom.spdx.json PROVENANCE.json
+          expected="$(find dist -maxdepth 1 -type f -printf '%f\n' | sort)"
+          expected="${expected}"$'\nSHA256SUMS\nPROVENANCE.json\nsbom.spdx.json'
+          actual="$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' | sort)"
+          test "${actual}" = "$(printf '%s\n' "${expected}" | sort)"
+      - name: Human publication boundary
+        run: |
+          echo "Draft ${RELEASE_TAG} contains the attested, checksummed build at ${RELEASE_COMMIT}. Publish it exactly once after human inspection; reruns refuse to replace it."

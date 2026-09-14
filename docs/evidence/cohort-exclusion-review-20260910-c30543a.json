@@ -1,0 +1,33 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-10",
+  "status": "DECISIONS_RECORDED",
+  "candidate_sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+  "source_receipt": "docs/evidence/cohort-static-20260908.json",
+  "predeclared_selection_criteria": [
+    "public repository",
+    "pytest tests",
+    "GitHub Actions workflow with a verified pytest execution reference",
+    "permissive source license",
+    "distinct workflow shapes"
+  ],
+  "decisions": [
+    {
+      "cohort_id": "C11",
+      "repository": "python/cpython",
+      "pinned_sha": "23180c50082fe98784c78511b335d7274ed87fb7",
+      "decision": "EXCLUDED_NEGATIVE_SHAPE",
+      "basis": "The recorded inspection found workflow files and pytest references but no verified pytest execution job; the frozen selection criteria are not satisfied.",
+      "counts_toward_trusted_usefulness": false
+    },
+    {
+      "cohort_id": "C12",
+      "repository": "scientific-python/array-api",
+      "pinned_sha": "ff497ed83220372eb689a4fb0878c831470f93bc",
+      "decision": "EXCLUDED_NEGATIVE_SHAPE",
+      "basis": "The recorded inspection found no pytest reference and no candidate test files; the frozen selection criteria are not satisfied.",
+      "counts_toward_trusted_usefulness": false
+    }
+  ],
+  "interpretation": "C11 and C12 remain retained for traceability but are excluded from the useful trusted-cohort denominator under the predeclared negative-shape rule. This decision does not clear the separate COHORT_USEFULNESS_GATE_FAILED result for C03, C05, and C07."
+}

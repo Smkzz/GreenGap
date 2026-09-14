@@ -4,13 +4,28 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_PATH = str(PROJECT_ROOT / "src")
+if SOURCE_PATH not in sys.path:
+    sys.path.insert(0, SOURCE_PATH)
+
+from greengap.environment import collection_environment  # noqa: E402
+from greengap.util import (  # noqa: E402
+    MAX_WORKSPACE_FILE_BYTES,
+    git_workspace_clean,
+    read_limited_bytes,
+    run_process_tree,
+)
 
 OUTCOME_HEAD = "03ed6218b08001877745bb1a9e180c8c5cf7c903"
 # Historical iniconfig revision used by the original exact-byte qualification.
@@ -23,20 +38,31 @@ OUTCOME_NEW = b"tests/test_async.py --cov"
 def run_plan(repo: Path, python_executable: str) -> tuple[int, dict[str, Any]]:
     if not repo.is_dir():
         return 2, {"status": "ENVIRONMENT_INVALID", "error": f"checkout is missing: {repo}"}
-    project_root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    source_path = str(project_root / "src")
-    env["PYTHONPATH"] = source_path + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-    env["PYTHONIOENCODING"] = "utf-8"
-    env["PYTHONUTF8"] = "1"
+    env = collection_environment(
+        {
+            "PYTHONPATH": SOURCE_PATH,
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
+            "PIP_NO_INDEX": "1",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "UV_OFFLINE": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
     try:
-        result = subprocess.run(
-            [python_executable, "-m", "greengap", "plan", str(repo), "--json"],
-            text=True,
-            capture_output=True,
+        result = run_process_tree(
+            [
+                python_executable,
+                "-m",
+                "greengap",
+                "plan",
+                str(repo),
+                "--json",
+                "--trust-collection",
+            ],
+            cwd=repo,
             env=env,
             timeout=300,
-            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 2, {"status": "ENVIRONMENT_INVALID", "error": str(exc)}
@@ -122,23 +148,33 @@ def run_outcome(repo: Path, python_executable: str) -> dict[str, Any]:
     head = git_head(repo)
     if head != OUTCOME_HEAD:
         return {"status": "UPSTREAM_DRIFT", "head": head, "expected_head": OUTCOME_HEAD}
+    if git_workspace_clean(repo, timeout=30.0) is not True:
+        return {"status": "ENVIRONMENT_INVALID", "reason": "outcome checkout is not proven clean"}
     baseline = run(repo, python_executable)
     if baseline.get("status") != "PASS":
         return {"status": baseline.get("status", "ENVIRONMENT_INVALID"), "baseline": baseline}
-    target = repo / "ci.sh"
-    if not target.exists():
+    target = _safe_outcome_target(repo)
+    if target is None:
         return {"status": "UPSTREAM_DRIFT", "reason": "ci.sh is missing", "baseline": baseline}
-    original = target.read_bytes()
+    try:
+        original = read_limited_bytes(target, MAX_WORKSPACE_FILE_BYTES)
+    except ValueError as exc:
+        return {"status": "ENVIRONMENT_INVALID", "reason": str(exc), "baseline": baseline}
     original_hash = hashlib.sha256(original).hexdigest()
     try:
         if OUTCOME_OLD not in original:
             return {"status": "UPSTREAM_DRIFT", "reason": "expected outcome mutation bytes are absent"}
-        target.write_bytes(original.replace(OUTCOME_OLD, OUTCOME_NEW, 1))
+        _write_outcome_bytes(repo, original.replace(OUTCOME_OLD, OUTCOME_NEW, 1))
         code, mutation = run_plan(repo, python_executable)
         detected = code == 1 and mutation.get("blocker_count", 0) > 0
     finally:
-        target.write_bytes(original)
-    restored = hashlib.sha256(target.read_bytes()).hexdigest() == original_hash
+        _write_outcome_bytes(repo, original)
+    restored_target = _safe_outcome_target(repo)
+    restored = (
+        restored_target is not None
+        and hashlib.sha256(read_limited_bytes(restored_target, MAX_WORKSPACE_FILE_BYTES)).hexdigest()
+        == original_hash
+    )
     if not restored:
         return {"status": "RESTORATION_FAILED", "baseline": baseline}
     return {
@@ -147,6 +183,66 @@ def run_outcome(repo: Path, python_executable: str) -> dict[str, Any]:
         "mutation": mutation,
         "restored": restored,
     }
+
+
+def _safe_outcome_target(repo: Path) -> Path | None:
+    """Return ci.sh only when it is a regular, single-link in-repo file."""
+
+    try:
+        repository = repo.resolve(strict=True)
+        target = repository / "ci.sh"
+        info = target.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return None
+        if target.resolve(strict=True) != target:
+            return None
+        target.resolve(strict=True).relative_to(repository)
+        return target
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _write_outcome_bytes(repo: Path, value: bytes) -> None:
+    target = _safe_outcome_target(repo)
+    if target is None:
+        raise OSError("ci.sh is no longer a safe regular file")
+    if len(value) > MAX_WORKSPACE_FILE_BYTES:
+        raise OSError("ci.sh exceeds the workspace file-size limit")
+    before = target.lstat()
+    flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(target, flags)
+        opened = os.fstat(descriptor)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+            getattr(opened, "st_nlink", 1),
+        ) != (
+            before.st_dev,
+            before.st_ino,
+            before.st_mode,
+            getattr(before, "st_nlink", 1),
+        ):
+            raise OSError("ci.sh changed before it was opened")
+        with os.fdopen(descriptor, "r+b") as handle:
+            descriptor = None
+            handle.seek(0)
+            handle.truncate()
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        after = _safe_outcome_target(repo)
+        if after is None:
+            raise OSError("ci.sh changed type or containment during mutation")
+        after_info = after.lstat()
+        if (after_info.st_dev, after_info.st_ino) != (before.st_dev, before.st_ino):
+            raise OSError("ci.sh changed identity during mutation")
+    finally:
+        if descriptor is not None:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
 
 
 def main() -> int:

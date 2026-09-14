@@ -6,9 +6,10 @@ import ast
 import configparser
 import contextlib
 import fnmatch
-import importlib.metadata
+import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -16,20 +17,26 @@ import tempfile
 import threading
 import tomllib
 from collections.abc import Iterator
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic
 from typing import Any
 
-from .model import Candidate, CollectedNode, CollectionResult
+from .environment import collection_environment
+from .model import Candidate, CollectedNode, CollectionResult, PytestPlugin
 from .util import (
     MAX_COLLECTION_OUTPUT_BYTES,
     MAX_COLLECTION_SECONDS,
     MAX_CONFIG_BYTES,
+    PathInventoryLimitError,
+    PathReadContext,
     PathSafetyError,
     as_text,
-    is_transient_path,
+    bounded_filesystem_paths,
+    bounded_git_paths,
     normalize_repo_path,
+    process_group_options,
     read_limited_text,
     split_patterns,
 )
@@ -37,41 +44,25 @@ from .util import (
 DEFAULT_FILE_PATTERNS = ("test_*.py", "*_test.py")
 DEFAULT_FUNCTION_PATTERNS = ("test_*",)
 DEFAULT_CLASS_PATTERNS = ("Test*",)
+_DISCOVERY_PARALLEL_MIN_FILES = 256
+_DISCOVERY_MAX_WORKERS = 4
 
 
 def _git_candidate_paths(root: Path) -> tuple[Path, ...] | None:
-    try:
-        result = subprocess.run(
-            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-            cwd=root,
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    result = bounded_git_paths(root, 10.0)
+    if result is None:
         return None
-    if result.returncode != 0:
-        return None
-    raw = result.stdout.decode("utf-8", errors="surrogateescape")
-    return tuple(
-        root / Path(item)
-        for item in raw.split("\0")
-        if item and not is_transient_path(item)
-    )
+    paths, error = result
+    if error is not None:
+        raise PathInventoryLimitError(error)
+    return tuple(root / Path(item) for item in paths)
 
 
 def _filesystem_candidate_paths(root: Path) -> Iterator[Path]:
-    for directory, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
-        relative_dir = Path(directory).relative_to(root)
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if name.lower() != ".git" and not is_transient_path(relative_dir / name)
-        ]
-        for filename in filenames:
-            relative = relative_dir / filename
-            if not is_transient_path(relative):
-                yield Path(directory) / filename
+    paths, error = bounded_filesystem_paths(root)
+    if error is not None:
+        raise PathInventoryLimitError(error)
+    yield from (root / Path(relative) for relative in paths)
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
@@ -154,57 +145,152 @@ def _test_symbols(
     return symbols
 
 
-def discover_candidates(root: Path) -> tuple[Candidate, ...]:
+def _inspect_candidate(
+    root: Path,
+    path: Path,
+    function_patterns: tuple[str, ...],
+    class_patterns: tuple[str, ...],
+    parent_context: PathReadContext | None = None,
+    relative: str | None = None,
+) -> Candidate:
+    if parent_context is not None:
+        record = parent_context.record(path)
+        if record is None:
+            return Candidate(
+                path.as_posix(),
+                "low",
+                (),
+                "candidate path was not prepared for safe batch inspection",
+            )
+        relative = relative or path.relative_to(root).as_posix()
+        is_symlink = record[1]
+    else:
+        try:
+            relative = normalize_repo_path(root, path)
+        except PathSafetyError as exc:
+            return Candidate(
+                path.as_posix(),
+                "low",
+                (),
+                f"candidate path is unsafe and was not inspected: {exc}",
+            )
+        is_symlink = path.is_symlink()
+    if is_symlink:
+        return Candidate(
+            relative,
+            "low",
+            (),
+            "symlink test candidate is not inspected by default",
+        )
+    try:
+        tree = ast.parse(
+            read_limited_text(
+                path,
+                MAX_CONFIG_BYTES,
+                parent_context=parent_context,
+            ),
+            filename=relative,
+        )
+    except (OSError, ValueError, SyntaxError, UnicodeError) as exc:
+        return Candidate(
+            relative, "low", (), f"filename matched but AST inspection failed: {exc}"
+        )
+    symbols = tuple(_test_symbols(tree, function_patterns, class_patterns))
+    if symbols:
+        return Candidate(relative, "high", symbols, "pytest-style symbols found")
+    return Candidate(
+        relative, "low", (), "filename matched without a recognizable pytest symbol"
+    )
+
+
+def _inspect_candidate_batch(
+    root: Path,
+    entries: tuple[tuple[Path, str], ...],
+    function_patterns: tuple[str, ...],
+    class_patterns: tuple[str, ...],
+    parent_context: PathReadContext | None,
+) -> tuple[Candidate, ...]:
+    return tuple(
+        _inspect_candidate(
+            root,
+            path,
+            function_patterns,
+            class_patterns,
+            parent_context,
+            relative,
+        )
+        for path, relative in entries
+    )
+
+
+def discover_candidates(
+    root: Path,
+    *,
+    read_context: PathReadContext | None = None,
+) -> tuple[Candidate, ...]:
     options, _ = pytest_config(root)
     file_patterns = split_patterns(options.get("python_files"), DEFAULT_FILE_PATTERNS)
     function_patterns = split_patterns(options.get("python_functions"), DEFAULT_FUNCTION_PATTERNS)
     class_patterns = split_patterns(options.get("python_classes"), DEFAULT_CLASS_PATTERNS)
-    candidates: list[Candidate] = []
     git_paths = _git_candidate_paths(root)
     paths = _filesystem_candidate_paths(root) if git_paths is None else iter(git_paths)
-    for path in paths:
-        filename = path.name
-        if not _matches(filename, file_patterns) or not filename.endswith(".py"):
-            continue
-        try:
-            relative = normalize_repo_path(root, path)
-        except PathSafetyError as exc:
-            candidates.append(
-                Candidate(
-                    path.as_posix(),
-                    "low",
-                    (),
-                    f"candidate path is unsafe and was not inspected: {exc}",
+    candidate_entries = tuple(
+        (path, path.relative_to(root).as_posix())
+        for path in paths
+        if _matches(path.name, file_patterns) and path.name.endswith(".py")
+    )
+    candidate_paths = tuple(path for path, _ in candidate_entries)
+    context = read_context or PathReadContext(root)
+    context_error = context.prepare(candidate_paths)
+    batch_context: PathReadContext | None = context
+    if context_error is not None:
+        batch_context = None
+    if len(candidate_paths) >= _DISCOVERY_PARALLEL_MIN_FILES:
+        workers = min(_DISCOVERY_MAX_WORKERS, len(candidate_paths))
+        chunk_size = (len(candidate_paths) + workers - 1) // workers
+        chunks = tuple(
+            candidate_entries[index : index + chunk_size]
+            for index in range(0, len(candidate_paths), chunk_size)
+        )
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            candidates = tuple(
+                candidate
+                for future in tuple(
+                    executor.submit(
+                        _inspect_candidate_batch,
+                        root,
+                        chunk,
+                        function_patterns,
+                        class_patterns,
+                        batch_context,
+                    )
+                    for chunk in chunks
                 )
+                for candidate in future.result()
             )
-            continue
-        if path.is_symlink():
-            candidates.append(
-                Candidate(
-                    relative,
-                    "low",
-                    (),
-                    "symlink test candidate is not inspected by default",
-                )
+    else:
+        candidates = tuple(
+            _inspect_candidate(
+                root,
+                path,
+                function_patterns,
+                class_patterns,
+                batch_context,
+                relative,
             )
-            continue
-        try:
-            tree = ast.parse(read_limited_text(path, MAX_CONFIG_BYTES), filename=relative)
-        except (OSError, ValueError, SyntaxError, UnicodeError) as exc:
-            candidates.append(
-                Candidate(
-                    relative, "low", (), f"filename matched but AST inspection failed: {exc}"
+            for path, relative in candidate_entries
+        )
+    if batch_context is not None:
+        context_error = batch_context.verify()
+        if context_error is not None:
+            candidates = tuple(
+                replace(
+                    candidate,
+                    confidence="low",
+                    symbols=(),
+                    reason=f"{candidate.reason}; {context_error}",
                 )
-            )
-            continue
-        symbols = tuple(_test_symbols(tree, function_patterns, class_patterns))
-        if symbols:
-            candidates.append(Candidate(relative, "high", symbols, "pytest-style symbols found"))
-        else:
-            candidates.append(
-                Candidate(
-                    relative, "low", (), "filename matched without a recognizable pytest symbol"
-                )
+                for candidate in candidates
             )
     return tuple(sorted(candidates, key=lambda item: item.path))
 
@@ -234,6 +320,47 @@ def _parse_nodes(root: Path, stdout: str, stderr: str) -> tuple[CollectedNode, .
     return tuple(sorted(nodes.values(), key=lambda item: item.nodeid))
 
 
+def _parse_collection_witness(
+    root: Path, path: Path
+) -> tuple[tuple[CollectedNode, ...] | None, str | None]:
+    try:
+        payload = json.loads(read_limited_text(path, MAX_CONFIG_BYTES))
+    except (OSError, ValueError, UnicodeError, RecursionError, MemoryError):
+        return None, "pytest collection witness was missing or malformed"
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return None, "pytest collection witness version is unsupported"
+    records = payload.get("nodes")
+    if not isinstance(records, list):
+        return None, "pytest collection witness nodes are not a list"
+    nodes: dict[str, CollectedNode] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            return None, "pytest collection witness contains an invalid node"
+        nodeid = record.get("nodeid")
+        raw_path = record.get("path")
+        if not isinstance(nodeid, str) or not isinstance(raw_path, str) or "::" not in nodeid:
+            return None, "pytest collection witness contains an unverifiable node"
+        node_path = nodeid.split("::", 1)[0]
+        try:
+            relative = normalize_repo_path(root, raw_path)
+            node_relative = normalize_repo_path(root, node_path)
+        except PathSafetyError:
+            return None, "pytest collection witness contains a path outside the checkout"
+        if relative != node_relative:
+            return None, "pytest collection witness node path does not match its file path"
+        candidate = root / Path(relative)
+        try:
+            if candidate.is_symlink() or not candidate.is_file():
+                return None, "pytest collection witness references a non-regular file"
+        except OSError:
+            return None, "pytest collection witness file could not be verified"
+        existing = nodes.get(nodeid)
+        if existing is not None and existing.path != relative:
+            return None, "pytest collection witness contains conflicting node paths"
+        nodes[nodeid] = CollectedNode(nodeid, relative)
+    return tuple(sorted(nodes.values(), key=lambda item: item.nodeid)), None
+
+
 def _looks_environment_invalid(output: str) -> bool:
     lowered = output.lower()
     return any(
@@ -249,83 +376,204 @@ def _looks_environment_invalid(output: str) -> bool:
     )
 
 
-def _explicit_project_plugin_args(root: Path) -> tuple[str, ...]:
-    """Load only marker plugins declared by the repository and used by its source."""
+def _normalize_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value.strip().lower()).strip("-")
 
-    manifest_text: list[str] = []
-    for name in (
-        "pyproject.toml",
-        "pytest.ini",
-        "tox.ini",
-        "setup.cfg",
-        "setup.py",
-        "requirements.txt",
-        "requirements-dev.txt",
-        "test-requirements.txt",
-    ):
-        path = root / name
-        if path.is_file():
-            try:
-                manifest_text.append(read_limited_text(path, MAX_CONFIG_BYTES))
-            except (OSError, ValueError, UnicodeError):
-                return ()
-    normalized_manifests = re.sub(r"[-_.]+", "-", "\n".join(manifest_text).lower())
-    marker_names: set[str] = set()
+
+def _plugin_config_tokens(root: Path) -> tuple[set[str], set[str]]:
+    """Read plugin enable/disable tokens from the target's pytest addopts.
+
+    The file is parsed only to avoid explicitly re-enabling a plugin that the
+    repository disabled itself.  ``pytest`` still owns the actual config,
+    ``required_plugins`` validation, and ``pytest_plugins`` imports during the
+    target collection process.
+    """
+
+    options, _ = pytest_config(root)
+    addopts = options.get("addopts", "")
+    if isinstance(addopts, list | tuple):
+        raw = " ".join(str(item) for item in addopts)
+    elif isinstance(addopts, str):
+        raw = addopts
+    else:
+        return set(), set()
     try:
-        candidate_paths = _git_candidate_paths(root)
-        if candidate_paths is None:
-            candidate_paths = tuple(_filesystem_candidate_paths(root))
-        for path in candidate_paths:
-            if path.suffix.lower() != ".py":
-                continue
-            text = read_limited_text(path, MAX_CONFIG_BYTES)
-            marker_names.update(re.findall(r"pytest\.mark\.([A-Za-z_][A-Za-z0-9_]*)", text))
-    except (OSError, ValueError, UnicodeError, PathSafetyError):
-        return ()
-    if not marker_names:
-        return ()
+        tokens = shlex.split(raw, posix=os.name != "nt")
+    except ValueError:
+        return set(), {"<malformed-addopts>"}
+    explicit: set[str] = set()
+    disabled: set[str] = set()
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        value: str | None = None
+        if token == "-p" and index + 1 < len(tokens):
+            index += 1
+            value = tokens[index]
+        elif token.startswith("-p") and token != "-p":
+            value = token[2:]
+        if value:
+            normalized = value.strip().casefold()
+            if normalized.startswith("no:"):
+                disabled.add(normalized[3:])
+            else:
+                explicit.add(normalized)
+        index += 1
+    return explicit, disabled
+
+
+_PYTEST_PLUGIN_MANIFEST_MARKER = "GREENGAP_PYTEST_PLUGIN_MANIFEST="
+_TARGET_PYTEST_PLUGIN_METADATA = r"""
+import importlib.metadata as metadata
+import json
+import sys
+
+if sys.version_info < (3, 11):
+    raise RuntimeError("target Python is outside the GreenGap 1.0 eligibility boundary")
+
+entries = metadata.entry_points()
+if hasattr(entries, "select"):
+    entries = entries.select(group="pytest11")
+elif isinstance(entries, dict):
+    entries = entries.get("pytest11", ())
+else:
+    raise RuntimeError("pytest11 entry points could not be enumerated")
+records = []
+for entry in entries:
+    distribution = getattr(entry, "dist", None)
+    if distribution is None:
+        raise RuntimeError("pytest11 entry point has no distribution metadata")
+    dist_metadata = getattr(distribution, "metadata", None)
+    name = dist_metadata.get("Name") if dist_metadata is not None else None
+    version = dist_metadata.get("Version") if dist_metadata is not None else None
+    if not name:
+        name = getattr(distribution, "name", None)
+    if not version:
+        version = getattr(distribution, "version", None)
+    entry_name = getattr(entry, "name", None)
+    value = getattr(entry, "value", None)
+    module = str(value or "").split(":", 1)[0].strip()
+    if not all(isinstance(item, str) and item.strip() for item in (name, version, entry_name, module)):
+        raise RuntimeError("pytest11 entry point metadata is incomplete")
+    records.append({
+        "distribution": name.strip(),
+        "version": version.strip(),
+        "entry_point": entry_name.strip(),
+        "module": module,
+    })
+records.sort(key=lambda item: (
+    item["distribution"].casefold(),
+    item["version"],
+    item["entry_point"].casefold(),
+    item["module"],
+))
+print("GREENGAP_PYTEST_PLUGIN_MANIFEST=" + json.dumps(records, sort_keys=True, separators=(",", ":")))
+"""
+
+
+def _parse_plugin_manifest(stdout: str) -> tuple[tuple[PytestPlugin, ...] | None, str | None]:
+    lines = [
+        line[len(_PYTEST_PLUGIN_MANIFEST_MARKER) :]
+        for line in stdout.splitlines()
+        if line.startswith(_PYTEST_PLUGIN_MANIFEST_MARKER)
+    ]
+    if len(lines) != 1:
+        return None, "selected pytest environment plugin manifest was missing or malformed"
     try:
-        entry_points = tuple(importlib.metadata.entry_points(group="pytest11"))
-    except (TypeError, ValueError, RuntimeError):
-        return ()
+        records = json.loads(lines[0])
+    except (TypeError, ValueError, RecursionError, MemoryError):
+        return None, "selected pytest environment plugin manifest was missing or malformed"
+    if not isinstance(records, list):
+        return None, "selected pytest environment plugin manifest was missing or malformed"
+    plugins: list[PytestPlugin] = []
+    for record in records:
+        if not isinstance(record, dict):
+            return None, "selected pytest environment plugin manifest was missing or malformed"
+        values: list[str] = []
+        for key in ("distribution", "version", "entry_point", "module"):
+            value = record.get(key)
+            if not isinstance(value, str) or not value.strip():
+                return None, "selected pytest environment plugin manifest was missing or malformed"
+            values.append(value.strip())
+        distribution, version, entry_point, module = values
+        if not all((distribution, version, entry_point, module)):
+            return None, "selected pytest environment plugin manifest was missing or malformed"
+        plugins.append(
+            PytestPlugin(
+                distribution=distribution.strip(),
+                version=version.strip(),
+                entry_point=entry_point.strip(),
+                module=module.strip(),
+            )
+        )
+    plugins.sort(
+        key=lambda item: (
+            item.distribution.casefold(),
+            item.version,
+            item.entry_point.casefold(),
+            item.module,
+        )
+    )
+    if len({(item.distribution, item.version, item.entry_point, item.module) for item in plugins}) != len(plugins):
+        return None, "selected pytest environment plugin manifest contains duplicates"
+    return tuple(plugins), None
+
+
+def _target_pytest_plugin_manifest(
+    selected_python: str,
+    root: Path,
+    environment: dict[str, str],
+    timeout: float,
+) -> tuple[tuple[PytestPlugin, ...] | None, str | None]:
+    """Inspect pytest11 metadata with the selected interpreter only.
+
+    This subprocess reads importlib metadata and never calls an entry point's
+    ``load`` method.  Plugin code is imported only later by pytest itself,
+    during the intentionally requested collection.
+    """
+
+    metadata_environment = dict(environment)
+    metadata_environment["PYTHONNOUSERSITE"] = "1"
+    try:
+        completed = _run_pytest_bounded(
+            [selected_python, "-c", _TARGET_PYTEST_PLUGIN_METADATA],
+            root,
+            metadata_environment,
+            min(max(timeout, 0.01), 30.0),
+        )
+    except OSError as exc:
+        return None, f"could not inspect selected pytest environment: {exc}"
+    if completed.output_limited:
+        return None, "selected pytest environment plugin manifest exceeds output limit"
+    if completed.timed_out:
+        return None, "selected pytest environment plugin manifest inspection timed out"
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        suffix = f": {detail[-1][:300]}" if detail else ""
+        return None, f"selected pytest environment plugin manifest could not be inspected{suffix}"
+    return _parse_plugin_manifest(completed.stdout)
+
+
+def _plugin_args_from_manifest(
+    manifest: tuple[PytestPlugin, ...], disabled: set[str]
+) -> tuple[str, ...]:
+    """Build deterministic explicit ``-p`` arguments for target plugins."""
+
     modules: set[str] = set()
-    for entry_point in entry_points:
-        distribution = getattr(entry_point, "dist", None)
-        distribution_name = getattr(distribution, "name", "")
-        normalized_name = re.sub(r"[-_.]+", "-", str(distribution_name).lower())
-        if not normalized_name or normalized_name not in normalized_manifests:
+    for plugin in manifest:
+        identifiers = {
+            plugin.distribution.casefold(),
+            _normalize_distribution_name(plugin.distribution),
+            plugin.entry_point.casefold(),
+            plugin.module.casefold(),
+        }
+        if identifiers.intersection(disabled):
             continue
-        entry_name = str(entry_point.name).lower()
-        if entry_name not in {name.lower() for name in marker_names}:
-            continue
-        module = str(entry_point.value).split(":", 1)[0]
-        if module:
-            modules.add(module)
+        modules.add(plugin.module)
     args: list[str] = []
     for module in sorted(modules):
         args.extend(("-p", module))
     return tuple(args)
-
-
-def _unbound_pytest_plugins(root: Path) -> tuple[str, ...] | None:
-    """Return installed pytest plugins that collection does not explicitly bind."""
-
-    try:
-        entry_points = tuple(importlib.metadata.entry_points(group="pytest11"))
-    except (TypeError, ValueError, RuntimeError):
-        return None
-    explicit = _explicit_project_plugin_args(root)
-    explicit_modules = {
-        explicit[index + 1]
-        for index, token in enumerate(explicit[:-1])
-        if token == "-p"
-    }
-    unbound = {
-        str(entry_point.value).split(":", 1)[0]
-        for entry_point in entry_points
-        if str(entry_point.value).split(":", 1)[0] not in explicit_modules
-    }
-    return tuple(sorted(module for module in unbound if module))
 
 
 @dataclass(frozen=True)
@@ -340,9 +588,7 @@ class _BoundedProcessResult:
 def _process_group_options() -> dict[str, Any]:
     """Start collection in an isolated process group/session."""
 
-    if os.name == "nt":
-        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
-    return {"start_new_session": True}
+    return process_group_options()
 
 
 def _create_windows_job(process: subprocess.Popen[Any]) -> Any | None:
@@ -548,10 +794,35 @@ def _run_pytest_bounded(
     )
 
 
-def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
-    """Run the actual pytest collector; never replace it with AST emulation."""
+def collection_disabled(reason: str = "pytest collection is disabled") -> CollectionResult:
+    """Represent the safe, non-executing inspection mode."""
 
-    environment = os.environ.copy()
+    return CollectionResult(
+        complete=False,
+        # The analyzer itself is healthy; only the evidence-producing step was
+        # deliberately withheld.  This keeps the result UNKNOWN without
+        # misclassifying a user's explicit safety choice as an environment bug.
+        environment_valid=True,
+        error=reason,
+    )
+
+
+def collect_pytest(
+    root: Path,
+    timeout: float = 60.0,
+    python_executable: str | None = None,
+) -> CollectionResult:
+    """Run the selected project's pytest collector; never emulate collection."""
+
+    selected_python = python_executable or sys.executable
+    if not selected_python.strip():
+        return CollectionResult(
+            complete=False,
+            environment_valid=False,
+            error="the selected Python interpreter is empty",
+        )
+
+    environment = collection_environment()
     ambient = tuple(
         name
         for name in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD")
@@ -563,37 +834,52 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
             environment_valid=False,
             error="ambient pytest selection/plugin environment is set: " + ", ".join(ambient),
         )
-    unbound_plugins = _unbound_pytest_plugins(root)
-    if unbound_plugins is None:
-        return CollectionResult(
-            complete=False,
-            environment_valid=False,
-            error="installed pytest plugin entry points could not be inspected safely",
-        )
-    if unbound_plugins:
-        return CollectionResult(
-            complete=False,
-            environment_valid=False,
-            error=(
-                "pytest collection environment contains unbound pytest11 plugins: "
-                + ", ".join(unbound_plugins)
-            ),
-        )
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    environment["NO_COLOR"] = "1"
+    environment["PY_COLORS"] = "0"
+    # Keep the target interpreter's user site out of both metadata inspection
+    # and collection.  Only the selected environment's normal distributions
+    # are bound explicitly below; user-site plugins are ambient pollution.
+    environment["PYTHONNOUSERSITE"] = "1"
+    plugin_manifest, manifest_error = _target_pytest_plugin_manifest(
+        selected_python, root, environment, timeout
+    )
+    if plugin_manifest is None:
+        return CollectionResult(
+            complete=False,
+            environment_valid=False,
+            error=manifest_error or "selected pytest environment plugin manifest is unknown",
+        )
+    _, disabled_plugins = _plugin_config_tokens(root)
+    if "<malformed-addopts>" in disabled_plugins:
+        return CollectionResult(
+            complete=False,
+            environment_valid=False,
+            plugin_manifest=plugin_manifest,
+            plugin_manifest_complete=True,
+            error="pytest addopts could not be parsed safely",
+        )
     src = root / "src"
+    analyzer_src = Path(__file__).resolve().parents[1]
     if src.is_dir():
         # Do not let an analyst's ambient import path change collection.  The
         # repository source directory is the only extra import root GreenGap
         # intentionally supplies.
-        environment["PYTHONPATH"] = str(src)
+        environment["PYTHONPATH"] = os.pathsep.join((str(analyzer_src), str(src)))
     else:
-        environment.pop("PYTHONPATH", None)
+        environment["PYTHONPATH"] = str(analyzer_src)
     with tempfile.TemporaryDirectory(prefix="greengap-pytest-cache-") as cache_dir:
+        for name in ("TEMP", "TMP", "TMPDIR"):
+            environment[name] = cache_dir
+        collection_file = Path(cache_dir) / "collection-witness.json"
+        environment["GREENGAP_COLLECTION_FILE"] = str(collection_file)
         args = [
-            sys.executable,
+            selected_python,
             "-m",
             "pytest",
-            *_explicit_project_plugin_args(root),
+            "-p",
+            "greengap._collection_plugin",
+            *_plugin_args_from_manifest(plugin_manifest, disabled_plugins),
             # GreenGap's ``root`` is the checkout boundary.  Without this,
             # pytest can walk above a nested checkout and adopt an analyst
             # host's pytest configuration, making discovery diverge from the
@@ -612,7 +898,10 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
                 complete=False,
                 environment_valid=False,
                 error=f"could not start pytest: {exc}",
+                plugin_manifest=plugin_manifest,
+                plugin_manifest_complete=True,
             )
+        witness_nodes, witness_error = _parse_collection_witness(root, collection_file)
 
     stdout = completed.stdout
     stderr = completed.stderr
@@ -624,6 +913,8 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
             stderr=stderr[:MAX_COLLECTION_OUTPUT_BYTES],
             returncode=completed.returncode,
             error=f"pytest collection output exceeds limit of {MAX_COLLECTION_OUTPUT_BYTES} bytes",
+            plugin_manifest=plugin_manifest,
+            plugin_manifest_complete=True,
         )
     if completed.timed_out:
         nodes = _parse_nodes(root, stdout, stderr)
@@ -636,8 +927,21 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
             stderr=stderr,
             error=f"pytest collection timed out after {min(max(timeout, 0.01), MAX_COLLECTION_SECONDS):g}s",
             timed_out=True,
+            plugin_manifest=plugin_manifest,
+            plugin_manifest_complete=True,
         )
-    nodes = _parse_nodes(root, stdout, stderr)
+    if witness_nodes is None:
+        return CollectionResult(
+            complete=False,
+            environment_valid=False,
+            stdout=stdout,
+            stderr=stderr,
+            returncode=completed.returncode,
+            error=witness_error,
+            plugin_manifest=plugin_manifest,
+            plugin_manifest_complete=True,
+        )
+    nodes = witness_nodes
     combined = stdout + "\n" + stderr
     no_tests = "no tests collected" in combined.lower() or "collected 0 items" in combined.lower()
     complete = completed.returncode == 0 or (completed.returncode == 5 and no_tests)
@@ -652,10 +956,29 @@ def collect_pytest(root: Path, timeout: float = 60.0) -> CollectionResult:
         stdout=stdout,
         stderr=stderr,
         error=error,
+        plugin_manifest=plugin_manifest,
+        plugin_manifest_complete=True,
     )
 
 
 def scan_pytest(
-    root: Path, timeout: float = 60.0
+    root: Path,
+    timeout: float = 60.0,
+    *,
+    python_executable: str | None = None,
+    collect: bool = True,
+    read_context: PathReadContext | None = None,
 ) -> tuple[tuple[Candidate, ...], CollectionResult]:
-    return discover_candidates(root), collect_pytest(root, timeout)
+    collection = (
+        collect_pytest(root, timeout, python_executable)
+        if collect
+        else collection_disabled(
+            "pytest collection is disabled; pass --trust-collection only for a trusted checkout"
+        )
+    )
+    try:
+        candidates = discover_candidates(root, read_context=read_context)
+    except PathInventoryLimitError as exc:
+        collection = replace(collection, complete=False, error=str(exc))
+        candidates = ()
+    return candidates, collection

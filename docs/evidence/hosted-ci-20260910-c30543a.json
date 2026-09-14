@@ -1,0 +1,39 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-10",
+  "repository": "Smkzz/GreenGap",
+  "branch": "release/greengap-1.0.0",
+  "exact_head_sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+  "exact_head_tree": "89071e9aafdd92ddf7001f9ccdc60083289b5e86",
+  "pull_request": 11,
+  "push_run_id": 34418923039,
+  "pull_request_run_ids": [
+    34418924039,
+    34418924067,
+    34418924089,
+    34418924137
+  ],
+  "checks": {
+    "successful": 20,
+    "failed": 0,
+    "pending": 0,
+    "names": [
+      "Scorecard analysis",
+      "dependency audit",
+      "dependency-review",
+      "fuzz / python / address",
+      "package / wheel and sdist",
+      "scorecard-gate",
+      "test / ubuntu-24.04 / Python 3.11 / minimum",
+      "test / ubuntu-24.04 / Python 3.12 / latest",
+      "test / ubuntu-24.04 / Python 3.13 / latest",
+      "test / ubuntu-24.04 / Python 3.14 / latest",
+      "test / windows-2025 / Python 3.11 / latest",
+      "test / windows-2025 / Python 3.14 / latest"
+    ],
+    "duplicated_push_and_pull_request_lanes": true
+  },
+  "result": "20/20 SUCCESS",
+  "publication": "none",
+  "interpretation": "The exact current candidate head passed all observed hosted checks, including the full Python matrix, Windows lanes, package build/install, dependency review and audit, fuzzing, and Scorecard. This does not supply reusable-workflow schedule evidence, final published artifact bytes, owner confirmation, or publication authorization."
+}

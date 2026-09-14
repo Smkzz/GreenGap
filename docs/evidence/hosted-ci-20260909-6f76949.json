@@ -1,0 +1,127 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-09",
+  "repository": "Smkzz/GreenGap",
+  "candidate_version": "1.0.0rc1",
+  "tested_source_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "tested_source_tree": "bf8a2da0ac70a797c2dce32f5771edac8b501c34",
+  "initial_evidence_head": {
+    "sha": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
+    "tree": "baf69d3ac33966714aa2f96d75d40184a0281f2c",
+    "scope": "initial documentation-only continuation after the source freeze"
+  },
+  "pull_request": "https://github.com/Smkzz/GreenGap/pull/11",
+  "branch": "release/greengap-1.0.0",
+  "observed_checks": {
+    "total": 20,
+    "successful": 20,
+    "failed": 0,
+    "pending": 0,
+    "source": "gh pr checks 11 --json name,state,link,workflow"
+  },
+  "exact_head_runs": [
+    {
+      "workflow": "GreenGap CI",
+      "event": "pull_request",
+      "run_id": "34350413766",
+      "head_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+      "conclusion": "success",
+      "url": "https://github.com/Smkzz/GreenGap/actions/runs/34350413766"
+    },
+    {
+      "workflow": "GreenGap CI",
+      "event": "push",
+      "run_id": "34350407630",
+      "head_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+      "conclusion": "success",
+      "url": "https://github.com/Smkzz/GreenGap/actions/runs/34350407630"
+    },
+    {
+      "workflow": "OpenSSF Scorecard",
+      "event": "pull_request",
+      "run_id": "34350413514",
+      "head_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+      "conclusion": "success",
+      "url": "https://github.com/Smkzz/GreenGap/actions/runs/34350413514"
+    },
+    {
+      "workflow": "ClusterFuzzLite fuzzing",
+      "event": "pull_request",
+      "run_id": "34350413526",
+      "head_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+      "conclusion": "success",
+      "url": "https://github.com/Smkzz/GreenGap/actions/runs/34350413526"
+    },
+    {
+      "workflow": "Dependency review",
+      "event": "pull_request",
+      "run_id": "34350413608",
+      "head_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+      "conclusion": "success",
+      "url": "https://github.com/Smkzz/GreenGap/actions/runs/34350413608"
+    }
+  ],
+  "initial_evidence_head_checks": {
+    "total": 20,
+    "successful": 20,
+    "failed": 0,
+    "pending": 0,
+    "head_sha": "11f9ad12ad5ae12771f8560a7e336b33ba21bf4d",
+    "runs": [
+      {
+        "workflow": "GreenGap CI",
+        "event": "pull_request",
+        "run_id": "34353527996",
+        "conclusion": "success",
+        "url": "https://github.com/Smkzz/GreenGap/actions/runs/34353527996"
+      },
+      {
+        "workflow": "GreenGap CI",
+        "event": "push",
+        "run_id": "34353523500",
+        "conclusion": "success",
+        "url": "https://github.com/Smkzz/GreenGap/actions/runs/34353523500"
+      },
+      {
+        "workflow": "OpenSSF Scorecard",
+        "event": "pull_request",
+        "run_id": "34353527995",
+        "conclusion": "success",
+        "url": "https://github.com/Smkzz/GreenGap/actions/runs/34353527995"
+      },
+      {
+        "workflow": "ClusterFuzzLite fuzzing",
+        "event": "pull_request",
+        "run_id": "34353527994",
+        "conclusion": "success",
+        "url": "https://github.com/Smkzz/GreenGap/actions/runs/34353527994"
+      },
+      {
+        "workflow": "Dependency review",
+        "event": "pull_request",
+        "run_id": "34353527990",
+        "conclusion": "success",
+        "url": "https://github.com/Smkzz/GreenGap/actions/runs/34353527990"
+      }
+    ]
+  },
+  "matrix_covered_by_ci": [
+    "ubuntu-24.04 / Python 3.11 / minimum",
+    "ubuntu-24.04 / Python 3.12 / latest",
+    "ubuntu-24.04 / Python 3.13 / latest",
+    "ubuntu-24.04 / Python 3.14 / latest",
+    "windows-2025 / Python 3.11 / latest",
+    "windows-2025 / Python 3.14 / latest",
+    "package / wheel and sdist",
+    "dependency audit",
+    "scorecard-gate",
+    "Scorecard analysis",
+    "fuzz / python / address",
+    "dependency-review"
+  ],
+  "limitations": [
+    "The exact RC source was not merged to main; CodeQL and scheduled default-branch receivers were not run at this source head.",
+    "Successful PR/push checks do not constitute owner approval or permission to merge, tag, or publish.",
+    "The hosted package job passed, but its final artifacts and attestation were not retained in this local evidence worktree."
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Smkzz/GreenGap/blob/main/schemas/greengap-witness-manifest-v1.json",
+  "title": "GreenGap pytest runtime witness manifest v1",
+  "description": "A bounded declaration of the complete collection and execution witness surfaces expected for one run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest_version",
+    "artifact_type",
+    "repository_identity",
+    "workspace_identity",
+    "run_identity",
+    "collection",
+    "execution",
+    "required_witness_ids"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "manifest_version": { "const": 1 },
+    "artifact_type": { "const": "greengap_pytest_runtime_witness_manifest" },
+    "repository_identity": { "$ref": "#/$defs/repository_identity" },
+    "source_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint"],
+      "properties": {
+        "fingerprint": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+      }
+    },
+    "workspace_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint"],
+      "properties": {
+        "fingerprint": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+      }
+    },
+    "run_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "run_attempt"],
+      "properties": {
+        "run_id": { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]{1,256}$" },
+        "run_attempt": { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]{1,256}$" }
+      }
+    },
+    "collection": { "$ref": "#/$defs/surface_set" },
+    "execution": { "$ref": "#/$defs/surface_set" },
+    "required_witness_ids": { "$ref": "#/$defs/witness_id_list" }
+  },
+  "$defs": {
+    "sha": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-fA-F]{40}$"
+    },
+    "repository_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git_sha", "git_tree", "repository"],
+      "properties": {
+        "git_sha": { "$ref": "#/$defs/sha" },
+        "git_tree": { "$ref": "#/$defs/sha" },
+        "repository": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9_.-]{1,128}/[A-Za-z0-9_.-]{1,128}$"
+        }
+      }
+    },
+    "witness_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:/-]{1,256}\\|(?:[A-Za-z0-9_.:/-]{1,256}|-)$"
+    },
+    "witness_id_list": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/witness_id" }
+    },
+    "surface_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_witness_ids"],
+      "properties": {
+        "expected_witness_ids": { "$ref": "#/$defs/witness_id_list" }
+      }
+    }
+  }
+}

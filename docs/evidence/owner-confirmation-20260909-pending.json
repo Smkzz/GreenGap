@@ -1,0 +1,15 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-09",
+  "candidate_version": "1.0.0rc1",
+  "source_freeze_sha": "6f76949c47535a203ddb5a78a1f038afaecd6e88",
+  "status": "PENDING",
+  "owner_confirmation": null,
+  "required_scope": [
+    "routine maintenance",
+    "support and incident response",
+    "rollback authority",
+    "publication authorization"
+  ],
+  "interpretation": "No owner identity or approval is inferred from CI, security review, or agent activity."
+}

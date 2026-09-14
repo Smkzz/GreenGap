@@ -1,0 +1,31 @@
+{
+  "report_version": "1.0",
+  "mode": "plan",
+  "repository": ".",
+  "outcome": "COMPLETE",
+  "stable": true,
+  "complete": true,
+  "blocker_count": 0,
+  "tool": { "name": "greengap", "version": "1.0.0rc1", "runtime_proof": false },
+  "source": {
+    "repository": ".",
+    "workspace_fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "snapshot_method": "git",
+    "file_count": 3
+  },
+  "environment": {
+    "collection_mode": "trusted_checkout",
+    "execution_consent": true,
+    "network_access": "not requested by the analyzer"
+  },
+  "completeness": {
+    "analysis": true,
+    "workspace_stable": true,
+    "collection_complete": true,
+    "environment_valid": true,
+    "ci_trace_complete": true,
+    "runtime_execution_identity": "NOT_CERTIFIED",
+    "reason_codes": []
+  },
+  "findings": []
+}

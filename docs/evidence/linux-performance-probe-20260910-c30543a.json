@@ -1,0 +1,50 @@
+{
+  "evidence_version": "1.0",
+  "recorded_at": "2026-09-10",
+  "repository": "Smkzz/greengap-launch-probe-20260910",
+  "workflow": "GreenGap Linux Performance Probe",
+  "event": "workflow_dispatch",
+  "run_id": 34419304255,
+  "run_url": "https://github.com/Smkzz/greengap-launch-probe-20260910/actions/runs/34419304255",
+  "probe_workflow_head_sha": "c1b873f5cbbeff6bec05b6a64b6943d8be43c404",
+  "exact_greengap_sha": "c30543a4e3442a5238cf714c31f333e6cdfbb45e",
+    "exact_greengap_tree": "89071e9aafdd92ddf7001f9ccdc60083289b5e86",
+  "runner_image": "ubuntu-24.04",
+  "architecture": "x86_64",
+  "python": "3.13.15",
+  "fixture": {
+    "name": "large",
+    "test_files": 10000,
+    "workflow_files": 4,
+    "collection_enabled": false
+  },
+  "method": {
+    "warmup_runs": 1,
+    "timed_runs": 5,
+    "production_instrumentation": "none",
+    "fresh_process_startup": true,
+    "tracemalloc": false,
+    "profiler": false,
+    "coverage": false
+  },
+  "measurements": {
+    "production_p50_seconds": 3.3700173960000015,
+    "production_p95_seconds": 3.5633049240000005,
+    "startup_p95_seconds": {
+      "version": 0.09973512800002027,
+      "help": 0.11183696899999518
+    },
+    "peak_rss_bytes": 81010688,
+    "peak_rss_status": "PASS; peak process RSS remained below the 512 MiB budget",
+    "production_slo_seconds": 5.0,
+    "startup_budget_seconds": 1.0,
+    "disk_delta_bytes": 0
+  },
+  "receipts": {
+    "performance_json_sha256": "93afca5cd70d1db6a8372f9f558234910fc1ed41fae8a02a7555f53569abd87c",
+    "startup_json_sha256": "0b70de7408812ffe671396059f3d0176966e1fae02262b840c2b8e51c3c0595b",
+    "runner_receipt_sha256": "b53b76c8605c7182c3da410947ea41164329b666854c2364d5519d17a0fe5407"
+  },
+  "result": "PASS",
+  "interpretation": "Exact-current-head hosted Linux evidence passes the production timing, startup, RSS, and collection-disabled gates for candidate c30543a. This is an independent performance receipt only; reusable-workflow artifact, schedule, cohort usefulness, human, owner, provenance, and authorization gates remain separate."
+}
