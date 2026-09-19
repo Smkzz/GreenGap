@@ -95,6 +95,13 @@ jobs:
           [[ "${source_tree}" =~ ^[0-9a-fA-F]{40}$ ]]
           echo "source_sha=${source_sha}" >> "${GITHUB_OUTPUT}"
           echo "source_tree=${source_tree}" >> "${GITHUB_OUTPUT}"
+      - name: Bind the exact witness configuration
+        id: witness_config
+        run: |
+          set -euo pipefail
+          config_sha256="$(sha256sum .greengap.yml | cut -d ' ' -f1)"
+          [[ "${config_sha256}" =~ ^[0-9a-fA-F]{64}$ ]]
+          echo "config_sha256=${config_sha256}" >> "${GITHUB_OUTPUT}"
       - name: Collect the complete pytest denominator
         id: witness_collect
         env:
@@ -106,10 +113,13 @@ jobs:
           GREENGAP_JOB_ID: runtime-witness-collection
           GREENGAP_REPOSITORY: ${{ github.repository }}
           GREENGAP_WITNESS_ROLE: collection
+          GREENGAP_PROVIDER: github_actions
+          GREENGAP_CONFIG_SHA256: ${{ steps.witness_config.outputs.config_sha256 }}
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
         run: |
           set -euo pipefail
           mkdir -p "${GREENGAP_WITNESS_DIR}"
-          python -m pytest -p greengap.pytest_witness --collect-only --greengap-full-collection
+          timeout --signal=TERM --kill-after=30s 600s python -m pytest -p greengap.pytest_witness --collect-only --greengap-full-collection
       - name: Execute the real pytest command under Witness
         id: witness_execute
         env:
@@ -121,10 +131,13 @@ jobs:
           GREENGAP_JOB_ID: runtime-witness-execution
           GREENGAP_REPOSITORY: ${{ github.repository }}
           GREENGAP_WITNESS_ROLE: execution
+          GREENGAP_PROVIDER: github_actions
+          GREENGAP_CONFIG_SHA256: ${{ steps.witness_config.outputs.config_sha256 }}
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
         run: |
           set -euo pipefail
           mkdir -p "${GREENGAP_WITNESS_DIR}"
-          python -m pytest -p greengap.pytest_witness
+          timeout --signal=TERM --kill-after=30s 600s python -m pytest -p greengap.pytest_witness
       - name: Create the declared witness manifest
         if: ${{ always() }}
         run: |
@@ -160,9 +173,21 @@ jobs:
         run: |
           set -euo pipefail
           witness_root="${RUNNER_TEMP}/greengap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf runtime-witness
           mkdir -p runtime-witness/collection runtime-witness/execution
-          if [[ -d "${witness_root}/collection" ]]; then cp -a "${witness_root}/collection/." runtime-witness/collection/; fi
-          if [[ -d "${witness_root}/execution" ]]; then cp -a "${witness_root}/execution/." runtime-witness/execution/; fi
+          copy_fragments() {
+            local source_dir="$1"
+            local destination_dir="$2"
+            [[ -d "${source_dir}" ]] || return 0
+            shopt -s nullglob
+            local fragments=("${source_dir}"/greengap-*.json)
+            for fragment in "${fragments[@]}"; do
+              [[ -f "${fragment}" && ! -L "${fragment}" ]] || { echo "unexpected witness input: ${fragment}" >&2; return 1; }
+              cp -- "${fragment}" "${destination_dir}/"
+            done
+          }
+          copy_fragments "${witness_root}/collection" runtime-witness/collection
+          copy_fragments "${witness_root}/execution" runtime-witness/execution
           for name in manifest.json analysis.json; do
             if [[ -f "${witness_root}/${name}" ]]; then cp "${witness_root}/${name}" "runtime-witness/${name}"; fi
           done
@@ -175,6 +200,30 @@ jobs:
           path: runtime-witness
           if-no-files-found: error
           retention-days: 7
+
+  runtime-fixtures:
+    name: runtime witness / explicit reference fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install the pinned fixture validation environment
+        run: python -m pip install --require-hashes -r .github/requirements-ci-latest.txt
+      - name: Validate direct pytest and matrix-shard contracts
+        run: |
+          set -euo pipefail
+          python scripts/validate_reference_fixtures.py \
+            --fixture direct-pytest \
+            --output "${RUNNER_TEMP}/greengap-reference-direct"
+          python scripts/validate_reference_fixtures.py \
+            --fixture matrix-shards \
+            --output "${RUNNER_TEMP}/greengap-reference-matrix"
 
   package:
     name: package / wheel and sdist

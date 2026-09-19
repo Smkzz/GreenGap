@@ -2,7 +2,8 @@
 
 These fixtures are intentionally tiny, source-controlled examples of the
 supported integration boundary.  A harness copies one fixture into a
-disposable Git checkout, supplies the five explicit identity variables, and
+disposable Git checkout, supplies the explicit identity variables, provider,
+and exact `.greengap.yml` SHA-256, disables pytest plugin autoloading, and
 loads `greengap.pytest_witness` in the command that the fixture declares.
 
 Each fixture is expected to demonstrate the same evidence matrix:

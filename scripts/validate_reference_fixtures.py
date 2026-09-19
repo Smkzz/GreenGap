@@ -10,6 +10,7 @@ and shard selection remain visible in the fixture or in this harness.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import json
 import os
@@ -387,12 +388,19 @@ def _run_surface(
     target: Path,
     spec: SurfaceSpec,
     *,
+    fixture: str,
     role: str,
     source_sha: str,
     repository: str,
     evidence_root: Path,
 ) -> SurfaceRun:
     destination = evidence_root / spec.surface_id
+    config_sha256 = hashlib.sha256((target / ".greengap.yml").read_bytes()).hexdigest()
+    extra_environment = {"UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR", "")}
+    if fixture in {"direct-pytest", "matrix-shards"}:
+        # The direct fixtures use the harness interpreter.  tox and uv own
+        # their target environments and must not receive host site-packages.
+        extra_environment["PYTHONPATH"] = os.environ.get("PYTHONPATH", "")
     result = execute_witness_command(
         target,
         spec.command,
@@ -403,6 +411,8 @@ def _run_surface(
         surface_id=spec.surface_id,
         run_id=RUN_ID,
         run_attempt=RUN_ATTEMPT,
+        config_sha256=config_sha256,
+        extra_environment=extra_environment,
         timeout=300.0,
     )
     payloads: list[dict[str, Any]] = []
@@ -493,6 +503,7 @@ def validate_fixture(
     collection_run = _run_surface(
         target,
         collection_spec,
+        fixture=fixture,
         role="collection",
         source_sha=source_sha,
         repository=repository,
@@ -502,6 +513,7 @@ def validate_fixture(
         _run_surface(
             target,
             spec,
+            fixture=fixture,
             role="execution",
             source_sha=source_sha,
             repository=repository,
@@ -543,6 +555,7 @@ def validate_fixture(
             _run_surface(
                 target,
                 spec,
+                fixture=fixture,
                 role="execution",
                 source_sha=source_sha,
                 repository=repository,
@@ -592,6 +605,7 @@ def validate_fixture(
         _run_surface(
             target,
             spec,
+            fixture=fixture,
             role="execution",
             source_sha=source_sha,
             repository=repository,
@@ -642,10 +656,10 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     source_root = Path(__file__).resolve().parents[1]
-    output_root = args.output or source_root.parent / (
+    output_root = (args.output or source_root.parent / (
         "greengap-explicit-runtime-witness-reference-"
         + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    )
+    )).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     fixtures = FIXTURE_NAMES if args.fixture == "all" else (args.fixture,)
     tox: str | None = None

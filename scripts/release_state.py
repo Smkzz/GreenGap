@@ -45,7 +45,7 @@ class ReleaseBinding:
         normalized: list[tuple[str, str]] = []
         names: set[str] = set()
         for item in self.artifacts:
-            if not isinstance(item, (tuple, list)) or len(item) != 2:
+            if not isinstance(item, tuple | list) or len(item) != 2:
                 raise ValueError("artifact manifest entries must be name and sha256 pairs")
             name, digest = item
             if (
@@ -154,7 +154,7 @@ def load_state(path: Path) -> ReleaseState:
         if not isinstance(binding_data, dict):
             raise ValueError("release binding must be a JSON object")
         artifact_data = binding_data.get("artifacts", ())
-        if not isinstance(artifact_data, (list, tuple)):
+        if not isinstance(artifact_data, list | tuple):
             raise ValueError("release artifact manifest must be a JSON array")
         artifacts: list[tuple[str, str]] = []
         for item in artifact_data:

@@ -2563,6 +2563,8 @@ def test_sdist_manifest_includes_certification_support_files() -> None:
 
     assert "recursive-include tests *.py" in manifest
     assert "recursive-include scripts *.py" in manifest
+    assert "recursive-include examples *.py *.yml *.yaml *.md *.ini *.toml *.lock" in manifest
+    assert "recursive-include examples .gitignore .greengap.yml" in manifest
 
 
 def test_release_provenance_manifest_binds_exact_artifact_bytes(tmp_path) -> None:

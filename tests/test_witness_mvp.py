@@ -317,6 +317,8 @@ def test_multiple_sessions_union_without_shared_mutation(tmp_path: Path) -> None
 
 def test_command_activation_does_not_rewrite_direct_tox_or_uv(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(witness_module, "git_repository_identity", lambda root: (SOURCE, TREE))
+    monkeypatch.setenv("GITHUB_TOKEN", "should-not-cross-process-boundary")
+    monkeypatch.setenv("PYTEST_ADDOPTS", "--ignore=hidden-selector")
     seen: list[tuple[list[str], dict[str, str]]] = []
 
     def fake_run(command, **kwargs):
@@ -329,14 +331,14 @@ def test_command_activation_does_not_rewrite_direct_tox_or_uv(monkeypatch, tmp_p
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(witness_module, "run_process_tree", fake_run)
-    for command in (
+    for index, command in enumerate((
         ["python", "-m", "pytest"],
         ["tox"],
         ["python", "-m", "tox"],
         ["python", "-m", "coverage", "run", "-m", "pytest"],
         ["uv", "run", "pytest"],
-    ):
-        output = tmp_path / Path(command[0]).name
+    )):
+        output = tmp_path / f"command-{index}"
         result = witness_module.execute_witness_command(
             tmp_path,
             command,
@@ -379,6 +381,9 @@ def test_command_activation_does_not_rewrite_direct_tox_or_uv(monkeypatch, tmp_p
     for _actual_command, env in seen:
         assert "PYTHONPATH" in env
         assert "PYTEST_ADDOPTS" not in env
+        assert "GITHUB_TOKEN" not in env
+        assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+        assert env["PYTHONNOUSERSITE"] == "1"
     assert seen[0][1]["GREENGAP_SURFACE_ID"] == "unit-py311"
     assert seen[-1][1]["GREENGAP_SURFACE_ID"] == "collection"
     assert seen[-1][0] == collection_command
@@ -443,6 +448,9 @@ def test_real_witness_separates_runtime_outputs_from_source_identity(tmp_path: P
         output_dir=str(output_dir),
         surface_id="unit-py311",
         run_id="run-1",
+        extra_environment={
+            "PYTHONPATH": str(Path(pytest.__file__).parent.parent),
+        },
         timeout=30,
     )
     assert result.fragment_names

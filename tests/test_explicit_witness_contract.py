@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from greengap.cli import main
+from greengap.util import MAX_RUNTIME_WITNESS_FRAGMENTS
 from greengap.witness import WitnessError, create_manifest, validate_manifest
 from greengap.witness_config import (
     WitnessConfigError,
@@ -55,6 +56,7 @@ def _collection() -> dict:
             "shard": None,
             "worker_id": None,
             "pid": 1234,
+            "config_sha256": "d" * 64,
         },
         "collection": {"complete": True, "collected_files": ["tests/test_a.py"]},
         "execution": {
@@ -109,13 +111,16 @@ def test_explicit_manifest_binds_surface_declaration() -> None:
     manifest = create_manifest(
         _collection(),
         execution_witness_ids=(),
-        explicit_config=ExplicitWitnessConfig("collection", ("unit-py311", "unit-py312")),
+        explicit_config=ExplicitWitnessConfig(
+            "collection", ("unit-py311", "unit-py312"), "d" * 64
+        ),
     )
 
     assert manifest["contract"] == "explicit"
     assert manifest["surface_manifest"] == {
         "collection_surface_id": "collection",
         "required_execution_surface_ids": ["unit-py311", "unit-py312"],
+        "config_sha256": "d" * 64,
     }
     assert validate_manifest(manifest) == manifest
 
@@ -126,7 +131,7 @@ def test_explicit_manifest_rejects_surface_id_conflict() -> None:
     manifest = create_manifest(
         _collection(),
         execution_witness_ids=(),
-        explicit_config=ExplicitWitnessConfig("collection", ("unit-py311",)),
+        explicit_config=ExplicitWitnessConfig("collection", ("unit-py311",), "d" * 64),
     )
     manifest["surface_manifest"]["required_execution_surface_ids"] = ["unit-py312"]
 
@@ -161,3 +166,27 @@ def test_cli_manifest_accepts_explicit_config(tmp_path: Path, capsys: pytest.Cap
     assert code == 0
     assert json.loads(capsys.readouterr().out)["complete"] is True
     assert json.loads(output_path.read_text(encoding="utf-8"))["contract"] == "explicit"
+
+
+def test_cli_analyze_bounds_directory_expansion(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    fragments = tmp_path / "fragments"
+    fragments.mkdir()
+    for index in range(MAX_RUNTIME_WITNESS_FRAGMENTS + 1):
+        (fragments / f"greengap-{index:04d}.json").write_text("{}", encoding="utf-8")
+
+    code = main(
+        [
+            "witness",
+            "analyze",
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--collection-witness",
+            str(fragments),
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["outcome"] == "INCOMPLETE"
+    assert "WITNESS_FRAGMENT_SET_LIMIT_EXCEEDED" in payload["errors"]

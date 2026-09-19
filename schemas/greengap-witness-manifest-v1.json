@@ -94,7 +94,7 @@
     "surface_manifest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["collection_surface_id", "required_execution_surface_ids"],
+      "required": ["collection_surface_id", "required_execution_surface_ids", "config_sha256"],
       "properties": {
         "collection_surface_id": { "$ref": "#/$defs/surface_id" },
         "required_execution_surface_ids": {
@@ -103,7 +103,8 @@
           "maxItems": 256,
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/surface_id" }
-        }
+        },
+        "config_sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
       }
     },
     "surface_set": {

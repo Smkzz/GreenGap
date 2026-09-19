@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Smkzz/GreenGap/blob/main/schemas/greengap-witness-config-v1.json",
   "title": "GreenGap explicit pytest witness configuration v1",
-  "description": "A bounded declaration of the collection surface and complete execution surface set.",
+  "description": "A bounded declaration of the collection surface and complete execution surface set. The exact file bytes are hashed into the generated witness manifest.",
   "type": "object",
   "additionalProperties": false,
   "required": ["witness"],

@@ -22,12 +22,14 @@ import stat
 import subprocess
 import tempfile
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .environment import collection_environment
 from .snapshot import source_snapshot, workspace_snapshot
 from .util import (
     MAX_RUNTIME_AGGREGATE_BYTES,
@@ -206,7 +208,8 @@ def _validate_execution_context(value: Any) -> dict[str, Any]:
         "worker_id",
         "pid",
     }
-    if not isinstance(value, dict) or set(value) != required:
+    allowed = required | {"config_sha256"}
+    if not isinstance(value, dict) or set(value) - allowed or not required.issubset(value):
         raise WitnessError("WITNESS_EXECUTION_CONTEXT_INVALID")
     provider = _required_id(value["provider"])
     if provider not in {"local", "github_actions", "ci"}:
@@ -218,7 +221,18 @@ def _validate_execution_context(value: Any) -> dict[str, Any]:
     pid = value["pid"]
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0 or pid > 2**31 - 1:
         raise WitnessError("WITNESS_PROCESS_ID_INVALID")
-    return {"provider": provider, **optional, "surface_id": _required_id(value["surface_id"]), "pid": pid}
+    config_sha256 = value.get("config_sha256")
+    if config_sha256 is not None and (
+        not isinstance(config_sha256, str) or _SHA256_RE.fullmatch(config_sha256) is None
+    ):
+        raise WitnessError("WITNESS_CONFIG_DIGEST_INVALID")
+    return {
+        "provider": provider,
+        **optional,
+        "surface_id": _required_id(value["surface_id"]),
+        "pid": pid,
+        "config_sha256": config_sha256.lower() if config_sha256 is not None else None,
+    }
 
 
 def _validate_session(value: Any) -> dict[str, Any]:
@@ -408,6 +422,7 @@ def _validate_surface_manifest(
     if not isinstance(value, dict) or set(value) != {
         "collection_surface_id",
         "required_execution_surface_ids",
+        "config_sha256",
     }:
         raise WitnessError("MANIFEST_SURFACE_MANIFEST_INVALID")
     collection_surface = _surface_name(value["collection_surface_id"])
@@ -421,9 +436,13 @@ def _validate_surface_manifest(
     expected_execution = sorted(f"{surface}|-" for surface in execution_surfaces)
     if list(collection_ids) != expected_collection or list(execution_ids) != expected_execution:
         raise WitnessError("MANIFEST_SURFACE_ID_CONFLICT")
+    config_sha256 = value["config_sha256"]
+    if not isinstance(config_sha256, str) or _SHA256_RE.fullmatch(config_sha256) is None:
+        raise WitnessError("MANIFEST_CONFIG_DIGEST_INVALID")
     return {
         "collection_surface_id": collection_surface,
         "required_execution_surface_ids": execution_surfaces,
+        "config_sha256": config_sha256.lower(),
     }
 
 
@@ -662,6 +681,10 @@ def analyze_witnesses(
     source = manifest["repository_identity"]["git_sha"]
     tree = manifest["repository_identity"]["git_tree"]
     repository = manifest["repository_identity"]["repository"]
+    manifest_config_sha256 = None
+    if manifest.get("contract") == "explicit":
+        surface_manifest = manifest.get("surface_manifest", {})
+        manifest_config_sha256 = surface_manifest.get("config_sha256")
     fingerprint = manifest["source_identity"]["fingerprint"]
     run_id = manifest["run_identity"]["run_id"]
     run_attempt = manifest["run_identity"]["run_attempt"]
@@ -706,6 +729,12 @@ def analyze_witnesses(
                 errors.append("SOURCE_IDENTITY_UNSTABLE")
             if context["run_id"] != run_id or context["run_attempt"] != run_attempt:
                 errors.append("RUN_IDENTITY_MISMATCH")
+            if manifest_config_sha256 is not None:
+                witness_config_sha256 = context.get("config_sha256")
+                if witness_config_sha256 is None:
+                    errors.append("CONFIG_DIGEST_MISSING")
+                elif witness_config_sha256 != manifest_config_sha256:
+                    errors.append("CONFIG_DIGEST_MISMATCH")
             key = witness_id(payload)
             expected = expected_collection if group == "collection" else expected_execution
             if key not in expected:
@@ -901,6 +930,8 @@ def create_manifest(
         expected_collection_id = explicit_config.collection_witness_id
         if collection_id != expected_collection_id:
             raise WitnessError("MANIFEST_COLLECTION_SURFACE_MISMATCH")
+        if explicit_config.config_sha256 is None:
+            raise WitnessError("MANIFEST_CONFIG_DIGEST_MISSING")
         if execution_witness_ids:
             raise WitnessError("MANIFEST_CONFIG_ID_OVERRIDE_FORBIDDEN")
         execution_ids = list(explicit_config.execution_witness_ids)
@@ -981,6 +1012,7 @@ def _fallback_payload(
     surface_id: str,
     run_id: str,
     run_attempt: str,
+    config_sha256: str | None,
     exitstatus: int,
     initial_snapshot: Any | None,
     initial_source_snapshot: Any | None,
@@ -1075,6 +1107,7 @@ def _fallback_payload(
             "shard": shard,
             "worker_id": worker_id,
             "pid": os.getpid(),
+            "config_sha256": config_sha256,
         },
         "collection": {"complete": False, "collected_files": []},
         "execution": {
@@ -1099,6 +1132,79 @@ def _write_incomplete_fragment(destination: Path, payload: Mapping[str, Any]) ->
     try:
         if _has_link_component(destination) or not destination.is_dir():
             return None
+        with _witness_output_lock(destination):
+            if len(_fragment_names(destination)) >= MAX_RUNTIME_WITNESS_FRAGMENTS:
+                return None
+            return _atomic_write_fragment(destination, final, encoded)
+    except OSError:
+        return None
+
+
+def _fragment_names(destination: Path) -> tuple[str, ...]:
+    try:
+        names: list[str] = []
+        with os.scandir(destination) as entries:
+            for entry in entries:
+                if not entry.name.startswith("greengap-") or not entry.name.endswith(".json"):
+                    continue
+                if entry.is_file(follow_symlinks=False):
+                    names.append(entry.name)
+                    if len(names) > MAX_RUNTIME_WITNESS_FRAGMENTS:
+                        break
+        return tuple(sorted(names))
+    except OSError:
+        return ()
+
+
+@contextmanager
+def _witness_output_lock(destination: Path) -> Iterator[None]:
+    """Serialize fragment reservation and publication within one output dir."""
+
+    lock_path = destination / ".greengap-witness.lock"
+    if _has_link_component(lock_path):
+        raise OSError("witness lock path crosses a link boundary")
+    descriptor = os.open(
+        lock_path,
+        os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        if _has_link_component(lock_path):
+            raise OSError("witness lock path crosses a link boundary")
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"\0")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl_api: Any = fcntl
+
+            fcntl_api.flock(descriptor, fcntl_api.LOCK_EX)
+        yield
+    finally:
+        with suppress(OSError):
+            if os.name == "nt":
+                import msvcrt
+
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                unlock_api: Any = fcntl
+
+                unlock_api.flock(descriptor, unlock_api.LOCK_UN)
+        with suppress(OSError):
+            os.close(descriptor)
+
+
+def _atomic_write_fragment(destination: Path, final: Path, encoded: bytes) -> str | None:
+    """Publish one fragment without clobbering a concurrently chosen name."""
+
+    temporary: Path | None = None
+    try:
         with tempfile.NamedTemporaryFile(
             mode="wb", dir=destination, prefix=f".{final.name}.", delete=False
         ) as handle:
@@ -1107,7 +1213,6 @@ def _write_incomplete_fragment(destination: Path, payload: Mapping[str, Any]) ->
             handle.flush()
             os.fsync(handle.fileno())
         if final.exists():
-            temporary.unlink(missing_ok=True)
             return None
         temporary.replace(final)
         try:
@@ -1117,23 +1222,17 @@ def _write_incomplete_fragment(destination: Path, payload: Mapping[str, Any]) ->
             finally:
                 os.close(directory_fd)
         except OSError:
+            # Directory fsync is not supported on every platform. The file was
+            # still atomically published and the analyzer will fail closed if
+            # it cannot be read back.
             pass
         return final.name
     except OSError:
         return None
-
-
-def _fragment_names(destination: Path) -> tuple[str, ...]:
-    try:
-        return tuple(
-            sorted(
-                path.name
-                for path in destination.glob("greengap-*.json")
-                if path.is_file() and not path.is_symlink()
-            )
-        )
-    except OSError:
-        return ()
+    finally:
+        if temporary is not None:
+            with suppress(OSError):
+                temporary.unlink()
 
 
 def _output_directory(value: str | None) -> Path:
@@ -1145,6 +1244,12 @@ def _output_directory(value: str | None) -> Path:
             raise WitnessError("WITNESS_OUTPUT_DIRECTORY_INVALID") from exc
         if _has_link_component(path) or not path.is_dir():
             raise WitnessError("WITNESS_OUTPUT_DIRECTORY_INVALID")
+        try:
+            with os.scandir(path) as entries:
+                if next(entries, None) is not None:
+                    raise WitnessError("WITNESS_OUTPUT_DIRECTORY_NOT_EMPTY")
+        except OSError as exc:
+            raise WitnessError("WITNESS_OUTPUT_DIRECTORY_INVALID") from exc
         return path
     return Path(tempfile.mkdtemp(prefix="greengap-witness-"))
 
@@ -1160,6 +1265,8 @@ def execute_witness_command(
     surface_id: str | None = None,
     run_id: str | None = None,
     run_attempt: str = "1",
+    config_sha256: str | None = None,
+    extra_environment: Mapping[str, str] | None = None,
     collect_only: bool = False,
     timeout: float = 300.0,
 ) -> CommandRun:
@@ -1212,13 +1319,22 @@ def execute_witness_command(
         if not isinstance(repository, str) or _SAFE_ID_RE.fullmatch(repository) is None:
             return CommandRun(2, destination, (), "REPOSITORY_IDENTITY_INVALID")
         selected_repository = repository
+    if config_sha256 is not None and (
+        not isinstance(config_sha256, str) or _SHA256_RE.fullmatch(config_sha256) is None
+    ):
+        return CommandRun(2, destination, (), "CONFIG_DIGEST_INVALID")
+    selected_config_sha256 = config_sha256.lower() if config_sha256 is not None else None
     initial_snapshot = _safe_snapshot(root)
     initial_source_snapshot = _safe_source_snapshot(root)
     before_names = set(_fragment_names(destination))
-    env = os.environ.copy()
+    env = collection_environment(extra_environment)
     source_root = str(Path(__file__).resolve().parent.parent)
     prior_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = source_root + (os.pathsep + prior_pythonpath if prior_pythonpath else "")
+    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    env["PYTHONNOUSERSITE"] = "1"
+    env["NO_COLOR"] = "1"
+    env["PY_COLORS"] = "0"
     env["GREENGAP_WITNESS_DIR"] = str(destination)
     env["GREENGAP_WITNESS_ROLE"] = role
     env["GREENGAP_SOURCE_SHA"] = selected_source
@@ -1231,6 +1347,10 @@ def execute_witness_command(
     env["GREENGAP_PROVIDER"] = env.get("GREENGAP_PROVIDER") or "local"
     env["GREENGAP_SURFACE_ID"] = selected_surface
     env["GREENGAP_WITNESS_ID"] = selected_surface
+    if selected_config_sha256 is not None:
+        env["GREENGAP_CONFIG_SHA256"] = selected_config_sha256
+    else:
+        env.pop("GREENGAP_CONFIG_SHA256", None)
     if selected_repository is not None:
         env["GREENGAP_REPOSITORY"] = selected_repository
     # ``collect_only`` is retained as a source-compatible argument for
@@ -1266,6 +1386,7 @@ def execute_witness_command(
             surface_id=selected_surface,
             run_id=selected_run_id,
             run_attempt=run_attempt,
+            config_sha256=selected_config_sha256,
             exitstatus=returncode,
             initial_snapshot=initial_snapshot,
             initial_source_snapshot=initial_source_snapshot,

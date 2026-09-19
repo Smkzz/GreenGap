@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import uuid
 from collections.abc import Sequence
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import __version__
 from .report import redact_shareable
-from .util import terminal_safe_text
+from .util import MAX_RUNTIME_WITNESS_FRAGMENTS, terminal_safe_text
 
 if TYPE_CHECKING:
     from .model import PlanReport, ScanReport
@@ -518,10 +519,25 @@ def _expand_witness_inputs(values: Sequence[str]) -> tuple[Path, ...]:
     paths: list[Path] = []
     for value in values:
         path = Path(value)
+        if path.is_symlink():
+            raise ValueError("WITNESS_INPUT_SYMLINK")
         if path.is_dir():
-            paths.extend(sorted(candidate for candidate in path.glob("*.json") if candidate.is_file()))
+            try:
+                with os.scandir(path) as entries:
+                    for entry in entries:
+                        if not entry.name.startswith("greengap-") or not entry.name.endswith(".json"):
+                            continue
+                        if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                            raise ValueError("WITNESS_INPUT_SYMLINK")
+                        paths.append(Path(entry.path))
+                        if len(paths) > MAX_RUNTIME_WITNESS_FRAGMENTS:
+                            raise ValueError("WITNESS_FRAGMENT_SET_LIMIT_EXCEEDED")
+            except OSError as exc:
+                raise ValueError("WITNESS_INPUT_DIRECTORY_INVALID") from exc
         else:
             paths.append(path)
+        if len(paths) > MAX_RUNTIME_WITNESS_FRAGMENTS:
+            raise ValueError("WITNESS_FRAGMENT_SET_LIMIT_EXCEEDED")
     return tuple(paths)
 
 
@@ -617,8 +633,38 @@ def _run_witness_action(action: str, options: list[str], command: list[str]) -> 
         return result.returncode
 
     if action == "analyze":
-        collection_paths = _expand_witness_inputs(args.collection_witnesses)
-        execution_paths = _expand_witness_inputs(args.execution_witnesses)
+        try:
+            collection_paths = _expand_witness_inputs(args.collection_witnesses)
+            execution_paths = _expand_witness_inputs(args.execution_witnesses)
+            if len(collection_paths) + len(execution_paths) > MAX_RUNTIME_WITNESS_FRAGMENTS:
+                raise ValueError("WITNESS_FRAGMENT_SET_LIMIT_EXCEEDED")
+        except (OSError, ValueError, TypeError) as exc:
+            payload = {
+                "schema_version": 1,
+                "artifact_type": "greengap_pytest_runtime_analysis",
+                "mode": "witness",
+                "complete": False,
+                "outcome": "INCOMPLETE",
+                "runtime_execution_identity": "NOT_CERTIFIED",
+                "source_commit": None,
+                "repository": None,
+                "run_identity": {"run_id": None, "run_attempt": None},
+                "expected_witness_count": 0,
+                "received_witness_count": 0,
+                "fragment_count": 0,
+                "collection_file_count": 0,
+                "executed_file_count": 0,
+                "not_run_file_count": 0,
+                "collected_files": [],
+                "executed_files": [],
+                "not_run_files": [],
+                "collection_witness_ids": [],
+                "execution_witness_ids": [],
+                "errors": [str(getattr(exc, "code", exc))],
+                "findings": [],
+            }
+            print(json_dump(payload), end="")
+            return 2
         analysis = analyze_witnesses(
             Path(args.manifest),
             collection_paths,

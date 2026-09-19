@@ -12,7 +12,6 @@ import json
 import os
 import re
 import subprocess
-import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
@@ -29,6 +28,10 @@ from .util import (
 from .witness import (
     WITNESS_ARTIFACT_TYPE,
     WITNESS_SCHEMA_VERSION,
+    _atomic_write_fragment,
+    _fragment_names,
+    _has_link_component,
+    _witness_output_lock,
     normalize_witness_path,
     resolve_witness_output_path,
 )
@@ -102,6 +105,14 @@ def pytest_addoption(parser: Any) -> None:
         default=os.environ.get("GREENGAP_REPOSITORY"),
         metavar="OWNER/REPOSITORY",
         help="optional safe repository identity supplied by the caller",
+    )
+    group.addoption(
+        "--greengap-config-sha256",
+        dest="greengap_config_sha256",
+        action="store",
+        default=os.environ.get("GREENGAP_CONFIG_SHA256"),
+        metavar="SHA256",
+        help="SHA-256 of the exact explicit .greengap.yml bytes used for this run",
     )
     group.addoption(
         "--greengap-witness-role",
@@ -249,6 +260,13 @@ def _collection_is_unfiltered(config: Any, errors: list[str]) -> bool:
         "stepwise",
         "stepwise_skip",
         "cache_show",
+        "override_ini",
+        "confcutdir",
+        "noconftest",
+        "keepduplicates",
+        "collect_in_virtualenv",
+        "doctestglob",
+        "pyargs",
     )
     if any(getattr(option, name, None) for name in selector_options):
         errors.append("COLLECTION_SELECTOR_PRESENT")
@@ -258,6 +276,18 @@ def _collection_is_unfiltered(config: Any, errors: list[str]) -> bool:
         str(value)
         for value in getattr(getattr(config, "invocation_params", None), "args", ())
     )
+    configured_addopts: tuple[str, ...]
+    try:
+        configured_addopts_value = config.getini("addopts")
+    except (AttributeError, ValueError, TypeError):
+        configured_addopts_value = ()
+    if isinstance(configured_addopts_value, str):
+        configured_addopts = (configured_addopts_value,)
+    else:
+        configured_addopts = tuple(str(value) for value in (configured_addopts_value or ()))
+    if os.environ.get("PYTEST_ADDOPTS") or os.environ.get("PYTEST_PLUGINS"):
+        errors.append("COLLECTION_HIDDEN_OPTIONS_PRESENT")
+        return False
     # ``config.args`` also contains project-configured testpaths.  Only reject
     # a path that is present in the caller's actual argv; configured testpaths
     # are part of the project's declared pytest surface, not a hidden runtime
@@ -269,6 +299,44 @@ def _collection_is_unfiltered(config: Any, errors: list[str]) -> bool:
     )
     if meaningful_args or any("::" in value or "[" in value for value in meaningful_args):
         errors.append("COLLECTION_SELECTOR_PRESENT")
+        return False
+    selector_tokens = {
+        "-k",
+        "--keyword",
+        "-m",
+        "--markexpr",
+        "--deselect",
+        "--ignore",
+        "--ignore-glob",
+        "--override-ini",
+        "-o",
+        "--confcutdir",
+        "--doctest-glob",
+        "--import-mode",
+    }
+    if any(
+        token in selector_tokens or any(token.startswith(f"{prefix}=") for prefix in selector_tokens)
+        for token in (*invocation_args, *configured_addopts)
+    ):
+        errors.append("COLLECTION_SELECTOR_PRESENT")
+        return False
+    if any(token == "-p" or token.startswith("-p") for token in configured_addopts):
+        errors.append("COLLECTION_PLUGIN_ADDOPTS_PRESENT")
+        return False
+    explicit_plugin = any(
+        token in {"greengap.pytest_witness", "-pgreengap.pytest_witness"}
+        for token in invocation_args
+    ) or any(
+        invocation_args[index] == "-p"
+        and index + 1 < len(invocation_args)
+        and invocation_args[index + 1] == "greengap.pytest_witness"
+        for index in range(len(invocation_args))
+    )
+    if not explicit_plugin:
+        errors.append("COLLECTION_PLUGIN_ACTIVATION_NOT_EXPLICIT")
+        return False
+    if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") != "1":
+        errors.append("COLLECTION_PLUGIN_AUTOLOAD_ENABLED")
         return False
     return True
 
@@ -313,6 +381,32 @@ class _Witness:
         self.git_sha = source
         self.git_tree = tree
         self.repository = _repository_identity(config, self.errors)
+        config_sha256 = _first_option(config, "greengap_config_sha256")
+        if config_sha256 not in (None, "") and (
+            not isinstance(config_sha256, str) or _FINGERPRINT_RE.fullmatch(config_sha256) is None
+        ):
+            self.errors.append("CONFIG_DIGEST_INVALID")
+            config_sha256 = None
+        self.config_sha256 = config_sha256.lower() if isinstance(config_sha256, str) else None
+        invocation_args = tuple(
+            str(value)
+            for value in getattr(getattr(config, "invocation_params", None), "args", ())
+        )
+        explicit_plugin = any(
+            token in {"greengap.pytest_witness", "-pgreengap.pytest_witness"}
+            for token in invocation_args
+        ) or any(
+            invocation_args[index] == "-p"
+            and index + 1 < len(invocation_args)
+            and invocation_args[index + 1] == "greengap.pytest_witness"
+            for index in range(len(invocation_args))
+        )
+        if not explicit_plugin:
+            self.errors.append("PLUGIN_ACTIVATION_NOT_EXPLICIT")
+        if os.environ.get("PYTEST_ADDOPTS") or os.environ.get("PYTEST_PLUGINS"):
+            self.errors.append("PLUGIN_HIDDEN_OPTIONS_PRESENT")
+        if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") != "1":
+            self.errors.append("PLUGIN_AUTOLOAD_ENABLED")
         self.collection: set[str] = set()
         self.attempted: set[str] = set()
         self.call_executed: set[str] = set()
@@ -462,10 +556,11 @@ class _Witness:
             "shard": self.shard,
             "worker_id": self.worker_id,
             "pid": os.getpid(),
+            "config_sha256": self.config_sha256,
         }
         return values
 
-    def _payload(self, exitstatus: Any) -> dict[str, Any]:
+    def _payload(self, exitstatus: Any, *, existing_fragments: int | None = None) -> dict[str, Any]:
         runtime_start = self.start_snapshot.fingerprint if self.start_snapshot is not None else "0" * 64
         runtime_final = self.final_snapshot.fingerprint if self.final_snapshot is not None else "0" * 64
         runtime_stable = (
@@ -509,10 +604,8 @@ class _Witness:
         collection_complete = self.collection_complete
         if self.role in {"collection", "both"} and not collection_complete:
             self.errors.append("COLLECTION_INCOMPLETE")
-        try:
-            existing_fragments = sum(1 for item in self.output_dir.glob("*.json") if item.is_file())
-        except OSError:
-            existing_fragments = MAX_RUNTIME_WITNESS_FRAGMENTS
+        if existing_fragments is None:
+            existing_fragments = len(_fragment_names(self.output_dir))
         if existing_fragments >= MAX_RUNTIME_WITNESS_FRAGMENTS:
             self.errors.append("WITNESS_FRAGMENT_LIMIT_EXCEEDED")
         diagnostics = sorted(set(self.errors))[:64]
@@ -594,49 +687,32 @@ class _Witness:
         self._write(exitstatus)
 
     def _write(self, exitstatus: Any) -> None:
-        payload = self._payload(exitstatus)
-        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        if len(encoded) > MAX_RUNTIME_WITNESS_BYTES:
-            payload["collection"] = {"complete": False, "collected_files": []}
-            payload["execution"] = {
-                "attempted_files": [],
-                "call_executed_files": [],
-                "completed_files": [],
-                "call_outcomes": [],
-            }
-            payload["complete"] = False
-            payload["diagnostics"] = ["WITNESS_SIZE_LIMIT_EXCEEDED"]
-            encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
-            if self.output_dir.is_symlink() or not self.output_dir.is_dir():
+            if _has_link_component(self.output_dir) or not self.output_dir.is_dir():
                 return
-            final = self._fragment_path()
-            if final.exists():
-                return
-            with tempfile.NamedTemporaryFile(
-                mode="wb", dir=self.output_dir, prefix=f".{final.name}.", delete=False
-            ) as handle:
-                temporary = Path(handle.name)
-                handle.write(encoded)
-                handle.flush()
-                os.fsync(handle.fileno())
-            if final.exists():
-                temporary.unlink(missing_ok=True)
-                return
-            temporary.replace(final)
-            try:
-                directory_fd = os.open(str(self.output_dir), os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
-            except OSError:
-                pass
+            with _witness_output_lock(self.output_dir):
+                payload = self._payload(
+                    exitstatus,
+                    existing_fragments=len(_fragment_names(self.output_dir)),
+                )
+                encoded = json.dumps(
+                    payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+                if len(encoded) > MAX_RUNTIME_WITNESS_BYTES:
+                    payload["collection"] = {"complete": False, "collected_files": []}
+                    payload["execution"] = {
+                        "attempted_files": [],
+                        "call_executed_files": [],
+                        "completed_files": [],
+                        "call_outcomes": [],
+                    }
+                    payload["complete"] = False
+                    payload["diagnostics"] = ["WITNESS_SIZE_LIMIT_EXCEEDED"]
+                    encoded = json.dumps(
+                        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")
+                _atomic_write_fragment(self.output_dir, self._fragment_path(), encoded)
         except OSError:
             return
 

@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from greengap.witness import (
     WITNESS_PLUGIN_MODULE,
     analyze_witnesses,
@@ -13,6 +15,8 @@ from greengap.witness import (
     load_witness,
 )
 from greengap.witness_config import load_explicit_witness_config
+
+_PYTEST_SITE_PACKAGES = str(Path(pytest.__file__).parent.parent)
 
 
 def _git_commit(root: Path) -> str:
@@ -93,6 +97,8 @@ def test_direct_pytest_contract_proves_baseline_omission_and_incompleteness(tmp_
         source_commit=source,
         surface_id="collection",
         run_id="run-1",
+        config_sha256=config.config_sha256,
+        extra_environment={"PYTHONPATH": _PYTEST_SITE_PACKAGES},
         timeout=60,
     )
     assert collection_run.returncode == 0
@@ -109,6 +115,8 @@ def test_direct_pytest_contract_proves_baseline_omission_and_incompleteness(tmp_
         source_commit=source,
         surface_id="unit-py311",
         run_id="run-1",
+        config_sha256=config.config_sha256,
+        extra_environment={"PYTHONPATH": _PYTEST_SITE_PACKAGES},
         timeout=60,
     )
     assert execution_run.returncode == 0
@@ -131,6 +139,8 @@ def test_direct_pytest_contract_proves_baseline_omission_and_incompleteness(tmp_
         source_commit=source,
         surface_id="unit-py311",
         run_id="run-1",
+        config_sha256=config.config_sha256,
+        extra_environment={"PYTHONPATH": _PYTEST_SITE_PACKAGES},
         timeout=60,
     )
     assert omission_run.returncode == 0
@@ -170,6 +180,19 @@ def test_direct_pytest_contract_proves_baseline_omission_and_incompleteness(tmp_
     assert not mismatch.complete
     assert mismatch.outcome == "INCOMPLETE"
     assert "SOURCE_COMMIT_MISMATCH" in mismatch.errors
+
+    wrong_config_payload = json.loads(execution.read_text(encoding="utf-8"))
+    wrong_config_payload["execution_context"]["config_sha256"] = "e" * 64
+    wrong_config = tmp_path / "wrong-config.json"
+    wrong_config.write_text(json.dumps(wrong_config_payload), encoding="utf-8")
+    config_mismatch = analyze_witnesses(
+        manifest_path,
+        (collection_dir / collection_run.fragment_names[0],),
+        (wrong_config,),
+    )
+    assert not config_mismatch.complete
+    assert config_mismatch.outcome == "INCOMPLETE"
+    assert "CONFIG_DIGEST_MISMATCH" in config_mismatch.errors
 
     restored = analyze_witnesses(manifest_path, (collection_dir / collection_run.fragment_names[0],), (execution,))
     assert restored.complete

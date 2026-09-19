@@ -27,6 +27,12 @@ pytest process:
 | `GREENGAP_RUN_ATTEMPT` | run attempt, normally `1` |
 | `GREENGAP_JOB_ID` | optional bounded job label |
 | `GREENGAP_WITNESS_ROLE` | `collection` or `execution` |
+| `GREENGAP_PROVIDER` | explicit provider label such as `github_actions` |
+| `GREENGAP_CONFIG_SHA256` | SHA-256 of the exact `.greengap.yml` bytes |
+
+Full collection also requires `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`. Any project
+plugin needed by the test surface must be loaded explicitly in the visible
+pytest command so entry-point plugins cannot silently change the denominator.
 
 The plugin accepts equivalent command-line options. It does not mirror
 `GITHUB_*`, arbitrary environment variables, node IDs, parameter values,
@@ -60,10 +66,10 @@ binds it to the collection witness.
 
 Install GreenGap in the same target environment as pytest. In development,
 install the exact local wheel produced from this checkout; do not depend on a
-global installation:
+global installation or an unpinned package name:
 
 ```powershell
-python -m pip install greengap
+python -m pip install --force-reinstall --no-deps .\dist\greengap-<exact-version>-py3-none-any.whl
 ```
 
 Run collection once, then run every declared surface with the same run ID.
@@ -76,7 +82,10 @@ $env:GREENGAP_SURFACE_ID = "collection"
 $env:GREENGAP_SOURCE_SHA = (git rev-parse HEAD)
 $env:GREENGAP_RUN_ID = "ci-run-42"
 $env:GREENGAP_RUN_ATTEMPT = "1"
+$env:GREENGAP_PROVIDER = "ci"
+$env:GREENGAP_CONFIG_SHA256 = (Get-FileHash .greengap.yml -Algorithm SHA256).Hash.ToLowerInvariant()
 $env:GREENGAP_WITNESS_ROLE = "collection"
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
 python -m pytest -p greengap.pytest_witness --collect-only --greengap-full-collection
 
 $env:GREENGAP_WITNESS_DIR = "$pwd\evidence\unit-py311"
@@ -107,7 +116,9 @@ pass_env =
     GREENGAP_RUN_ATTEMPT
     GREENGAP_JOB_ID
     GREENGAP_PROVIDER
+    GREENGAP_CONFIG_SHA256
     GREENGAP_WITNESS_ROLE
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD
 commands =
     python -m pytest -p greengap.pytest_witness
 ```
@@ -133,7 +144,10 @@ pass_env =
     GREENGAP_RUN_ID
     GREENGAP_RUN_ATTEMPT
     GREENGAP_JOB_ID
+    GREENGAP_PROVIDER
+    GREENGAP_CONFIG_SHA256
     GREENGAP_WITNESS_ROLE
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD
 commands =
     python -m pytest -p greengap.pytest_witness --collect-only --greengap-full-collection
 ```
@@ -144,7 +158,14 @@ Keep the target dependency set locked and put the plugin in the visible pytest
 command:
 
 ```powershell
+$env:GREENGAP_PROVIDER = "ci"
+$env:GREENGAP_CONFIG_SHA256 = (Get-FileHash .greengap.yml -Algorithm SHA256).Hash.ToLowerInvariant()
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
+$env:GREENGAP_WITNESS_ROLE = "collection"
+$env:GREENGAP_SURFACE_ID = "collection"
 uv run --locked pytest -p greengap.pytest_witness --collect-only --greengap-full-collection
+$env:GREENGAP_WITNESS_ROLE = "execution"
+$env:GREENGAP_SURFACE_ID = "unit-py311"
 uv run --locked pytest -p greengap.pytest_witness
 ```
 
@@ -196,9 +217,9 @@ At the primary file-level boundary:
 
 Incomplete evidence never produces a `NOT_RUN` claim. The analyzer binds
 source SHA/tree, source identity, repository identity, run identity, role,
-surface IDs, session finalization, and the complete manifest before computing
-the difference. Runtime output drift is telemetry; source/configuration
-drift invalidates the witness.
+surface IDs, session finalization, the exact SHA-256 of `.greengap.yml`, and
+the complete manifest before computing the difference. Runtime output drift is
+telemetry; source/configuration drift invalidates the witness.
 
 ## Controlled omission validation
 
@@ -221,9 +242,14 @@ repository.
 The plugin observes target code in the same pytest process; it is not
 anti-malware attestation or a sandbox. It is intended for accidental CI
 omissions in a trusted checkout. JSON fragments are bounded, written with
-temporary-file plus atomic rename, and contain repository-relative paths only.
-Symlink/reparse boundaries, path traversal, oversized inputs, conflicting
-duplicates, source drift, and undeclared surfaces fail closed.
+temporary-file plus atomic rename under a per-output-directory writer lock,
+and contain repository-relative paths only. The command helper forwards only
+the small platform/runtime allowlist plus variables explicitly supplied by the
+caller; it is not a network, credential, or package-supply-chain sandbox.
+CI staging copies only fresh regular `greengap-*.json` files into a dedicated
+evidence root. Symlink/reparse boundaries, path traversal, oversized inputs,
+conflicting duplicates, source/configuration drift, and undeclared surfaces
+fail closed.
 
 The older `greengap witness . --denominator ... --witness ...` node-level
 aggregator remains a compatibility API. New integrations should use the

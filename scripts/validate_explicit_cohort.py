@@ -9,6 +9,7 @@ target.  It intentionally does not inspect or rewrite a target workflow.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -418,6 +419,7 @@ def _run_surface(
     destination: Path,
     adapted_sha: str,
 ) -> dict[str, Any]:
+    config_sha256 = hashlib.sha256((target / ".greengap.yml").read_bytes()).hexdigest()
     result = execute_witness_command(
         target,
         command,
@@ -428,6 +430,11 @@ def _run_surface(
         surface_id="collection" if role == "collection" else case.execution_surface,
         run_id=RUN_ID,
         run_attempt=RUN_ATTEMPT,
+        config_sha256=config_sha256,
+        extra_environment={
+            "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+            "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR", ""),
+        },
         timeout=MAX_COMMAND_SECONDS,
     )
     paths, payloads, errors = _load_fragments(destination)

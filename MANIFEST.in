@@ -9,4 +9,5 @@ include docs/evidence/startup-*.json
 include docs/evidence/docs-validation-*.json
 include docs/evidence/contract-consumer-*.json
 include docs/evidence/demo-transcript-*.txt
-recursive-include examples *.py *.yml *.md
+recursive-include examples *.py *.yml *.yaml *.md *.ini *.toml *.lock
+recursive-include examples .gitignore .greengap.yml
