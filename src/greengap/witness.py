@@ -1177,7 +1177,8 @@ def _witness_output_lock(destination: Path) -> Iterator[None]:
         if os.name == "nt":
             import msvcrt
 
-            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+            lock_api: Any = msvcrt
+            lock_api.locking(descriptor, lock_api.LK_LOCK, 1)
         else:
             import fcntl
             fcntl_api: Any = fcntl
@@ -1190,7 +1191,10 @@ def _witness_output_lock(destination: Path) -> Iterator[None]:
                 import msvcrt
 
                 os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                msvcrt_unlock_api: Any = msvcrt
+                msvcrt_unlock_api.locking(
+                    descriptor, msvcrt_unlock_api.LK_UNLCK, 1
+                )
             else:
                 import fcntl
                 unlock_api: Any = fcntl
@@ -1359,6 +1363,7 @@ def execute_witness_command(
     # silently adding it here.
     _ = collect_only
     actual_command = list(command)
+    timed_out = False
     try:
         completed = run_process_tree(
             actual_command,
@@ -1371,11 +1376,12 @@ def execute_witness_command(
     except subprocess.TimeoutExpired:
         returncode = 124
         error = "COMMAND_TIMEOUT"
+        timed_out = True
     except (OSError, ValueError):
         returncode = 127
         error = "COMMAND_START_FAILED"
     names = tuple(name for name in _fragment_names(destination) if name not in before_names)
-    if not names:
+    if not names or timed_out:
         error = error or "WITNESS_MISSING"
         fallback = _fallback_payload(
             root,
@@ -1393,5 +1399,10 @@ def execute_witness_command(
             diagnostic=error,
         )
         fallback_name = _write_incomplete_fragment(destination, fallback)
-        names = (fallback_name,) if fallback_name is not None else ()
+        if fallback_name is not None:
+            names = tuple(sorted((*names, fallback_name)))
+        elif timed_out:
+            # Never return a potentially complete child fragment as the result
+            # of a timed-out command when the fail-closed marker could not land.
+            names = ()
     return CommandRun(returncode, destination, names, error)

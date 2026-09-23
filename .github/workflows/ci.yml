@@ -75,6 +75,8 @@ jobs:
     name: runtime witness / ubuntu-24.04 / Python 3.11
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -138,68 +140,99 @@ jobs:
           set -euo pipefail
           mkdir -p "${GREENGAP_WITNESS_DIR}"
           timeout --signal=TERM --kill-after=30s 600s python -m pytest -p greengap.pytest_witness
+      - name: Stage the bounded witness evidence
+        if: ${{ always() }}
+        env:
+          WITNESS_COLLECTION_OUTCOME: ${{ steps.witness_collect.outcome }}
+          WITNESS_EXECUTION_OUTCOME: ${{ steps.witness_execute.outcome }}
+        run: |
+          set -euo pipefail
+          witness_root="${RUNNER_TEMP}/greengap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python scripts/witness_artifact.py stage \
+            --source-root "${witness_root}" \
+            --destination-root runtime-witness \
+            --collection-outcome "${WITNESS_COLLECTION_OUTCOME}" \
+            --execution-outcome "${WITNESS_EXECUTION_OUTCOME}"
       - name: Create the declared witness manifest
         if: ${{ always() }}
         run: |
           set -euo pipefail
-          witness_root="${RUNNER_TEMP}/greengap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mapfile -t collection_files < <(find "${witness_root}/collection" -type f -name 'greengap-*.json' -print)
+          mapfile -t collection_files < <(find runtime-witness/collection -maxdepth 1 -type f -name 'greengap-*.json' -print)
           [[ "${#collection_files[@]}" -eq 1 ]]
           python -m greengap witness manifest \
             --collection-witness "${collection_files[0]}" \
             --config .greengap.yml \
-            --output "${witness_root}/manifest.json"
+            --output runtime-witness/manifest.json
+      - name: Record the exact analyzer inputs
+        if: ${{ always() }}
+        run: python scripts/witness_artifact.py inventory --artifact-root runtime-witness
       - name: Analyze the complete witness set
         if: ${{ always() }}
+        env:
+          WITNESS_COLLECTION_OUTCOME: ${{ steps.witness_collect.outcome }}
+          WITNESS_EXECUTION_OUTCOME: ${{ steps.witness_execute.outcome }}
         run: |
+          set -euo pipefail
+          if [[ "${WITNESS_COLLECTION_OUTCOME}" != "success" || "${WITNESS_EXECUTION_OUTCOME}" != "success" ]]; then
+            echo "RUNTIME_WITNESS_COMMAND_OUTCOME_NOT_SUCCESS collection=${WITNESS_COLLECTION_OUTCOME} execution=${WITNESS_EXECUTION_OUTCOME}" >&2
+            exit 2
+          fi
           set +e
-          witness_root="${RUNNER_TEMP}/greengap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           python -m greengap witness analyze \
-            --manifest "${witness_root}/manifest.json" \
-            --collection-witness "${witness_root}/collection" \
-            --execution-witness "${witness_root}/execution" \
-            --json > "${witness_root}/analysis.json"
+            --manifest runtime-witness/manifest.json \
+            --collection-witness runtime-witness/collection \
+            --execution-witness runtime-witness/execution \
+            --json > runtime-witness/analysis.json
           status=$?
           set -e
-          if [[ -f "${witness_root}/analysis.json" ]]; then
-            cat "${witness_root}/analysis.json"
+          if [[ -f runtime-witness/analysis.json ]]; then
+            cat runtime-witness/analysis.json
           fi
           exit "${status}"
       - name: Require a complete, gap-free witness result
         run: |
-          python -c "import json; from pathlib import Path; root=Path(r'${RUNNER_TEMP}') / f'greengap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'; analysis=json.loads((root/'analysis.json').read_text()); assert analysis['complete'] is True and analysis['outcome'] == 'COMPLETE' and not analysis['errors'] and not analysis['not_run_files']; print('RUNTIME_WITNESS_REMOTE_VALIDATION=PASS')"
-      - name: Stage the inert witness evidence
+          python -c "import json; from pathlib import Path; root=Path('runtime-witness'); analysis=json.loads((root/'analysis.json').read_text()); assert analysis['complete'] is True and analysis['outcome'] == 'COMPLETE' and not analysis['errors'] and not analysis['not_run_files']; print('RUNTIME_WITNESS_REMOTE_VALIDATION=PASS')"
+      - name: Seal the analyzed evidence set
+        id: witness_integrity
         if: ${{ always() }}
         run: |
           set -euo pipefail
-          witness_root="${RUNNER_TEMP}/greengap-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          rm -rf runtime-witness
-          mkdir -p runtime-witness/collection runtime-witness/execution
-          copy_fragments() {
-            local source_dir="$1"
-            local destination_dir="$2"
-            [[ -d "${source_dir}" ]] || return 0
-            shopt -s nullglob
-            local fragments=("${source_dir}"/greengap-*.json)
-            for fragment in "${fragments[@]}"; do
-              [[ -f "${fragment}" && ! -L "${fragment}" ]] || { echo "unexpected witness input: ${fragment}" >&2; return 1; }
-              cp -- "${fragment}" "${destination_dir}/"
-            done
-          }
-          copy_fragments "${witness_root}/collection" runtime-witness/collection
-          copy_fragments "${witness_root}/execution" runtime-witness/execution
-          for name in manifest.json analysis.json; do
-            if [[ -f "${witness_root}/${name}" ]]; then cp "${witness_root}/${name}" "runtime-witness/${name}"; fi
-          done
-          find runtime-witness -type f -print
+          digest="$(python scripts/witness_artifact.py seal --artifact-root runtime-witness)"
+          [[ "${digest}" =~ ^[0-9a-f]{64}$ ]]
+          printf 'digest=%s\n' "${digest}" >> "${GITHUB_OUTPUT}"
       - name: Upload the inert witness evidence
+        id: witness_upload
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: runtime-witness-${{ github.run_id }}
+          name: runtime-witness-${{ github.run_id }}-${{ github.run_attempt }}
           path: runtime-witness
           if-no-files-found: error
           retention-days: 7
+          overwrite: false
+      - name: Verify the exact uploaded artifact bytes
+        if: ${{ always() }}
+        env:
+          ARTIFACT_ID: ${{ steps.witness_upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.witness_upload.outputs.artifact-digest }}
+          INTEGRITY_DIGEST: ${{ steps.witness_integrity.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "${ARTIFACT_ID}" =~ ^[0-9]+$ ]]
+          [[ -n "${ARTIFACT_DIGEST}" ]]
+          [[ -n "${INTEGRITY_DIGEST}" ]]
+          umask 077
+          archive="${RUNNER_TEMP}/runtime-witness-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
+          curl --fail --silent --show-error --location \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            --output "${archive}"
+          python scripts/witness_artifact.py verify \
+            --archive "${archive}" \
+            --artifact-digest "${ARTIFACT_DIGEST}" \
+            --integrity-digest "${INTEGRITY_DIGEST}" \
+            --temporary-parent "${RUNNER_TEMP}"
 
   runtime-fixtures:
     name: runtime witness / explicit reference fixtures
