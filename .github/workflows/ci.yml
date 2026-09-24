@@ -77,6 +77,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -210,24 +211,33 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           overwrite: false
-      - name: Verify the exact uploaded artifact bytes
+      - name: Fetch the exact artifact archive through the GitHub API
         if: ${{ always() }}
         env:
           ARTIFACT_ID: ${{ steps.witness_upload.outputs.artifact-id }}
-          ARTIFACT_DIGEST: ${{ steps.witness_upload.outputs.artifact-digest }}
-          INTEGRITY_DIGEST: ${{ steps.witness_integrity.outputs.digest }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [[ "${ARTIFACT_ID}" =~ ^[0-9]+$ ]]
-          [[ -n "${ARTIFACT_DIGEST}" ]]
-          [[ -n "${INTEGRITY_DIGEST}" ]]
           umask 077
           archive="${RUNNER_TEMP}/runtime-witness-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
           curl --fail --silent --show-error --location \
             -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
             --output "${archive}"
+      - name: Verify the exact uploaded artifact bytes
+        if: ${{ always() }}
+        env:
+          ARTIFACT_DIGEST: ${{ steps.witness_upload.outputs.artifact-digest }}
+          INTEGRITY_DIGEST: ${{ steps.witness_integrity.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ -n "${ARTIFACT_DIGEST}" ]]
+          [[ -n "${INTEGRITY_DIGEST}" ]]
+          archive="${RUNNER_TEMP}/runtime-witness-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
+          [[ -f "${archive}" ]]
           python scripts/witness_artifact.py verify \
             --archive "${archive}" \
             --artifact-digest "${ARTIFACT_DIGEST}" \

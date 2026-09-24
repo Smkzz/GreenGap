@@ -14,6 +14,7 @@ collected with files whose ``call`` phase was observed.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import posixpath
@@ -21,6 +22,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import time
 import uuid
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
@@ -57,6 +59,11 @@ _SAFE_TEXT_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,4096}$")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:/")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}/[A-Za-z0-9_.-]{1,128}$")
+_WINDOWS_LOCK_TIMEOUT_SECONDS = 30.0
+_WINDOWS_LOCK_RETRY_SECONDS = 0.01
+_WINDOWS_LOCK_CONTENTION_ERRNOS = frozenset(
+    {errno.EACCES, errno.EAGAIN, getattr(errno, "EDEADLK", 36)}
+)
 
 
 class WitnessError(ValueError):
@@ -1168,6 +1175,7 @@ def _witness_output_lock(destination: Path) -> Iterator[None]:
         os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
         0o600,
     )
+    acquired = False
     try:
         if _has_link_component(lock_path):
             raise OSError("witness lock path crosses a link boundary")
@@ -1177,31 +1185,51 @@ def _witness_output_lock(destination: Path) -> Iterator[None]:
         if os.name == "nt":
             import msvcrt
 
-            lock_api: Any = msvcrt
-            lock_api.locking(descriptor, lock_api.LK_LOCK, 1)
+            _acquire_windows_witness_lock(msvcrt, descriptor)
         else:
             import fcntl
             fcntl_api: Any = fcntl
 
             fcntl_api.flock(descriptor, fcntl_api.LOCK_EX)
+        acquired = True
         yield
     finally:
-        with suppress(OSError):
-            if os.name == "nt":
-                import msvcrt
+        if acquired:
+            with suppress(OSError):
+                if os.name == "nt":
+                    import msvcrt
 
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt_unlock_api: Any = msvcrt
-                msvcrt_unlock_api.locking(
-                    descriptor, msvcrt_unlock_api.LK_UNLCK, 1
-                )
-            else:
-                import fcntl
-                unlock_api: Any = fcntl
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
 
-                unlock_api.flock(descriptor, unlock_api.LOCK_UN)
+                    unlock_api: Any = fcntl
+                    unlock_api.flock(descriptor, unlock_api.LOCK_UN)
         with suppress(OSError):
             os.close(descriptor)
+
+
+def _acquire_windows_witness_lock(
+    lock_api: Any,
+    descriptor: int,
+    *,
+    timeout_seconds: float = _WINDOWS_LOCK_TIMEOUT_SECONDS,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            lock_api.locking(descriptor, lock_api.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno not in _WINDOWS_LOCK_CONTENTION_ERRNOS:
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise OSError(errno.ETIMEDOUT, "timed out acquiring witness output lock") from exc
+            time.sleep(min(_WINDOWS_LOCK_RETRY_SECONDS, remaining))
+        else:
+            return
 
 
 def _atomic_write_fragment(destination: Path, final: Path, encoded: bytes) -> str | None:

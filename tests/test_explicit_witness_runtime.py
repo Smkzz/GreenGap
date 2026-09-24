@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import subprocess
 import sys
@@ -311,3 +312,36 @@ def test_concurrent_fragment_publication_keeps_each_complete_file(tmp_path: Path
         if name is not None
     }
     assert values == expected
+
+
+def test_windows_output_lock_retries_transient_contention(monkeypatch: pytest.MonkeyPatch) -> None:
+    class ContendedLock:
+        LK_NBLCK = 1
+
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def locking(self, _descriptor: int, _mode: int, _length: int) -> None:
+            self.attempts += 1
+            if self.attempts <= 12:
+                raise OSError(errno.EDEADLK, "lock is held")
+
+    lock_api = ContendedLock()
+    monkeypatch.setattr(witness_module.time, "sleep", lambda _seconds: None)
+
+    witness_module._acquire_windows_witness_lock(lock_api, 0)
+
+    assert lock_api.attempts == 13
+
+
+def test_windows_output_lock_times_out_after_persistent_contention() -> None:
+    class ContendedLock:
+        LK_NBLCK = 1
+
+        def locking(self, _descriptor: int, _mode: int, _length: int) -> None:
+            raise OSError(errno.EACCES, "lock is held")
+
+    with pytest.raises(OSError) as error:
+        witness_module._acquire_windows_witness_lock(ContendedLock(), 0, timeout_seconds=0)
+
+    assert error.value.errno == errno.ETIMEDOUT

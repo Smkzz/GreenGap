@@ -203,7 +203,36 @@ def _git_value(root: Path, expression: str) -> str:
 
 
 def _copy_ignore(_directory: str, names: list[str]) -> list[str]:
-    return [name for name in names if name in IGNORED_COPY_NAMES or name.startswith(".pytest-")]
+    return [name for name in names if _copy_ignored_component(name)]
+
+
+def _copy_ignored_component(name: str) -> bool:
+    return name in IGNORED_COPY_NAMES or name.startswith(".pytest-")
+
+
+def _require_clean_source_checkout(source: Path) -> None:
+    status = _git(source, ("status", "--porcelain=v1", "--untracked-files=all"))
+    if status.returncode != 0:
+        raise CohortValidationError("SOURCE_CHECKOUT_STATUS_UNAVAILABLE")
+    if status.stdout.strip():
+        raise CohortValidationError("SOURCE_CHECKOUT_DIRTY")
+
+    # copytree does not apply .gitignore rules. Reject ignored, untracked files
+    # that it would copy, while allowing only paths removed by _copy_ignore.
+    ignored = _git(
+        source,
+        ("ls-files", "--others", "--ignored", "--exclude-standard", "-z"),
+    )
+    if ignored.returncode != 0:
+        raise CohortValidationError("SOURCE_CHECKOUT_STATUS_UNAVAILABLE")
+    copied_ignored = [
+        path
+        for path in ignored.stdout.split("\0")
+        if path
+        and not any(_copy_ignored_component(part) for part in path.split("/"))
+    ]
+    if copied_ignored:
+        raise CohortValidationError("SOURCE_CHECKOUT_DIRTY")
 
 
 def _write_text(path: Path, value: str) -> None:
@@ -279,7 +308,9 @@ def _initialize_target(source: Path, target: Path, case: CohortCase) -> tuple[st
         raise CohortValidationError(
             f"UPSTREAM_DRIFT:{original_sha.lower()}:{case.upstream_sha}"
         )
+    _require_clean_source_checkout(source)
     shutil.copytree(source, target, ignore=_copy_ignore)
+    _require_clean_source_checkout(source)
     _write_text(target / ".greengap.yml", _surface_config(case))
     _write_text(target / ".greengap-pytest.ini", _pytest_config(case))
     changed = [".greengap.yml", ".greengap-pytest.ini"]
@@ -520,6 +551,7 @@ def _run_case(
         "mode": case.mode,
         "focus_paths": list(case.focus_paths),
         "status": "FAIL",
+        "upstream_checkout_clean": False,
         "useful_determination": False,
         "omission_detected": False,
         "restored_baseline_verified": False,
@@ -531,6 +563,7 @@ def _run_case(
             target,
             case,
         )
+        receipt["upstream_checkout_clean"] = True
         config = load_explicit_witness_config(target / ".greengap.yml")
         if config.collection_surface_id != "collection":
             raise CohortValidationError("COLLECTION_SURFACE_BINDING_INVALID")
