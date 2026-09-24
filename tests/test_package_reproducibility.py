@@ -5,6 +5,8 @@ import csv
 import hashlib
 import io
 import stat
+import subprocess
+import sys
 import zipfile
 from email.parser import BytesParser
 from email.policy import default
@@ -285,3 +287,37 @@ def test_wheel_normalization_rejects_symlink_members(
     with pytest.raises(ValueError, match="symlink member"):
         normalize_wheel_archive(wheel_path)
     assert wheel_path.read_bytes() == original
+
+
+def test_pure_packaging_helpers_import_without_setuptools() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    script = "\n".join(
+        [
+            "import importlib.abc",
+            "import sys",
+            "",
+            "sys.path.insert(0, sys.argv[1])",
+            "",
+            "class BlockSetuptools(importlib.abc.MetaPathFinder):",
+            "    def find_spec(self, fullname, path=None, target=None):",
+            '        if fullname == "setuptools" or fullname.startswith("setuptools."):',
+            '            raise ModuleNotFoundError("No module named \'setuptools\'", name="setuptools")',
+            "        return None",
+            "",
+            "sys.meta_path.insert(0, BlockSetuptools())",
+            "",
+            "from scripts.reproducible_packaging import normalize_generated_text",
+            "",
+            'assert normalize_generated_text(b"Name: GreenGap\\r\\n\\r\\n", "PKG-INFO") == b"Name: GreenGap\\n\\n"',
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(project_root)],
+        cwd=project_root,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
