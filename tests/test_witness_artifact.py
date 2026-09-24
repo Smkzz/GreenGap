@@ -369,4 +369,9 @@ def test_ci_stages_then_analyzes_seals_uploads_and_reads_back() -> None:
     assert "  consume:\n" in transport
     assert "    needs: produce\n" in transport
     assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in transport
+    download_start = transport.index("      - name: Download the exact producer artifact by ID")
+    verify_start = transport.index("      - name: Verify byte identity, package metadata, and source binding")
+    download_step = transport[download_start:verify_start]
+    assert "artifact-ids: ${{ needs.produce.outputs.artifact_id }}" in download_step
+    assert "merge-multiple: true" in download_step
     assert "--expected-manifest-json" in transport
