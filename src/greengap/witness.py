@@ -1200,7 +1200,8 @@ def _witness_output_lock(destination: Path) -> Iterator[None]:
                     import msvcrt
 
                     os.lseek(descriptor, 0, os.SEEK_SET)
-                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                    msvcrt_api: Any = msvcrt
+                    msvcrt_api.locking(descriptor, msvcrt_api.LK_UNLCK, 1)
                 else:
                     import fcntl
 
