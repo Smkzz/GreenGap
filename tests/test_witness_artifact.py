@@ -341,15 +341,32 @@ def test_ci_stages_then_analyzes_seals_uploads_and_reads_back() -> None:
     assert stage < inventory < analyze < seal < upload < readback
     assert "runtime-witness-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "overwrite: false" in workflow
-    verify_step = workflow[workflow.rindex("- name: Verify the exact uploaded artifact bytes") :]
+    fetch_start = runtime_job.index(
+        "- name: Fetch the exact artifact archive through the GitHub API"
+    )
+    verify_start = runtime_job.index("- name: Verify the exact uploaded artifact bytes")
+    fetch_step = runtime_job[fetch_start:verify_start]
+    verify_step = runtime_job[verify_start:]
+    assert "actions: read" in runtime_job
+    assert "if: ${{ always() }}" in fetch_step
+    assert 'ARTIFACT_ID: ${{ steps.witness_upload.outputs.artifact-id }}' in fetch_step
+    assert 'GITHUB_TOKEN: ${{ github.token }}' in fetch_step
+    assert '[[ "${ARTIFACT_ID}" =~ ^[0-9]+$ ]]' in fetch_step
+    assert "Authorization: Bearer ${GITHUB_TOKEN}" in fetch_step
+    assert "X-GitHub-Api-Version: 2026-03-10" in fetch_step
     assert "if: ${{ always() }}" in verify_step
-    assert '[[ "${ARTIFACT_ID}" =~ ^[0-9]+$ ]]' in verify_step
     assert '[[ -n "${ARTIFACT_DIGEST}" ]]' in verify_step
     assert '[[ -n "${INTEGRITY_DIGEST}" ]]' in verify_step
-    assert "GH_TOKEN" not in verify_step and "Authorization: Bearer" not in verify_step
-    assert "X-GitHub-Api-Version: 2026-03-10" in verify_step
+    assert "GITHUB_TOKEN" not in verify_step and "Authorization: Bearer" not in verify_step
+    assert '[[ -f "${archive}" ]]' in verify_step
     assert "steps.witness_collect.outcome" in workflow
     assert "steps.witness_execute.outcome" in workflow
     assert '"${WITNESS_COLLECTION_OUTCOME}" != "success"' in workflow
     assert '"${WITNESS_EXECUTION_OUTCOME}" != "success"' in workflow
     assert "persist-credentials: false" in runtime_job
+
+    transport = Path(".github/workflows/artifact-transport.yml").read_text(encoding="utf-8")
+    assert "  consume:\n" in transport
+    assert "    needs: produce\n" in transport
+    assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in transport
+    assert "--expected-manifest-json" in transport
