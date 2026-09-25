@@ -384,8 +384,12 @@ def test_package_transport_rejects_renamed_distribution(tmp_path: Path) -> None:
 
 def test_package_transport_rejects_hash_mismatch(tmp_path: Path) -> None:
     directory, manifest_json, source_sha, source_tree, repo_root = _payload(tmp_path / "payload")
-    source_map = package_transport._source_map_from_git_objects(repo_root, source_sha, source_tree)
-    _write_wheel(directory / WHEEL_NAME, source_map=source_map, comment=b"B")
+    manifest = json.loads(manifest_json)
+    wheel_entry = next(entry for entry in manifest["files"] if entry["name"] == WHEEL_NAME)
+    real_sha256 = wheel_entry["sha256"]
+    wheel_entry["sha256"] = ("0" if real_sha256[0] != "0" else "1") + real_sha256[1:]
+    manifest_json = _canonical_json(manifest).decode("utf-8")
+    (directory / MANIFEST_NAME).write_bytes(_canonical_json(manifest))
 
     with pytest.raises(PackageTransportError, match=f"HASH_MISMATCH:{WHEEL_NAME}"):
         verify_payload(directory, manifest_json, source_sha, source_tree, repo_root)
