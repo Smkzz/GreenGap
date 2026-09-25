@@ -36,17 +36,18 @@ jobs:
         id: source
         run: |
           set -euo pipefail
-          source_sha="$(git rev-parse HEAD)"
-          source_tree="$(git rev-parse 'HEAD^{tree}')"
-          [[ "${source_sha}" == "${GITHUB_SHA}" ]]
-          [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${source_tree}" =~ ^[0-9a-f]{40}$ ]]
-          echo "sha=${source_sha}" >> "${GITHUB_OUTPUT}"
-          echo "tree=${source_tree}" >> "${GITHUB_OUTPUT}"
+          expected_source_sha="${GITHUB_SHA}"
+          expected_source_tree="$(git rev-parse --verify "${GITHUB_SHA}^{tree}")"
+          [[ "$(git rev-parse --verify HEAD)" == "${expected_source_sha}" ]]
+          [[ "${expected_source_sha}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${expected_source_tree}" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=${expected_source_sha}" >> "${GITHUB_OUTPUT}"
+          echo "tree=${expected_source_tree}" >> "${GITHUB_OUTPUT}"
       - name: Build and inspect exact package distributions
         env:
-          SOURCE_SHA: ${{ steps.source.outputs.sha }}
-          SOURCE_TREE: ${{ steps.source.outputs.tree }}
+          EXPECTED_SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          EXPECTED_SOURCE_TREE: ${{ steps.source.outputs.tree }}
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -euo pipefail
           python -m pip install --require-hashes -r .github/requirements-package.txt
@@ -54,8 +55,9 @@ jobs:
           python -m twine check dist/*
           manifest="$(python scripts/package_transport.py create \
             --dist-dir dist \
-            --source-sha "${SOURCE_SHA}" \
-            --source-tree "${SOURCE_TREE}")"
+            --repo-root . \
+            --expected-source-sha "${EXPECTED_SOURCE_SHA}" \
+            --expected-source-tree "${EXPECTED_SOURCE_TREE}")"
           printf 'payload=%s\n' "${manifest}" >> "${GITHUB_OUTPUT}"
         id: manifest
       - name: Upload the declared package payload

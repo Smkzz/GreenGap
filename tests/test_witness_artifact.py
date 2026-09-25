@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+import yaml
 from scripts import witness_artifact
 
 from greengap.witness import create_manifest
@@ -366,12 +367,26 @@ def test_ci_stages_then_analyzes_seals_uploads_and_reads_back() -> None:
     assert "persist-credentials: false" in runtime_job
 
     transport = Path(".github/workflows/artifact-transport.yml").read_text(encoding="utf-8")
+    transport_document = yaml.safe_load(transport)
+    assert isinstance(transport_document, dict) and "jobs" in transport_document
     assert "  consume:\n" in transport
     assert "    needs: produce\n" in transport
     assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in transport
+    producer = transport[transport.index("  produce:"):transport.index("  consume:")]
+    assert 'expected_source_sha="${GITHUB_SHA}"' in producer
+    assert 'PYTHONDONTWRITEBYTECODE: "1"' in producer
+    assert "--repo-root ." in producer
+    assert "--expected-source-sha" in producer
+    assert "--expected-source-tree" in producer
     download_start = transport.index("      - name: Download the exact producer artifact by ID")
     verify_start = transport.index("      - name: Verify byte identity, package metadata, and source binding")
     download_step = transport[download_start:verify_start]
     assert "artifact-ids: ${{ needs.produce.outputs.artifact_id }}" in download_step
     assert "merge-multiple: true" in download_step
     assert "--expected-manifest-json" in transport
+    consumer = transport[transport.index("  consume:"):]
+    assert "ref: ${{ github.sha }}" in consumer
+    assert 'source_sha="$(git rev-parse HEAD)"' in consumer
+    assert "source_tree=\"$(git rev-parse 'HEAD^{tree}')\"" in consumer
+    assert '--source-sha "${source_sha}"' in consumer
+    assert '--source-tree "${source_tree}"' in consumer
