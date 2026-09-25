@@ -90,7 +90,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.produce.outputs.artifact_id }}
           merge-multiple: true
-          path: downloaded-package
+          path: dist
       - name: Verify byte identity, package metadata, and source binding
         env:
           EXPECTED_MANIFEST: ${{ needs.produce.outputs.manifest }}
@@ -105,7 +105,8 @@ jobs:
           source_tree="$(git rev-parse 'HEAD^{tree}')"
           [[ "${source_sha}" == "${EXPECTED_SOURCE_SHA}" ]]
           python scripts/package_transport.py verify \
-            --artifact-dir downloaded-package \
+            --artifact-dir dist \
+            --repo-root . \
             --expected-manifest-json "${EXPECTED_MANIFEST}" \
             --source-sha "${source_sha}" \
             --source-tree "${source_tree}"
