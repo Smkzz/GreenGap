@@ -260,7 +260,6 @@ def _collection_is_unfiltered(config: Any, errors: list[str]) -> bool:
         "stepwise",
         "stepwise_skip",
         "cache_show",
-        "override_ini",
         "confcutdir",
         "noconftest",
         "keepduplicates",
@@ -314,8 +313,14 @@ def _collection_is_unfiltered(config: Any, errors: list[str]) -> bool:
         "--doctest-glob",
         "--import-mode",
     }
+    # pytest may populate ``option.override_ini`` while translating ordinary
+    # strictness addopts such as ``--strict-config``.  The actual override
+    # arguments are checked below, so the parsed value alone is not evidence
+    # that collection was restricted.
     if any(
-        token in selector_tokens or any(token.startswith(f"{prefix}=") for prefix in selector_tokens)
+        token in selector_tokens
+        or (token.startswith("-o") and not token.startswith("--"))
+        or any(token.startswith(f"{prefix}=") for prefix in selector_tokens)
         for token in (*invocation_args, *configured_addopts)
     ):
         errors.append("COLLECTION_SELECTOR_PRESENT")

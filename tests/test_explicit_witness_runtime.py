@@ -221,6 +221,124 @@ def test_direct_pytest_contract_proves_baseline_omission_and_incompleteness(tmp_
     assert restored.outcome == "COMPLETE"
 
 
+def test_full_collection_accepts_pytest_strict_options_in_addopts(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text(
+        "collection-witness/\n*.pyc\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\n"
+        "testpaths = tests\n"
+        "addopts = --strict-markers --strict-config\n",
+        encoding="utf-8",
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_a.py").write_text("def test_a():\n    assert True\n", encoding="utf-8")
+    source = _git_commit(tmp_path)
+
+    collection_dir = tmp_path / "collection-witness"
+    result = execute_witness_command(
+        tmp_path,
+        _command(role="collection", surface="collection", source=source),
+        role="collection",
+        output_dir=str(collection_dir),
+        source_commit=source,
+        surface_id="collection",
+        run_id="strict-addopts",
+        config_sha256=None,
+        extra_environment={"PYTHONPATH": _PYTEST_SITE_PACKAGES},
+        timeout=60,
+    )
+
+    assert result.returncode == 0
+    witness = load_witness(collection_dir / result.fragment_names[0])
+    assert witness["complete"] is True
+    assert witness["collection"]["complete"] is True
+    assert "COLLECTION_SELECTOR_PRESENT" not in witness["diagnostics"]
+
+
+def test_full_collection_still_rejects_configured_keyword_selector(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text(
+        "collection-witness/\n*.pyc\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\n"
+        "testpaths = tests\n"
+        "addopts = --strict-markers --strict-config -k test_a\n",
+        encoding="utf-8",
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_a.py").write_text("def test_a():\n    assert True\n", encoding="utf-8")
+    (tests / "test_b.py").write_text("def test_b():\n    assert True\n", encoding="utf-8")
+    source = _git_commit(tmp_path)
+
+    collection_dir = tmp_path / "collection-witness"
+    result = execute_witness_command(
+        tmp_path,
+        _command(role="collection", surface="collection", source=source),
+        role="collection",
+        output_dir=str(collection_dir),
+        source_commit=source,
+        surface_id="collection",
+        run_id="selector-addopts",
+        config_sha256=None,
+        extra_environment={"PYTHONPATH": _PYTEST_SITE_PACKAGES},
+        timeout=60,
+    )
+
+    assert result.returncode == 0
+    witness = load_witness(collection_dir / result.fragment_names[0])
+    assert witness["complete"] is False
+    assert witness["collection"]["complete"] is False
+    assert "COLLECTION_SELECTOR_PRESENT" in witness["diagnostics"]
+
+
+def test_full_collection_rejects_attached_configured_override_ini_selector(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".gitignore").write_text(
+        "collection-witness/\n*.pyc\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\n"
+        "testpaths = tests\n"
+        "addopts = --strict-markers --strict-config -otestpaths=tests/selected\n",
+        encoding="utf-8",
+    )
+    tests = tmp_path / "tests"
+    selected = tests / "selected"
+    omitted = tests / "omitted"
+    selected.mkdir(parents=True)
+    omitted.mkdir(parents=True)
+    (selected / "test_a.py").write_text("def test_a():\n    assert True\n", encoding="utf-8")
+    (omitted / "test_b.py").write_text("def test_b():\n    assert True\n", encoding="utf-8")
+    source = _git_commit(tmp_path)
+
+    collection_dir = tmp_path / "collection-witness"
+    result = execute_witness_command(
+        tmp_path,
+        _command(role="collection", surface="collection", source=source),
+        role="collection",
+        output_dir=str(collection_dir),
+        source_commit=source,
+        surface_id="collection",
+        run_id="attached-override-ini-selector",
+        config_sha256=None,
+        extra_environment={"PYTHONPATH": _PYTEST_SITE_PACKAGES},
+        timeout=60,
+    )
+
+    assert result.returncode == 0
+    witness = load_witness(collection_dir / result.fragment_names[0])
+    assert witness["complete"] is False
+    assert witness["collection"]["complete"] is False
+    assert "COLLECTION_SELECTOR_PRESENT" in witness["diagnostics"]
+
+
 def test_timeout_after_a_complete_pytest_fragment_still_blocks_analysis(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
