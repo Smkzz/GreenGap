@@ -233,12 +233,13 @@ target repository itself.
 ## Performance
 
 The reconciliation layer is designed to remain inexpensive relative to pytest collection
-and CI parsing. On the final archival qualification machine:
+and CI parsing. On the final local archival qualification machine, five consecutive runs
+produced these median reconciliation times:
 
-| Candidate set | Reconciliation test time |
+| Candidate set | Median of 5 runs |
 | ---: | ---: |
-| 10,000 | 0.06 s |
-| 50,000 | 0.41 s |
+| 10,000 | 0.059 s |
+| 50,000 | 0.343 s |
 
 These are reference measurements, not hardware-independent guarantees. The repository
 retains a regression gate requiring the 50,000-candidate case to complete in under
