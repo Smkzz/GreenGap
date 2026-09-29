@@ -1,138 +1,322 @@
 # GreenGap
 
-Find what your green CI never ran.
+> **Archived project — final release: v0.1.4 (2026-09-29).**
+>
+> GreenGap is no longer under active development. This repository remains public as a
+> read-only historical snapshot of the final Plan-mode implementation and its verification
+> evidence. The broader GreenGap 1.0 runtime-witness direction was not promoted. The focused
+> runtime completion-proof mechanism continued separately as
+> [pytest-run-witness](https://github.com/Smkzz/pytest-run-witness); it is complementary,
+> not a drop-in replacement for GreenGap's static Plan analysis.
 
-Green CI does not prove that every test in a repository ran. A test can be
-present in source, absent from pytest collection, or collected but omitted by
-the actual CI command. GreenGap keeps those surfaces separate and compares
-them without turning missing evidence into a confident accusation.
+**Find what your green CI never ran.**
 
-## What it checks
+A green CI job proves that the command it executed returned successfully. It does **not**
+by itself prove that every relevant test file was collected or that every collected test
+was included in the CI command. GreenGap separates those evidence surfaces and refuses to
+turn missing information into a confident accusation.
 
-The first release is a local, read-only Plan-mode analyzer for GitHub Actions
-and pytest:
+## What GreenGap checks
+
+GreenGap v0.1.4 is a local, read-only Plan-mode analyzer for **pytest + GitHub Actions**:
 
 ```text
-repository source candidates  ->  pytest collection  ->  CI pytest plan
+repository test candidates
+          |
+          v
+real pytest collection
+          |
+          v
+GitHub Actions pytest plan
+          |
+          +--> PLANNED
+          +--> NOT_PLANNED
+          +--> UNKNOWN / UNREGISTERED when proof is incomplete
 ```
 
-For example, a repository may contain:
+Example:
 
 ```text
 tests/unit/test_fast.py
 tests/integration/test_database.py
 ```
 
-while CI runs:
+with CI:
 
 ```yaml
-run: pytest tests/unit
+- run: pytest tests/unit
 ```
 
-The normal CI status can still be green. GreenGap reports
-`test_database.py` as `NOT_PLANNED` when collection and the selection model
-are complete enough to prove that result.
+can still be green. When GreenGap has enough evidence to prove the omission, it reports
+`tests/integration/test_database.py` as `NOT_PLANNED`. If a dynamic workflow boundary
+prevents proof, GreenGap reports `UNKNOWN` instead.
 
-```powershell
+That fail-closed distinction is the core design goal.
+
+## Final-release quickstart
+
+The archived repository is the canonical distribution source. To reproduce the final
+release:
+
+```console
+git clone https://github.com/Smkzz/GreenGap.git
+cd GreenGap
+git checkout v0.1.4
+
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# Linux/macOS: source .venv/bin/activate
+
 python -m pip install .
+greengap --version
 greengap scan .
 greengap plan .
-greengap plan . --json
-greengap plan . --changed-file src/greengap/trace.py
-greengap plan . --event pull_request --base-ref main --changed-file src/greengap/trace.py
 ```
 
-When a workflow uses `paths` or `paths-ignore`, supply the actual changed-file
-set with one or more `--changed-file` options. Without that binding GreenGap
-records the workflow scope as `UNKNOWN`; it never infers a change set and never
-turns incomplete evidence into `NOT_PLANNED`.
+For machine-readable output:
 
-When a workflow uses event, branch, tag, or path filters, bind the actual event
-context as well. Use `--event push --ref main` for a push, or
-`--event pull_request --base-ref main` for a pull request. GreenGap records
-`UNKNOWN` when a filtered workflow cannot be evaluated without that context.
+```console
+greengap scan . --json
+greengap plan . --json
+```
 
-`greengap plan` exits with:
+The [v0.1.4 release](https://github.com/Smkzz/GreenGap/releases/tag/v0.1.4)
+also contains the final wheel/sdist, checksums, SBOM, provenance manifest, and GitHub
+build-provenance attestations.
 
-* `0` when analysis is complete and there are no blocking findings;
-* `1` when one or more proven `NOT_PLANNED` files are found;
-* `2` when evidence is incomplete, the workspace changed, or the collection
-  environment is invalid.
+## Commands
 
-`UNKNOWN` never blocks. `UNREGISTERED` is initially non-blocking because it
-means a high-confidence source candidate was absent from completed pytest
-collection; it is not proof that the test cannot run.
+### `greengap scan`
 
-The model also contains `PLANNED`, `NOT_SEEN`, `SKIPPED`, `EXECUTED_PASS`, and
-`EXECUTED_FAIL` for future witness adapters. `greengap verify` can parse common
-JUnit evidence as groundwork, but it always says:
+Inventory high-confidence pytest source candidates and compare them with a real pytest
+collection:
+
+```text
+greengap scan [--json] [--timeout SECONDS] [REPO]
+```
+
+GreenGap runs the target repository's real pytest collection. This imports repository
+Python code; see [Trust and security boundary](#trust-and-security-boundary).
+
+### `greengap plan`
+
+Reconcile collection against the GitHub Actions test plan:
+
+```text
+greengap plan [--json] [--timeout SECONDS] [REPO]
+              [--event EVENT] [--ref REF] [--base-ref BASE_REF]
+              [--activity ACTIVITY]
+              [--changed-file PATH ...] [--change-set-complete]
+              [--commit-count N] [--changed-file-count N] [--diff-timed-out]
+```
+
+When a workflow uses `paths`, `paths-ignore`, branch/tag filters, event activity
+filters, or other context-dependent selectors, provide the corresponding event/change-set
+facts. GreenGap does not invent missing GitHub context.
+
+Typical pull-request binding:
+
+```console
+greengap plan . \
+  --event pull_request \
+  --base-ref main \
+  --changed-file src/example.py \
+  --change-set-complete
+```
+
+### `greengap verify`
+
+Parse common JUnit XML evidence without claiming cross-runner identity certification:
+
+```text
+greengap verify [--junitxml PATH] [--json] [--timeout SECONDS] [REPO]
+```
+
+The verifier deliberately reports:
 
 ```text
 identity reconciliation: NOT_CERTIFIED
 ```
 
-JUnit names are not a universal identity standard, so v0.1 does not claim
-that a runtime testcase is the same object as a pytest collection node.
+JUnit testcase names are not a universal identity standard. GreenGap therefore does not
+claim that a JUnit testcase is the same object as a pytest collection node.
 
-## Why this is different
+## Exit behavior
 
-Code coverage and JUnit dashboards describe code or tests that executed. Flaky
-test analytics describe observed failures and timing. Generic CI linters can
-check workflow syntax. GreenGap establishes an independent denominator from
-repository candidates and real pytest collection, then traces the selection
-commands that CI plans to run. It does not guarantee that every test executes.
+`greengap plan` uses stable process outcomes:
 
-The resolver follows a deliberately small, deterministic subset of GitHub
-Actions paths including direct pytest, Python and coverage wrappers, explicitly
-invoked local shell scripts, Make targets, npm/pnpm/yarn scripts, local
-composite actions, local reusable workflows, uv wrappers, tox configurations,
-and static matrix rows. Unsupported selectors, conditions, shell control flow,
-unknown executables, external test actions, or dynamic command boundaries
-become `UNKNOWN`; an unrecognized command is never silently treated as “no
-tests.” Commands without an explicit shell are accepted only in a tiny
-runner-neutral grammar (portable whitespace-separated arguments); shell
-operators, quoting, variables, assignments, globbing, substitutions, and
-runner-native separators become `UNKNOWN`. Explicitly declared canonical Bash
-and PowerShell shells have their own bounded parsers, but shell identity never
-establishes filesystem case or path-separator semantics.
+| Exit | Meaning |
+| ---: | --- |
+| `0` | Analysis is complete enough and no blocking `NOT_PLANNED` finding exists |
+| `1` | One or more `NOT_PLANNED` findings are proven |
+| `2` | Evidence is incomplete, unsafe, changed during analysis, or otherwise cannot support a proof |
 
-Current supported scope is GitHub Actions plus pytest in Plan mode. `runs-on`
-is treated as routing metadata only: it does not attest runner ownership,
-operating system, filesystem case policy, default shell, or ambient executable
-contents. Static Plan proof is therefore limited to exact, portable
-repository-relative paths and runner-neutral command semantics. A future
-runtime witness may bind runner-specific facts; without one, those paths and
-commands remain `UNKNOWN`. Go,
-Vitest/Jest, Cargo/nextest, Gradle/JUnit, CTest, TAP/prove, and runtime
-capability witnesses are roadmap items, not supported v0.1 adapters.
+`UNKNOWN` does **not** become `NOT_PLANNED`. `UNREGISTERED` is also non-blocking:
+it means a high-confidence source candidate was absent from completed pytest collection,
+which is not proof that the test can never run.
 
-## Trust and safety model
+## Supported Plan-mode surface
 
-GreenGap does not execute workflow commands, shell scripts, Make recipes, npm
-scripts, or tox commands while tracing them. It only reads and statically
-resolves those files. It does execute the repository's real pytest collection
-command (`python -m pytest --collect-only -q`). Pytest collection imports and
-executes repository Python code and is **not a security sandbox**. Run GreenGap
-inside an appropriate sandbox when analyzing an untrusted repository.
+The final resolver supports a deliberately bounded subset of GitHub Actions and common
+pytest launch paths, including:
 
-Workspace evidence is bound to a SHA-256 fingerprint over relevant tracked and
-non-ignored files, including their paths and bytes. Symlinks are represented by
-their link text rather than followed, repository paths are containment-checked,
-and file/count/total-byte budgets turn oversized or unsafe input into incomplete
-evidence. The fingerprint is checked before and after analysis; a changed
-workspace invalidates the result.
+- direct pytest commands and Python/coverage wrappers;
+- explicitly invoked repository-local shell scripts;
+- Make targets;
+- npm, pnpm, and yarn scripts;
+- local composite actions and local reusable workflows;
+- uv and tox wrappers/configurations;
+- static matrix rows;
+- canonical Bash and PowerShell command forms;
+- GitHub event, branch/tag, activity, and path-filter context when explicitly bound.
 
-## Development
+Unsupported or dynamic boundaries fail closed to `UNKNOWN`. Examples include selectors
+whose values cannot be resolved statically, unknown executables, external test actions,
+unsupported shell control flow, ambiguous runner-specific path semantics, and incomplete
+change-set context.
 
-```powershell
+GreenGap treats `runs-on` as routing metadata. It does not infer runner ownership,
+ambient tools, default shell behavior, filesystem case policy, or other machine facts from
+that field alone.
+
+## What GreenGap does **not** prove
+
+GreenGap is intentionally narrow. It does not:
+
+- prove that every CI matrix job or shard actually executed;
+- prove runtime completion of every collected test;
+- provide a security sandbox for untrusted repositories;
+- execute arbitrary workflow commands while tracing them;
+- support Go, Vitest/Jest, Cargo/nextest, Gradle/JUnit, CTest, TAP/prove, or other
+  ecosystems as certified adapters;
+- convert incomplete static evidence into a blocking finding.
+
+For runtime evidence that every collected pytest item reached a terminal outcome, see
+[pytest-run-witness](https://github.com/Smkzz/pytest-run-witness).
+
+## Trust and security boundary
+
+GreenGap statically reads workflow-related repository files. It does **not** execute shell
+scripts, Make recipes, npm scripts, tox commands, or workflow steps while tracing them.
+
+It **does** execute the repository's real pytest collection command
+(`python -m pytest --collect-only -q`). Pytest collection imports and executes repository
+Python code. Analyze untrusted repositories only inside an isolation boundary with the
+permissions and network access you are willing to grant them.
+
+Additional final-release safeguards include:
+
+- repository-relative containment checks;
+- symlinks represented by link text instead of followed during workspace evidence binding;
+- bounded file/count/byte inputs;
+- pre/post workspace SHA-256 fingerprint checks;
+- fail-closed parsing and reconciliation;
+- entity-safe JUnit XML parsing via `defusedxml`;
+- subprocess execution through argument vectors, not shell interpolation;
+- hash-locked CI dependency sets;
+- full-commit-SHA GitHub Actions references and repository-level SHA-pin enforcement;
+- GitHub secret scanning + push protection;
+- CodeQL, dependency review, dependency audit, and ClusterFuzzLite workflows.
+
+See [SECURITY.md](SECURITY.md) for the archived security policy.
+
+## Workspace evidence
+
+GreenGap binds analysis to a SHA-256 fingerprint over relevant tracked and non-ignored
+workspace paths and bytes. The snapshot is checked before and after analysis; a workspace
+change invalidates the result instead of silently reusing stale evidence.
+
+GreenGap does not reserve project-specific directory names. Ordinary repository content
+is included unless it is a conventional transient/build/cache path or is ignored by the
+target repository itself.
+
+## Performance
+
+The reconciliation layer is designed to remain inexpensive relative to pytest collection
+and CI parsing. On the final archival qualification machine:
+
+| Candidate set | Reconciliation test time |
+| ---: | ---: |
+| 10,000 | 0.06 s |
+| 50,000 | 0.41 s |
+
+These are reference measurements, not hardware-independent guarantees. The repository
+retains a regression gate requiring the 50,000-candidate case to complete in under
+10 seconds.
+
+## Final qualification evidence
+
+The v0.1.4 archival candidate is validated with:
+
+- **439 passing tests** plus one platform-specific case-collision skip on Windows;
+- Python **3.11–3.14** CI lanes;
+- Linux and Windows CI;
+- minimum and latest dependency lanes;
+- Ruff;
+- strict mypy across all source modules;
+- bytecode compilation;
+- wheel + sdist build and install checks;
+- `pip-audit` dependency scanning;
+- CodeQL;
+- dependency review;
+- ClusterFuzzLite;
+- OpenSSF Scorecard evidence;
+- full-history secret scanning;
+- SBOM, SHA-256 checksums, provenance manifest, and build-provenance attestations for
+  release artifacts.
+
+The final audit also removed one-off release-qualification machinery that was not part of
+the shipped analyzer and fixed a historical internal-path exclusion that could have hidden
+legitimate target-project files named like GreenGap's former qualification directories.
+
+## Repository layout
+
+```text
+src/greengap/        shipped analyzer
+tests/               product and adversarial regression suite
+fuzz_targets/        parser fuzz targets
+.clusterfuzzlite/    fuzzing configuration
+.github/workflows/   reproducible CI/security/release evidence
+scripts/             release-provenance utility
+```
+
+Historical release-only qualification runners that did not belong to the product have
+been removed from the final tree.
+
+## Project status and history
+
+GreenGap was an experiment in proving gaps between repository test candidates, real pytest
+collection, and static CI planning. The v0.1.x line established a conservative Plan-mode
+boundary with extensive adversarial regression coverage.
+
+A broader 1.0 runtime-witness direction was explored but **not promoted as GreenGap 1.0**.
+The useful runtime-completion mechanism was narrowed and continued independently as
+`pytest-run-witness`. GreenGap itself is intentionally retired at v0.1.4.
+
+This repository is kept public so that the code, tags, releases, design decisions, and
+verification history remain inspectable. No new features are planned.
+
+## Development / reproduction
+
+For historical reproduction of the final source tree:
+
+```console
 python -m pip install -e ".[dev]"
 python -m pytest
 python -m ruff check src tests
-python -m mypy
+python -m mypy src
 python -m compileall -q src tests
 python -m build
 ```
 
-The scripts under `scripts/` provide portable qualification entry points for
-the pinned full-checkout and smaller upstream behavioral gates. They do not
-clone repositories, push mutations, publish packages, or create releases.
+The CI workflows use hash-locked dependency sets under `.github/` for reproducible
+qualification.
+
+## Contributing
+
+The project is archived and is not accepting feature contributions. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the archival policy.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

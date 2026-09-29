@@ -1,20 +1,23 @@
 # Contributing to GreenGap
 
-GreenGap is verification infrastructure. Contributions should preserve its
-fail-closed semantics: incomplete evidence must remain `UNKNOWN`, and generic
-logic must not become a repository-name exception.
+GreenGap is archived and is not accepting feature work or routine maintenance
+contributions.
 
-Before opening a change, run:
+The repository remains public as a historical, reproducible record. If you want
+to experiment with the code, fork it and preserve the original fail-closed
+semantics: incomplete evidence must remain `UNKNOWN`, and generic logic should
+not become a repository-name exception.
 
-```powershell
+For historical reproduction of the final source tree:
+
+```console
+python -m pip install -e ".[dev]"
 python -m pytest
 python -m ruff check src tests
-python -m mypy
+python -m mypy src
 python -m compileall -q src tests
 python -m build
 ```
 
-Add a regression test for every parser or reconciliation edge case. Keep
-subprocesses bounded and do not add network, telemetry, database, dashboard,
-LLM, or hosted-service requirements to the core. Do not execute workflow
-commands while tracing them.
+Security-sensitive historical issues should be reported through the process in
+[SECURITY.md](SECURITY.md), not as public exploit reports.

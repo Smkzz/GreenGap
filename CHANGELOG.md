@@ -2,7 +2,17 @@
 
 ## Unreleased
 
-No unreleased changes.
+No unreleased changes. GreenGap is archived.
+
+## 0.1.4 - 2026-09-29
+
+Final archival release. Hardened JUnit XML parsing with `defusedxml`, removed
+one-off release-qualification machinery that was not part of the shipped
+analyzer, removed historical internal-path exclusions so target repositories
+cannot accidentally hide legitimate files under those names, refreshed
+reproducible dependency locks, simplified the final Scorecard gate, and updated
+project metadata/documentation for inactive archival status. The broader
+GreenGap 1.0 runtime-witness direction was not promoted.
 
 ## 0.1.3 - 2026-08-24
 

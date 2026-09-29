@@ -12,17 +12,19 @@ def read_repository_file(relative_path: str) -> str:
     return (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_scorecard_raw_artifact_survives_clean_findings_failure() -> None:
+def test_scorecard_preserves_raw_sarif_and_fails_if_producer_fails() -> None:
     workflow = read_repository_file(".github/workflows/scorecard.yml")
     upload_start = workflow.index("- name: Upload raw Scorecard results")
-    gate_start = workflow.index("- name: Enforce clean Scorecard findings")
-    upload_block = workflow[upload_start:gate_start]
+    publish_start = workflow.index("- name: Publish Scorecard SARIF")
+    gate_start = workflow.index("- name: Require Scorecard producer success")
+    upload_block = workflow[upload_start:publish_start]
+    publish_block = workflow[publish_start:gate_start]
 
-    assert upload_start < gate_start
+    assert upload_start < publish_start < gate_start
     assert "if: always()" in upload_block
     assert "path: results.sarif" in upload_block
-    assert 'findings="$(jq' in workflow
-    assert 'test "${findings}" -eq 0' in workflow
+    assert "github.event_name != 'pull_request'" in publish_block
+    assert 'test "${SCORECARD_RESULT}" = "success"' in workflow
 
 
 def test_clusterfuzzlite_actions_are_immutable_v1_pins() -> None:
