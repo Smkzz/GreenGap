@@ -15,7 +15,13 @@ dist/
 *.egg-info/
 .idea/
 .vscode/
-reports/raw/
-qualification/clones/
-qualification/envs/
-qualification/stage0f*/
+
+# Local configuration and credential material.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.*
+secrets.*

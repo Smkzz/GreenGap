@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 from .model import FindingState
 from .util import MAX_JUNIT_BYTES, MAX_JUNIT_CASES, read_limited_bytes
@@ -44,17 +46,17 @@ def parse_junit(path: Path) -> tuple[JUnitCase, ...]:
     """Parse common JUnit dialects without asserting cross-runner identity."""
 
     try:
-        tree = ET.ElementTree(ET.fromstring(read_limited_bytes(path, MAX_JUNIT_BYTES)))
-    except ET.ParseError as exc:
-        raise ValueError(f"could not parse JUnit XML: {exc}") from exc
+        root = ET.fromstring(read_limited_bytes(path, MAX_JUNIT_BYTES))
+    except (ET.ParseError, DefusedXmlException) as exc:
+        raise ValueError(f"could not safely parse JUnit XML: {exc}") from exc
     cases: list[JUnitCase] = []
-    for testcase in tree.iter("testcase"):
+    for testcase in root.iter("testcase"):
         if len(cases) >= MAX_JUNIT_CASES:
             raise ValueError(f"JUnit testcase count exceeds size limit of {MAX_JUNIT_CASES}")
         skipped = testcase.find("skipped")
         failure = testcase.find("failure")
         error = testcase.find("error")
-        marker: ET.Element[str] | None
+        marker: Any | None
         if skipped is not None:
             state = FindingState.SKIPPED
             marker = skipped

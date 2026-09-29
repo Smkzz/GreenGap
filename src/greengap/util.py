@@ -139,17 +139,12 @@ def is_transient_path(path: str | Path) -> bool:
         ".cache",
         "htmlcov",
         "coverage",
-        "reports/raw",
-        "qualification/clones",
-        "qualification/envs",
     }
     parts = Path(str(path).replace("\\", "/")).parts
     lowered = {part.lower() for part in parts}
     if lowered & transient:
         return True
     normalized = "/".join(part.lower() for part in parts)
-    if normalized.startswith("qualification/stage0f"):
-        return True
     return any(normalized == item or normalized.startswith(item + "/") for item in transient)
 
 

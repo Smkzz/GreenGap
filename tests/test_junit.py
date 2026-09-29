@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from greengap.junit import parse_junit
 from greengap.model import FindingState
 
@@ -36,3 +38,14 @@ def test_junit_error_text_is_retained(tmp_path) -> None:
         "<testsuite><testcase name='x'><error>boom</error></testcase></testsuite>", encoding="utf-8"
     )
     assert parse_junit(path)[0].message == "boom"
+
+
+def test_junit_rejects_entity_expansion(tmp_path) -> None:
+    path = tmp_path / "results.xml"
+    path.write_text(
+        "<!DOCTYPE testsuite [<!ENTITY boom 'expanded'>]>"
+        "<testsuite><testcase name='&boom;'/></testsuite>",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="could not safely parse JUnit XML"):
+        parse_junit(path)

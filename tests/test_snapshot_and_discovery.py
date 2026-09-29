@@ -46,6 +46,26 @@ def test_snapshot_includes_nonignored_untracked_file(tmp_path) -> None:
     assert "ignored.txt" not in second.files
 
 
+def test_snapshot_includes_project_dirs_named_like_old_internal_artifacts(tmp_path) -> None:
+    write_files(tmp_path, {"tracked.txt": "one\n"})
+    git_init(tmp_path)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+    first = workspace_snapshot(tmp_path)
+
+    write_files(
+        tmp_path,
+        {
+            "qualification/clones/fixture.py": "VALUE = 1\n",
+            "reports/raw/evidence.txt": "evidence\n",
+        },
+    )
+    second = workspace_snapshot(tmp_path)
+
+    assert first.fingerprint != second.fingerprint
+    assert "qualification/clones/fixture.py" in second.files
+    assert "reports/raw/evidence.txt" in second.files
+
+
 def test_default_discovery_marks_symbol_file_high(tmp_path) -> None:
     write_files(tmp_path, {"tests/test_a.py": "def test_a():\n    assert True\n"})
     candidates = discover_candidates(tmp_path)
