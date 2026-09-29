@@ -238,8 +238,8 @@ produced these median reconciliation times:
 
 | Candidate set | Median of 5 runs |
 | ---: | ---: |
-| 10,000 | 0.059 s |
-| 50,000 | 0.343 s |
+| 10,000 | 0.060 s |
+| 50,000 | 0.367 s |
 
 These are reference measurements, not hardware-independent guarantees. The repository
 retains a regression gate requiring the 50,000-candidate case to complete in under
